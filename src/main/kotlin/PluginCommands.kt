@@ -44,11 +44,8 @@ object PluginCommands : CompositeCommand(
 
     @SubCommand
     suspend fun CommandSender.reload() {
-        val token = PluginConfig.openAiToken
         PluginConfig.reload()
-        if (token != PluginConfig.openAiToken) {
-            JChatGPT.updateOpenAiToken(PluginConfig.openAiToken)
-        }
+        JChatGPT.updateOpenAiToken(PluginConfig.openAiToken)
         sendMessage("OK")
     }
 }
