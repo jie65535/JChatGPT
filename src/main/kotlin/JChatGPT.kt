@@ -108,7 +108,7 @@ object JChatGPT : KotlinPlugin(
             if (quote != null) {
                 val msg = quote.source.originalMessage.plainText()
                 if (msg.isNotEmpty()) {
-                    context = mutableListOf(ChatMessage(ChatRole.User, msg))
+                    context = listOf(ChatMessage(ChatRole.User, msg))
                 }
             }
         }
@@ -124,8 +124,7 @@ object JChatGPT : KotlinPlugin(
             history.add(ChatMessage(ChatRole.System, PluginConfig.prompt))
         }
         val msg = message.plainText()
-        if (history.isEmpty()) {
-            if (msg.isEmpty()) return
+        if (msg.isNotEmpty()) {
             history.add(ChatMessage(ChatRole.User, msg))
         }
 
