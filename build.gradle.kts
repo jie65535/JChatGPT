@@ -1,5 +1,5 @@
 plugins {
-    val kotlinVersion = "1.8.10"
+    val kotlinVersion = "1.9.24"
     kotlin("jvm") version kotlinVersion
     kotlin("plugin.serialization") version kotlinVersion
 
@@ -7,15 +7,15 @@ plugins {
 }
 
 group = "top.jie65535.mirai"
-version = "1.0.0"
+version = "1.1.0"
 
 repositories {
     mavenCentral()
     maven("https://maven.aliyun.com/repository/public")
 }
 
-val openaiClientVersion = "3.6.2"
-val ktorVersion = "2.3.7"
+val openaiClientVersion = "3.8.2"
+val ktorVersion = "2.3.12"
 
 dependencies {
     implementation("com.aallam.openai:openai-client:$openaiClientVersion")

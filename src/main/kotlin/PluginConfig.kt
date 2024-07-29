@@ -22,4 +22,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("好友是否自动拥有对话权限，默认是")
     val friendHasChatPermission: Boolean by value(true)
+
+    @ValueDescription("等待响应超时时间，单位毫秒，默认60秒")
+    val timeout: Long by value(60000L)
 }

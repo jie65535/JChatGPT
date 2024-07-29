@@ -3,6 +3,8 @@ package top.jie65535.mirai
 import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.ChatRole
+import com.aallam.openai.api.core.Role
+import com.aallam.openai.api.http.Timeout
 import com.aallam.openai.api.model.ModelId
 import com.aallam.openai.client.OpenAI
 import com.aallam.openai.client.OpenAIHost
@@ -23,12 +25,13 @@ import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import net.mamoe.mirai.message.sourceIds
 import net.mamoe.mirai.utils.info
+import kotlin.time.Duration.Companion.milliseconds
 
 object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.0.0",
+        version = "1.1.0",
     ) {
         author("jie65535")
     }
@@ -57,8 +60,10 @@ object JChatGPT : KotlinPlugin(
     }
 
     fun updateOpenAiToken(token: String) {
+        val timeout = PluginConfig.timeout.milliseconds
         openAi = OpenAI(token,
-            host = OpenAIHost(baseUrl = PluginConfig.openAiApi)
+            host = OpenAIHost(baseUrl = PluginConfig.openAiApi),
+            timeout = Timeout(request = timeout, connect = timeout, socket = timeout)
         )
     }
 
@@ -135,7 +140,23 @@ object JChatGPT : KotlinPlugin(
             }
             val reply = chatCompletion(history)
             history.add(reply)
-            val replyMsg = subject.sendMessage(message.quote() + (reply.content ?: "..."))
+            val content = reply.content ?: "..."
+
+            val replyMsg = subject.sendMessage(
+                if (content.length < 100) {
+                    message.quote() + content
+                } else {
+                    // 消息内容太长则转为转发消息避免刷屏
+                    buildForwardMessage {
+                        for (item in history) {
+                            when (item.role) {
+                                Role.User -> sender says (item.content ?: "...")
+                                Role.Assistant -> bot says (item.content ?: "...")
+                            }
+                        }
+                    }
+                }
+            )
             val msgId = replyMsg.sourceIds[0]
             replyMap[msgId] = history
             replyQueue.add(msgId)
