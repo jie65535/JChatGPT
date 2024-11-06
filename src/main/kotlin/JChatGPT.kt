@@ -16,6 +16,7 @@ import net.mamoe.mirai.console.permission.PermissionService
 import net.mamoe.mirai.console.permission.PermissionService.Companion.hasPermission
 import net.mamoe.mirai.console.plugin.jvm.JvmPluginDescription
 import net.mamoe.mirai.console.plugin.jvm.KotlinPlugin
+import net.mamoe.mirai.contact.Contact
 import net.mamoe.mirai.contact.isOperator
 import net.mamoe.mirai.event.GlobalEventChannel
 import net.mamoe.mirai.event.events.FriendMessageEvent
@@ -24,14 +25,16 @@ import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import net.mamoe.mirai.message.sourceIds
+import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.info
+import java.util.regex.Pattern
 import kotlin.time.Duration.Companion.milliseconds
 
 object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.1.0",
+        version = "1.2.0",
     ) {
         author("jie65535")
     }
@@ -61,13 +64,14 @@ object JChatGPT : KotlinPlugin(
 
     fun updateOpenAiToken(token: String) {
         val timeout = PluginConfig.timeout.milliseconds
-        openAi = OpenAI(token,
+        openAi = OpenAI(
+            token,
             host = OpenAIHost(baseUrl = PluginConfig.openAiApi),
             timeout = Timeout(request = timeout, connect = timeout, socket = timeout)
         )
     }
 
-//    private val userContext = ConcurrentMap<Long, MutableList<ChatMessage>>()
+    //    private val userContext = ConcurrentMap<Long, MutableList<ChatMessage>>()
     private const val REPLAY_QUEUE_MAX = 30
     private val replyMap = ConcurrentMap<Int, MutableList<ChatMessage>>()
     private val replyQueue = mutableListOf<Int>()
@@ -143,23 +147,26 @@ object JChatGPT : KotlinPlugin(
             val content = reply.content ?: "..."
 
             val replyMsg = subject.sendMessage(
-                if (content.length < 100) {
-                    message.quote() + content
+                if (content.length < 128) {
+                    message.quote() + toMessage(subject, content)
                 } else {
                     // 消息内容太长则转为转发消息避免刷屏
                     buildForwardMessage {
                         for (item in history) {
+                            val temp = toMessage(subject, item.content ?: "...")
                             when (item.role) {
-                                Role.User -> sender says (item.content ?: "...")
-                                Role.Assistant -> bot says (item.content ?: "...")
+                                Role.User -> sender says temp
+                                Role.Assistant -> bot says temp
                             }
                         }
                     }
                 }
             )
-            val msgId = replyMsg.sourceIds[0]
-            replyMap[msgId] = history
-            replyQueue.add(msgId)
+            if (replyMsg.sourceIds.isNotEmpty()) {
+                val msgId = replyMsg.sourceIds[0]
+                replyMap[msgId] = history
+                replyQueue.add(msgId)
+            }
             if (replyQueue.size > REPLAY_QUEUE_MAX) {
                 replyMap.remove(replyQueue.removeAt(0))
             }
@@ -168,6 +175,58 @@ object JChatGPT : KotlinPlugin(
             subject.sendMessage(message.quote() + "发生异常，请重试")
         } finally {
             requestMap.remove(sender.id)
+        }
+    }
+
+    private val laTeXPattern = Pattern.compile(
+        "\\\\\\((.+?)\\\\\\)|" + // 匹配行内公式 \(...\)
+                "\\\\\\[(.+?)\\\\\\]|" + // 匹配独立公式 \[...\]
+                "\\$\\$([^$]+?)\\$\\$|" + // 匹配独立公式 $$...$$
+                "\\$(.+?)\\$|" + // 匹配行内公式 $...$
+                "```latex\\s*([^`]+?)\\s*```" // 匹配 ```latex ... ```
+        , Pattern.DOTALL
+    )
+
+    /**
+     * 将聊天内容转为聊天消息，如果聊天中包含LaTeX表达式，将会转为图片拼接到消息中。
+     *
+     * @param contact 联系对象
+     * @param content 文本内容
+     * @return 构造的消息
+     */
+    private suspend fun toMessage(contact: Contact, content: String): Message {
+        if (content.length < 3) {
+            return PlainText(content)
+        }
+        return buildMessageChain {
+            // 匹配LaTeX表达式
+            val matcher = laTeXPattern.matcher(content)
+            var index = 0
+            while (matcher.find()) {
+                for (i in 1..matcher.groupCount()) {
+                    if (matcher.group(i) == null) {
+                        continue
+                    }
+                    try {
+                        // 将所有匹配的LaTeX公式转为图片拼接到消息中
+                        val formula = matcher.group(i)
+                        val imageByteArray = LaTeXConverter.convertToImage(formula, "png")
+                        val resource = imageByteArray.toExternalResource("png")
+                        val image = contact.uploadImage(resource)
+
+                        // 拼接公式前的文本
+                        append(content, index, matcher.start())
+                        // 插入图片
+                        append(image)
+                        // 移动索引
+                        index = matcher.end()
+                    } catch (ex: Throwable) {
+                        logger.warning("处理LaTeX表达式时异常", ex)
+                    }
+                }
+            }
+            // 拼接后续消息
+            append(content, index, content.length)
         }
     }
 
