@@ -25,4 +25,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("等待响应超时时间，单位毫秒，默认60秒")
     val timeout: Long by value(60000L)
+
+    @ValueDescription("SearXNG 搜索引擎地址，如 http://127.0.0.1:8080/search 必须启用允许json格式返回")
+    val searXngUrl: String by value("")
 }

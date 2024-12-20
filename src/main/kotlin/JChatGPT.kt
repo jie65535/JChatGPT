@@ -1,8 +1,6 @@
 package top.jie65535.mirai
 
-import com.aallam.openai.api.chat.ChatCompletionRequest
-import com.aallam.openai.api.chat.ChatMessage
-import com.aallam.openai.api.chat.ChatRole
+import com.aallam.openai.api.chat.*
 import com.aallam.openai.api.core.Role
 import com.aallam.openai.api.http.Timeout
 import com.aallam.openai.api.model.ModelId
@@ -27,6 +25,8 @@ import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import net.mamoe.mirai.message.sourceIds
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.info
+import top.jie65535.mirai.tools.BaseAgent
+import top.jie65535.mirai.tools.WebSearch
 import java.time.OffsetDateTime
 import java.util.regex.Pattern
 import kotlin.time.Duration.Companion.milliseconds
@@ -35,7 +35,7 @@ object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.2.1",
+        version = "1.3.0",
     ) {
         author("jie65535")
     }
@@ -147,10 +147,32 @@ object JChatGPT : KotlinPlugin(
                 subject.sendMessage(message.quote() + "再等等...")
                 return
             }
-            val reply = chatCompletion(history)
-            history.add(reply)
-            val content = reply.content ?: "..."
 
+            var done: Boolean
+            var retry = 2
+            var hasTools = true
+            do {
+                val reply = chatCompletion(history, hasTools)
+                history.add(reply)
+                done = true
+
+                for (toolCall in reply.toolCalls.orEmpty()) {
+                    require(toolCall is ToolCall.Function) { "Tool call is not a function" }
+                    val functionResponse = toolCall.execute()
+                    history.add(
+                        ChatMessage(
+                            role = ChatRole.Tool,
+                            toolCallId = toolCall.id,
+                            name = toolCall.function.name,
+                            content = functionResponse
+                        )
+                    )
+                    done = false
+                    hasTools = false
+                }
+            } while (!done && 0 < --retry)
+
+            val content = history.last().content ?: "..."
             val replyMsg = subject.sendMessage(
                 if (content.length < 128) {
                     message.quote() + toMessage(subject, content)
@@ -200,10 +222,11 @@ object JChatGPT : KotlinPlugin(
      * @return 构造的消息
      */
     private suspend fun toMessage(contact: Contact, content: String): Message {
-        if (content.length < 3) {
-            return PlainText(content)
-        }
-        return buildMessageChain {
+        return if (content.isEmpty()) {
+            PlainText("...")
+        } else if (content.length < 3) {
+            PlainText(content)
+        } else buildMessageChain {
             // 匹配LaTeX表达式
             val matcher = laTeXPattern.matcher(content)
             var index = 0
@@ -235,14 +258,48 @@ object JChatGPT : KotlinPlugin(
         }
     }
 
-    private suspend fun chatCompletion(messages: List<ChatMessage>): ChatMessage {
+    /**
+     * 函数映射表
+     */
+    private val myTools = listOf<BaseAgent>(
+        WebSearch()
+    )
+
+
+    private suspend fun chatCompletion(
+        chatMessages: List<ChatMessage>,
+        hasTools: Boolean = true
+    ): ChatMessage {
         val openAi = this.openAi ?: throw NullPointerException("OpenAI Token 未设置，无法开始")
-        val request = ChatCompletionRequest(ModelId(PluginConfig.chatModel), messages)
-        logger.info("OpenAI API Requesting...  Model=${PluginConfig.chatModel}")
+        val availableTools = if (hasTools) {
+            myTools.filter { it.isEnabled }.map { it.tool }
+        } else null
+        val request = ChatCompletionRequest(
+            model = ModelId(PluginConfig.chatModel),
+            messages = chatMessages,
+            tools = availableTools
+        )
+        logger.info(
+            "API Requesting..." +
+                    " Model=${PluginConfig.chatModel}" +
+                    " Tools=${availableTools?.joinToString(prefix = "[", postfix = "]")}"
+        )
         val response = openAi.chatCompletion(request)
-        logger.info("OpenAI API Usage: ${response.usage}")
-        return response.choices.first().message
+        val message = response.choices.first().message
+        logger.info("Response: $message ${response.usage}")
+        return message
     }
 
     private fun MessageChain.plainText() = this.filterIsInstance<PlainText>().joinToString().trim()
+
+    private suspend fun ToolCall.Function.execute(): String {
+        val agent =
+            myTools.find { it.tool.function.name == function.name } ?: error("Function ${function.name} not found")
+        val args = function.argumentsAsJson()
+        logger.info("Calling ${function.name}(${args})")
+        val result = agent.execute(args)
+        logger.info("Result=$result")
+        return result
+    }
+
 }
