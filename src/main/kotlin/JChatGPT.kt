@@ -27,6 +27,7 @@ import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import net.mamoe.mirai.message.sourceIds
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.info
+import java.time.OffsetDateTime
 import java.util.regex.Pattern
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -34,7 +35,7 @@ object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.2.0",
+        version = "1.2.1",
     ) {
         author("jie65535")
     }
@@ -125,12 +126,16 @@ object JChatGPT : KotlinPlugin(
         startChat(context)
     }
 
+    private fun getSystemPrompt(): String {
+        return PluginConfig.prompt.replace("{time}", OffsetDateTime.now().toString())
+    }
+
     private suspend fun MessageEvent.startChat(context: List<ChatMessage>? = null) {
         val history = mutableListOf<ChatMessage>()
         if (!context.isNullOrEmpty()) {
             history.addAll(context)
         } else if (PluginConfig.prompt.isNotEmpty()) {
-            history.add(ChatMessage(ChatRole.System, PluginConfig.prompt))
+            history.add(ChatMessage(ChatRole.System, getSystemPrompt()))
         }
         val msg = message.plainText()
         if (msg.isNotEmpty()) {
