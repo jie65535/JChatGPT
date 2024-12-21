@@ -7,6 +7,8 @@ import com.aallam.openai.api.model.ModelId
 import com.aallam.openai.client.OpenAI
 import com.aallam.openai.client.OpenAIHost
 import io.ktor.util.collections.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import net.mamoe.mirai.console.command.CommandManager.INSTANCE.register
 import net.mamoe.mirai.console.command.CommandSender.Companion.toCommandSender
 import net.mamoe.mirai.console.permission.PermissionId
@@ -25,11 +27,13 @@ import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import net.mamoe.mirai.message.sourceIds
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.info
-import top.jie65535.mirai.tools.BaseAgent
-import top.jie65535.mirai.tools.WebSearch
+import top.jie65535.mirai.tools.*
 import java.time.OffsetDateTime
+import java.time.format.TextStyle
+import java.util.*
 import java.util.regex.Pattern
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
@@ -127,7 +131,11 @@ object JChatGPT : KotlinPlugin(
     }
 
     private fun getSystemPrompt(): String {
-        return PluginConfig.prompt.replace("{time}", OffsetDateTime.now().toString())
+        val now = OffsetDateTime.now()
+        return PluginConfig.prompt.replace(
+            "{time}",
+            "$now ${now.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)}"
+        )
     }
 
     private suspend fun MessageEvent.startChat(context: List<ChatMessage>? = null) {
@@ -158,7 +166,7 @@ object JChatGPT : KotlinPlugin(
 
                 for (toolCall in reply.toolCalls.orEmpty()) {
                     require(toolCall is ToolCall.Function) { "Tool call is not a function" }
-                    val functionResponse = toolCall.execute()
+                    val functionResponse = toolCall.execute(this)
                     history.add(
                         ChatMessage(
                             role = ChatRole.Tool,
@@ -259,10 +267,12 @@ object JChatGPT : KotlinPlugin(
     }
 
     /**
-     * 函数映射表
+     * 工具列表
      */
-    private val myTools = listOf<BaseAgent>(
-        WebSearch()
+    private val myTools = listOf(
+        WebSearch(),
+        WeatherService(),
+        CrazyKfc()
     )
 
 
@@ -277,7 +287,8 @@ object JChatGPT : KotlinPlugin(
         val request = ChatCompletionRequest(
             model = ModelId(PluginConfig.chatModel),
             messages = chatMessages,
-            tools = availableTools
+            tools = availableTools,
+            toolChoice = ToolChoice.Auto
         )
         logger.info(
             "API Requesting..." +
@@ -292,13 +303,23 @@ object JChatGPT : KotlinPlugin(
 
     private fun MessageChain.plainText() = this.filterIsInstance<PlainText>().joinToString().trim()
 
-    private suspend fun ToolCall.Function.execute(): String {
-        val agent =
-            myTools.find { it.tool.function.name == function.name } ?: error("Function ${function.name} not found")
-        val args = function.argumentsAsJson()
+    private suspend fun ToolCall.Function.execute(event: MessageEvent): String {
+        val agent = myTools.find { it.tool.function.name == function.name }
+            ?: return "Function ${function.name} not found"
+        // 提示正在执行函数
+        val receipt = if (agent.loadingMessage.isNotEmpty()) {
+            event.subject.sendMessage(event.message.quote() + agent.loadingMessage)
+        } else null
+        // 提取参数
+        val args = function.argumentsAsJsonOrNull()
         logger.info("Calling ${function.name}(${args})")
+        // 执行函数
         val result = agent.execute(args)
         logger.info("Result=$result")
+        // 过会撤回加载消息
+        if (receipt != null) {
+            launch { delay(2.seconds); receipt.recall() }
+        }
         return result
     }
 

@@ -22,7 +22,6 @@ val commonTextVersion = "1.13.0"
 dependencies {
     implementation("com.aallam.openai:openai-client:$openaiClientVersion")
     implementation("io.ktor:ktor-client-okhttp:$ktorVersion")
-    //implementation("io.ktor:ktor-client-okhttp-jvm:$ktorVersion")
     implementation("org.scilab.forge:jlatexmath:$jLatexMathVersion")
     implementation("org.apache.commons:commons-text:$commonTextVersion")
 }
