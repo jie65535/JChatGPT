@@ -23,6 +23,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("好友是否自动拥有对话权限，默认是")
     val friendHasChatPermission: Boolean by value(true)
 
+    @ValueDescription("群荣誉等级权限门槛，达到这个等级相当于自动拥有权限。")
+    val temperaturePermission: Int by value(60)
+
     @ValueDescription("等待响应超时时间，单位毫秒，默认60秒")
     val timeout: Long by value(60000L)
 

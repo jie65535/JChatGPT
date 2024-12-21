@@ -88,7 +88,12 @@ object JChatGPT : KotlinPlugin(
         // 发送者是否有权限
         if (!toCommandSender().hasPermission(chatPermission)) {
             if (this is GroupMessageEvent) {
-                if (!sender.isOperator() || !PluginConfig.groupOpHasChatPermission) {
+                if (PluginConfig.groupOpHasChatPermission && sender.isOperator()) {
+                    // 允许管理员使用
+                } else if (sender.active.temperature >= PluginConfig.temperaturePermission) {
+                    // 允许活跃度达标成员使用
+                } else {
+                    // 其它情况阻止使用
                     return
                 }
             }
@@ -188,7 +193,9 @@ object JChatGPT : KotlinPlugin(
                     // 消息内容太长则转为转发消息避免刷屏
                     buildForwardMessage {
                         for (item in history) {
-                            val temp = toMessage(subject, item.content ?: "...")
+                            if (item.content.isNullOrEmpty())
+                                continue
+                            val temp = toMessage(subject, item.content!!)
                             when (item.role) {
                                 Role.User -> sender says temp
                                 Role.Assistant -> bot says temp
@@ -318,7 +325,7 @@ object JChatGPT : KotlinPlugin(
         logger.info("Result=$result")
         // 过会撤回加载消息
         if (receipt != null) {
-            launch { delay(2.seconds); receipt.recall() }
+            launch { delay(3.seconds); receipt.recall() }
         }
         return result
     }
