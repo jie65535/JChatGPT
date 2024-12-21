@@ -279,7 +279,8 @@ object JChatGPT : KotlinPlugin(
     private val myTools = listOf(
         WebSearch(),
         WeatherService(),
-        CrazyKfc()
+        CrazyKfc(),
+        IpAddressQuery(),
     )
 
 
