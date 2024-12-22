@@ -86,9 +86,8 @@ class WebSearch : BaseAgent(
             }
         )
         val body = response.bodyAsText()
-        val unescapedBody = StringEscapeUtils.unescapeJava(body)
-        val responseJsonElement = Json.parseToJsonElement(unescapedBody)
-        return buildJsonObject {
+        val responseJsonElement = Json.parseToJsonElement(body)
+        val filteredResponse = buildJsonObject {
             val root = responseJsonElement.jsonObject
             // 查询内容原样转发
             root["query"]?.let { put("query", it) }
@@ -122,5 +121,6 @@ class WebSearch : BaseAgent(
             root["answers"]?.let { put("answers", it) }
             root["infoboxes"]?.let { put("infoboxes", it) }
         }.toString()
+        return StringEscapeUtils.unescapeJava(filteredResponse)
     }
 }
