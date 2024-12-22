@@ -135,12 +135,29 @@ object JChatGPT : KotlinPlugin(
         startChat(context)
     }
 
-    private fun getSystemPrompt(): String {
+    private fun MessageEvent.getSystemPrompt(): String {
         val now = OffsetDateTime.now()
-        return PluginConfig.prompt.replace(
-            "{time}",
+        val prompt = StringBuilder(PluginConfig.prompt)
+        fun replace(target: String, replacement: ()->String) {
+            val i = prompt.indexOf(target)
+            if (i != -1) {
+                prompt.replace(i, i + target.length, replacement())
+            }
+        }
+        replace("{time}") {
             "$now ${now.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)}"
-        )
+        }
+        replace("{subject}") {
+            if (this is GroupMessageEvent) {
+                "《${subject.name}》群聊中"
+            } else {
+                "私聊中"
+            }
+        }
+        replace("{sender}") {
+            senderName
+        }
+        return prompt.toString()
     }
 
     private suspend fun MessageEvent.startChat(context: List<ChatMessage>? = null) {
