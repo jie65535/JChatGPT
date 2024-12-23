@@ -18,6 +18,7 @@ import net.mamoe.mirai.console.plugin.jvm.JvmPluginDescription
 import net.mamoe.mirai.console.plugin.jvm.KotlinPlugin
 import net.mamoe.mirai.contact.Contact
 import net.mamoe.mirai.contact.isOperator
+import net.mamoe.mirai.contact.nameCardOrNick
 import net.mamoe.mirai.event.GlobalEventChannel
 import net.mamoe.mirai.event.events.FriendMessageEvent
 import net.mamoe.mirai.event.events.GroupMessageEvent
@@ -26,6 +27,7 @@ import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import net.mamoe.mirai.message.sourceIds
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
+import net.mamoe.mirai.utils.MiraiExperimentalApi
 import net.mamoe.mirai.utils.info
 import top.jie65535.mirai.tools.*
 import java.time.OffsetDateTime
@@ -77,7 +79,7 @@ object JChatGPT : KotlinPlugin(
     }
 
     //    private val userContext = ConcurrentMap<Long, MutableList<ChatMessage>>()
-    private const val REPLAY_QUEUE_MAX = 30
+    private const val REPLAY_QUEUE_MAX = 10
     private val replyMap = ConcurrentMap<Int, MutableList<ChatMessage>>()
     private val replyQueue = mutableListOf<Int>()
     private val requestMap = ConcurrentSet<Long>()
@@ -160,6 +162,7 @@ object JChatGPT : KotlinPlugin(
         return prompt.toString()
     }
 
+    @OptIn(MiraiExperimentalApi::class)
     private suspend fun MessageEvent.startChat(context: List<ChatMessage>? = null) {
         val history = mutableListOf<ChatMessage>()
         if (!context.isNullOrEmpty()) {
@@ -218,14 +221,44 @@ object JChatGPT : KotlinPlugin(
                                 Role.Assistant -> bot says temp
                             }
                         }
+
+                        // 检查并移除超出转发消息上限的消息
+                        var isOverflow = false
+                        var count = 0
+                        for (i in size-1 downTo 0) {
+                            if (count > 4900) {
+                                isOverflow = true
+                                // 删除早期上下文消息
+                                removeAt(i)
+                            } else {
+                                for (text in this[i].messageChain.filterIsInstance<PlainText>()) {
+                                    count += text.content.length
+                                }
+                            }
+                        }
+                        if (count > 5000) {
+                            removeAt(0)
+                        }
+                        if (isOverflow) {
+                            // 如果溢出了，插入一条提示到最开始
+                            add(0, ForwardMessage.Node(
+                                senderId = bot.id,
+                                time = this[0].time - 1,
+                                senderName = bot.nameCardOrNick,
+                                message = PlainText("更早的消息已隐藏，避免超出转发消息上限。")
+                            ))
+                        }
                     }
                 }
             )
+
+            // 将回复的消息和对话历史保存到队列
             if (replyMsg.sourceIds.isNotEmpty()) {
                 val msgId = replyMsg.sourceIds[0]
                 replyMap[msgId] = history
                 replyQueue.add(msgId)
             }
+            // 移除超出队列的对话
             if (replyQueue.size > REPLAY_QUEUE_MAX) {
                 replyMap.remove(replyQueue.removeAt(0))
             }
