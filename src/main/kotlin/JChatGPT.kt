@@ -339,7 +339,12 @@ object JChatGPT : KotlinPlugin(
         val args = function.argumentsAsJsonOrNull()
         logger.info("Calling ${function.name}(${args})")
         // 执行函数
-        val result = agent.execute(args)
+        val result = try {
+            agent.execute(args)
+        } catch (e: Throwable) {
+            logger.error("Failed to call ${function.name}", e)
+            "工具调用失败，请尝试自行回答用户，或如实告知。"
+        }
         logger.info("Result=$result")
         // 过会撤回加载消息
         if (receipt != null) {
