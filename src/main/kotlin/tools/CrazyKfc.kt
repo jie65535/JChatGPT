@@ -5,6 +5,8 @@ import com.aallam.openai.api.core.Parameters
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import kotlinx.serialization.json.*
+import java.time.DayOfWeek
+import java.time.OffsetDateTime
 
 class CrazyKfc : BaseAgent(
     tool = Tool.function(
@@ -13,6 +15,12 @@ class CrazyKfc : BaseAgent(
         parameters = Parameters.Empty
     )
 ) {
+    /**
+     * 仅周四可用
+     */
+    override val isEnabled: Boolean
+        get() = OffsetDateTime.now().dayOfWeek == DayOfWeek.THURSDAY
+
     override suspend fun execute(args: JsonObject?): String {
         val response = httpClient.get("https://api.52vmy.cn/api/wl/yan/kfc")
         return response.bodyAsText()
