@@ -327,10 +327,20 @@ object JChatGPT : KotlinPlugin(
      * 工具列表
      */
     private val myTools = listOf(
+        // 网页搜索
         WebSearch(),
+
+        // 运行代码
+        RunCode(),
+
+        // 天气服务
         WeatherService(),
-        CrazyKfc(),
+
+        // IP所在地查询
         IpAddressQuery(),
+
+        // 疯狂星期四
+        CrazyKfc(),
     )
 
 
