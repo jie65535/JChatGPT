@@ -17,6 +17,7 @@ import net.mamoe.mirai.console.permission.PermissionService.Companion.hasPermiss
 import net.mamoe.mirai.console.plugin.jvm.JvmPluginDescription
 import net.mamoe.mirai.console.plugin.jvm.KotlinPlugin
 import net.mamoe.mirai.contact.Contact
+import net.mamoe.mirai.contact.MemberPermission.*
 import net.mamoe.mirai.contact.isOperator
 import net.mamoe.mirai.contact.nameCardOrNick
 import net.mamoe.mirai.event.GlobalEventChannel
@@ -84,22 +85,22 @@ object JChatGPT : KotlinPlugin(
     private val replyQueue = mutableListOf<Int>()
     private val requestMap = ConcurrentSet<Long>()
 
-    private suspend fun MessageEvent.onMessage(event: MessageEvent) {
+    private suspend fun onMessage(event: MessageEvent) {
         // 检查Token是否设置
         if (openAi == null) return
         // 发送者是否有权限
-        if (!toCommandSender().hasPermission(chatPermission)) {
-            if (this is GroupMessageEvent) {
-                if (PluginConfig.groupOpHasChatPermission && sender.isOperator()) {
+        if (!event.toCommandSender().hasPermission(chatPermission)) {
+            if (event is GroupMessageEvent) {
+                if (PluginConfig.groupOpHasChatPermission && event.sender.isOperator()) {
                     // 允许管理员使用
-                } else if (sender.active.temperature >= PluginConfig.temperaturePermission) {
+                } else if (event.sender.active.temperature >= PluginConfig.temperaturePermission) {
                     // 允许活跃度达标成员使用
                 } else {
                     // 其它情况阻止使用
                     return
                 }
             }
-            if (this is FriendMessageEvent) {
+            if (event is FriendMessageEvent) {
                 if (!PluginConfig.friendHasChatPermission) {
                     return
                 }
@@ -108,9 +109,9 @@ object JChatGPT : KotlinPlugin(
         }
 
         // 是否@bot
-        val isAtBot = message.contains(At(bot))
+        val isAtBot = event.message.contains(At(event.bot))
         // 是否包含引用消息
-        val quote = message[QuoteReply]
+        val quote = event.message[QuoteReply]
         // 如果没有@bot或者引用消息则直接结束
         if (!isAtBot && quote == null)
             return
@@ -134,13 +135,13 @@ object JChatGPT : KotlinPlugin(
             }
         }
 
-        startChat(context)
+        startChat(event, context)
     }
 
-    private fun MessageEvent.getSystemPrompt(): String {
+    private fun getSystemPrompt(event: MessageEvent): String {
         val now = OffsetDateTime.now()
         val prompt = StringBuilder(PluginConfig.prompt)
-        fun replace(target: String, replacement: ()->String) {
+        fun replace(target: String, replacement: () -> String) {
             val i = prompt.indexOf(target)
             if (i != -1) {
                 prompt.replace(i, i + target.length, replacement())
@@ -150,34 +151,44 @@ object JChatGPT : KotlinPlugin(
             "$now ${now.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)}"
         }
         replace("{subject}") {
-            if (this is GroupMessageEvent) {
-                "《${subject.name}》群聊中"
+            if (event is GroupMessageEvent) {
+                "\"${event.subject.name}\" 群聊中"
             } else {
                 "私聊中"
             }
         }
         replace("{sender}") {
-            senderName
+            if (event is GroupMessageEvent) {
+                event.sender.specialTitle
+                val permissionName = when (event.sender.permission) {
+                    MEMBER -> "普通群员"
+                    ADMINISTRATOR -> "管理员"
+                    OWNER -> "群主"
+                }
+                "\"${event.senderName}\" 身份：$permissionName"
+            } else {
+                "\"${event.senderName}\""
+            }
         }
         return prompt.toString()
     }
 
     @OptIn(MiraiExperimentalApi::class)
-    private suspend fun MessageEvent.startChat(context: List<ChatMessage>? = null) {
+    private suspend fun startChat(event: MessageEvent, context: List<ChatMessage>? = null) {
         val history = mutableListOf<ChatMessage>()
         if (!context.isNullOrEmpty()) {
             history.addAll(context)
         } else if (PluginConfig.prompt.isNotEmpty()) {
-            history.add(ChatMessage(ChatRole.System, getSystemPrompt()))
+            history.add(ChatMessage(ChatRole.System, getSystemPrompt(event)))
         }
-        val msg = message.plainText()
+        val msg = event.message.plainText()
         if (msg.isNotEmpty()) {
             history.add(ChatMessage(ChatRole.User, msg))
         }
 
         try {
-            if (!requestMap.add(sender.id)) {
-                subject.sendMessage(message.quote() + "再等等...")
+            if (!requestMap.add(event.sender.id)) {
+                event.subject.sendMessage(event.message.quote() + "再等等...")
                 return
             }
 
@@ -191,7 +202,7 @@ object JChatGPT : KotlinPlugin(
 
                 for (toolCall in reply.toolCalls.orEmpty()) {
                     require(toolCall is ToolCall.Function) { "Tool call is not a function" }
-                    val functionResponse = toolCall.execute(this)
+                    val functionResponse = toolCall.execute(event)
                     history.add(
                         ChatMessage(
                             role = ChatRole.Tool,
@@ -206,26 +217,26 @@ object JChatGPT : KotlinPlugin(
             } while (!done && 0 < --retry)
 
             val content = history.last().content ?: "..."
-            val replyMsg = subject.sendMessage(
+            val replyMsg = event.subject.sendMessage(
                 if (content.length < 128) {
-                    message.quote() + toMessage(subject, content)
+                    event.message.quote() + toMessage(event.subject, content)
                 } else {
                     // 消息内容太长则转为转发消息避免刷屏
-                    buildForwardMessage {
+                    event.buildForwardMessage {
                         for (item in history) {
                             if (item.content.isNullOrEmpty())
                                 continue
-                            val temp = toMessage(subject, item.content!!)
+                            val temp = toMessage(event.subject, item.content!!)
                             when (item.role) {
-                                Role.User -> sender says temp
-                                Role.Assistant -> bot says temp
+                                Role.User -> event.sender says temp
+                                Role.Assistant -> event.bot says temp
                             }
                         }
 
                         // 检查并移除超出转发消息上限的消息
                         var isOverflow = false
                         var count = 0
-                        for (i in size-1 downTo 0) {
+                        for (i in size - 1 downTo 0) {
                             if (count > 4900) {
                                 isOverflow = true
                                 // 删除早期上下文消息
@@ -241,12 +252,14 @@ object JChatGPT : KotlinPlugin(
                         }
                         if (isOverflow) {
                             // 如果溢出了，插入一条提示到最开始
-                            add(0, ForwardMessage.Node(
-                                senderId = bot.id,
-                                time = this[0].time - 1,
-                                senderName = bot.nameCardOrNick,
-                                message = PlainText("更早的消息已隐藏，避免超出转发消息上限。")
-                            ))
+                            add(
+                                0, ForwardMessage.Node(
+                                    senderId = event.bot.id,
+                                    time = this[0].time - 1,
+                                    senderName = event.bot.nameCardOrNick,
+                                    message = PlainText("更早的消息已隐藏，避免超出转发消息上限。")
+                                )
+                            )
                         }
                     }
                 }
@@ -264,9 +277,9 @@ object JChatGPT : KotlinPlugin(
             }
         } catch (ex: Throwable) {
             logger.warning(ex)
-            subject.sendMessage(message.quote() + "发生异常，请重试")
+            event.subject.sendMessage(event.message.quote() + "发生异常，请重试")
         } finally {
-            requestMap.remove(sender.id)
+            requestMap.remove(event.sender.id)
         }
     }
 
