@@ -351,9 +351,6 @@ object JChatGPT : KotlinPlugin(
 
         // IP所在地查询
         IpAddressQuery(),
-
-        // 疯狂星期四
-        CrazyKfc(),
     )
 
 
