@@ -349,8 +349,11 @@ object JChatGPT : KotlinPlugin(
         // 天气服务
         WeatherService(),
 
-        // IP所在地查询
-        IpAddressQuery(),
+        // IP所在地查询 暂时取消，几乎不会用到
+        // IpAddressQuery(),
+
+        // Epic 免费游戏
+        EpicFreeGame(),
     )
 
 
@@ -401,7 +404,16 @@ object JChatGPT : KotlinPlugin(
         logger.info("Result=$result")
         // 过会撤回加载消息
         if (receipt != null) {
-            launch { delay(3.seconds); receipt.recall() }
+            launch {
+                delay(3.seconds);
+                try {
+                    receipt.recall()
+                } catch (e: Throwable) {
+                    logger.error("消息撤回失败，调试信息：" +
+                            "source.internalIds=${receipt.source.internalIds.joinToString()} " +
+                            "source.ids= ${receipt.source.ids.joinToString()}", e)
+                }
+            }
         }
         return result
     }
