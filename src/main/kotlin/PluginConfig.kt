@@ -35,4 +35,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("在线运行代码 glot.io 的 api token，在官网注册账号即可获取。")
     val glotToken: String by value("")
 
+    @ValueDescription("创建Prompt时取最近多少分钟内的消息")
+    val historyWindowMin: Int by value(10)
+
+    @ValueDescription("创建Prompt时取最多几条消息")
+    val historyMessageLimit: Int by value(20)
+
+    @ValueDescription("是否打印Prompt便于调试")
+    val logPrompt by value(false)
 }

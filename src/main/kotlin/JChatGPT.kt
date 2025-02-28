@@ -1,7 +1,9 @@
 package top.jie65535.mirai
 
-import com.aallam.openai.api.chat.*
-import com.aallam.openai.api.core.Role
+import com.aallam.openai.api.chat.ChatCompletionRequest
+import com.aallam.openai.api.chat.ChatMessage
+import com.aallam.openai.api.chat.ChatRole
+import com.aallam.openai.api.chat.ToolCall
 import com.aallam.openai.api.http.Timeout
 import com.aallam.openai.api.model.ModelId
 import com.aallam.openai.client.OpenAI
@@ -30,11 +32,17 @@ import net.mamoe.mirai.message.sourceIds
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.MiraiExperimentalApi
 import net.mamoe.mirai.utils.info
-import top.jie65535.mirai.tools.*
+import top.jie65535.mirai.tools.EpicFreeGame
+import top.jie65535.mirai.tools.RunCode
+import top.jie65535.mirai.tools.WeatherService
+import top.jie65535.mirai.tools.WebSearch
+import xyz.cssxsh.mirai.hibernate.MiraiHibernateRecorder
+import java.time.Instant
 import java.time.OffsetDateTime
-import java.time.format.TextStyle
-import java.util.*
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.regex.Pattern
+import kotlin.collections.*
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -42,12 +50,18 @@ object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.3.0",
+        version = "1.4.0",
     ) {
         author("jie65535")
+//        dependsOn("xyz.cssxsh.mirai.plugin.mirai-hibernate-plugin", true)
     }
 ) {
     private var openAi: OpenAI? = null
+
+    /**
+     * 是否包含历史对话
+     */
+    private var includeHistory: Boolean = false
 
     val chatPermission = PermissionId("JChatGPT", "Chat")
 
@@ -64,6 +78,14 @@ object JChatGPT : KotlinPlugin(
         // 注册插件命令
         PluginCommands.register()
 
+        // 检查消息记录插件是否存在
+        includeHistory = try {
+            MiraiHibernateRecorder
+            true
+        } catch (_: Throwable) {
+            false
+        }
+
         GlobalEventChannel.parentScope(this)
             .subscribeAlways<MessageEvent> { event -> onMessage(event) }
 
@@ -79,9 +101,13 @@ object JChatGPT : KotlinPlugin(
         )
     }
 
+    private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
+        .withZone(ZoneOffset.systemDefault())
+    private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy年MM月dd E HH:mm:ss")
+
     //    private val userContext = ConcurrentMap<Long, MutableList<ChatMessage>>()
     private const val REPLAY_QUEUE_MAX = 10
-    private val replyMap = ConcurrentMap<Int, MutableList<ChatMessage>>()
+    private val replyMap = ConcurrentMap<Int, MutableList<ChatMessage>>(REPLAY_QUEUE_MAX)
     private val replyQueue = mutableListOf<Int>()
     private val requestMap = ConcurrentSet<Long>()
 
@@ -147,9 +173,11 @@ object JChatGPT : KotlinPlugin(
                 prompt.replace(i, i + target.length, replacement())
             }
         }
+
         replace("{time}") {
-            "$now ${now.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)}"
+            dateTimeFormatter.format(now)
         }
+
         replace("{subject}") {
             if (event is GroupMessageEvent) {
                 "\"${event.subject.name}\" 群聊中"
@@ -157,6 +185,7 @@ object JChatGPT : KotlinPlugin(
                 "私聊中"
             }
         }
+
         replace("{sender}") {
             if (event is GroupMessageEvent) {
                 event.sender.specialTitle
@@ -170,6 +199,64 @@ object JChatGPT : KotlinPlugin(
                 "\"${event.senderName}\""
             }
         }
+
+        replace("{history}") {
+            if (includeHistory) {
+                // 一段时间内的消息
+                val beforeTimestamp = now.minusMinutes(PluginConfig.historyWindowMin.toLong()).toEpochSecond().toInt()
+                val nowTimestamp = now.toEpochSecond().toInt()
+                // 最近这段时间的历史对话
+                val history = MiraiHibernateRecorder[event.subject, beforeTimestamp, nowTimestamp]
+                    .take(PluginConfig.historyMessageLimit) // 只取最近的部分消息，避免上下文过长
+                    .sortedBy { it.time } // 按时间排序
+                // 构造历史消息
+                val historyText = StringBuilder()
+                for (record in history) {
+                    if (event.bot.id == record.fromId) {
+                        historyText.append("你")
+                    } else if (event is GroupMessageEvent) {
+                        val recordSender = event.subject[record.fromId]
+                        if (recordSender != null) {
+                            // 群活跃等级
+                            historyText
+                                .append("【lv")
+                                .append(recordSender.active.temperature)
+                                .append(" ")
+                            // 群头衔
+                            if (recordSender.specialTitle.isNotEmpty()) {
+                                historyText.append(recordSender.specialTitle)
+                            } else {
+                                historyText.append(when (recordSender.permission) {
+                                    OWNER -> "群主"
+                                    ADMINISTRATOR -> "管理员"
+                                    MEMBER -> recordSender.temperatureTitle
+                                })
+                            }
+                            // 群名片
+                            historyText
+                                .append("】 ")
+                                .append(recordSender.nameCardOrNick)
+                                // .append(" (").append(recordSender.id).append(")")
+                        } else {
+                            // 未知群员
+                            historyText.append("未知群员(").append(record.fromId).append(")")
+                        }
+                    } else {
+                        historyText.append(event.senderName)
+                    }
+                    historyText
+                        .append(" ")
+                        // 发言时间
+                        .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
+                        // 消息内容
+                        .append(" 说：").appendLine(record.toMessageChain().contentToString())
+                }
+
+                historyText.toString()
+            } else {
+                "暂无内容"
+            }
+        }
         return prompt.toString()
     }
 
@@ -179,7 +266,11 @@ object JChatGPT : KotlinPlugin(
         if (!context.isNullOrEmpty()) {
             history.addAll(context)
         } else if (PluginConfig.prompt.isNotEmpty()) {
-            history.add(ChatMessage(ChatRole.System, getSystemPrompt(event)))
+            val prompt = getSystemPrompt(event)
+            if (PluginConfig.logPrompt) {
+                logger.info("Prompt: $prompt")
+            }
+            history.add(ChatMessage(ChatRole.System, prompt))
         }
         val msg = event.message.plainText()
         if (msg.isNotEmpty()) {
@@ -223,45 +314,50 @@ object JChatGPT : KotlinPlugin(
                 } else {
                     // 消息内容太长则转为转发消息避免刷屏
                     event.buildForwardMessage {
-                        for (item in history) {
-                            if (item.content.isNullOrEmpty())
-                                continue
-                            val temp = toMessage(event.subject, item.content!!)
-                            when (item.role) {
-                                Role.User -> event.sender says temp
-                                Role.Assistant -> event.bot says temp
-                            }
-                        }
-
-                        // 检查并移除超出转发消息上限的消息
-                        var isOverflow = false
-                        var count = 0
-                        for (i in size - 1 downTo 0) {
-                            if (count > 4900) {
-                                isOverflow = true
-                                // 删除早期上下文消息
-                                removeAt(i)
-                            } else {
-                                for (text in this[i].messageChain.filterIsInstance<PlainText>()) {
-                                    count += text.content.length
-                                }
-                            }
-                        }
-                        if (count > 5000) {
-                            removeAt(0)
-                        }
-                        if (isOverflow) {
-                            // 如果溢出了，插入一条提示到最开始
-                            add(
-                                0, ForwardMessage.Node(
-                                    senderId = event.bot.id,
-                                    time = this[0].time - 1,
-                                    senderName = event.bot.nameCardOrNick,
-                                    message = PlainText("更早的消息已隐藏，避免超出转发消息上限。")
-                                )
-                            )
-                        }
+                        event.bot says toMessage(event.subject, content)
                     }
+
+                    // 不再将历史对话记录加入其中
+//                    event.buildForwardMessage {
+//                        for (item in history) {
+//                            if (item.content.isNullOrEmpty())
+//                                continue
+//                            val temp = toMessage(event.subject, item.content!!)
+//                            when (item.role) {
+//                                Role.User -> event.sender says temp
+//                                Role.Assistant -> event.bot says temp
+//                            }
+//                        }
+//
+//                        // 检查并移除超出转发消息上限的消息
+//                        var isOverflow = false
+//                        var count = 0
+//                        for (i in size - 1 downTo 0) {
+//                            if (count > 4900) {
+//                                isOverflow = true
+//                                // 删除早期上下文消息
+//                                removeAt(i)
+//                            } else {
+//                                for (text in this[i].messageChain.filterIsInstance<PlainText>()) {
+//                                    count += text.content.length
+//                                }
+//                            }
+//                        }
+//                        if (count > 5000) {
+//                            removeAt(0)
+//                        }
+//                        if (isOverflow) {
+//                            // 如果溢出了，插入一条提示到最开始
+//                            add(
+//                                0, ForwardMessage.Node(
+//                                    senderId = event.bot.id,
+//                                    time = this[0].time - 1,
+//                                    senderName = event.bot.nameCardOrNick,
+//                                    message = PlainText("更早的消息已隐藏，避免超出转发消息上限。")
+//                                )
+//                            )
+//                        }
+//                    }
                 }
             )
 
@@ -277,10 +373,13 @@ object JChatGPT : KotlinPlugin(
             }
         } catch (ex: Throwable) {
             logger.warning(ex)
-            event.subject.sendMessage(event.message.quote() + "发生异常，请重试")
+            event.subject.sendMessage(event.message.quote() + "很抱歉，发生异常，请稍后重试")
         } finally {
             requestMap.remove(event.sender.id)
         }
+//        catch (ex: OpenAITimeoutException) {
+//            event.subject.sendMessage(event.message.quote() + "很抱歉，服务器没响应，请稍后重试")
+//        }
     }
 
     private val laTeXPattern = Pattern.compile(
@@ -369,12 +468,9 @@ object JChatGPT : KotlinPlugin(
             model = ModelId(PluginConfig.chatModel),
             messages = chatMessages,
             tools = availableTools,
-            toolChoice = ToolChoice.Auto
         )
-        logger.info(
-            "API Requesting..." +
-                    " Model=${PluginConfig.chatModel}" +
-                    " Tools=${availableTools?.joinToString(prefix = "[", postfix = "]")}"
+        logger.info("API Requesting... Model=${PluginConfig.chatModel}"
+//                    " Tools=${availableTools?.joinToString(prefix = "[", postfix = "]")}"
         )
         val response = openAi.chatCompletion(request)
         val message = response.choices.first().message
