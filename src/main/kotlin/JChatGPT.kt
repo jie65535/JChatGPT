@@ -201,20 +201,24 @@ object JChatGPT : KotlinPlugin(
         }
 
         replace("{history}") {
-            if (includeHistory) {
-                // 一段时间内的消息
-                val beforeTimestamp = now.minusMinutes(PluginConfig.historyWindowMin.toLong()).toEpochSecond().toInt()
-                val nowTimestamp = now.toEpochSecond().toInt()
-                // 最近这段时间的历史对话
-                val history = MiraiHibernateRecorder[event.subject, beforeTimestamp, nowTimestamp]
-                    .take(PluginConfig.historyMessageLimit) // 只取最近的部分消息，避免上下文过长
-                    .sortedBy { it.time } // 按时间排序
-                // 构造历史消息
-                val historyText = StringBuilder()
+            if (!includeHistory) {
+                return@replace "暂无内容"
+            }
+
+            // 一段时间内的消息
+            val beforeTimestamp = now.minusMinutes(PluginConfig.historyWindowMin.toLong()).toEpochSecond().toInt()
+            val nowTimestamp = now.toEpochSecond().toInt()
+            // 最近这段时间的历史对话
+            val history = MiraiHibernateRecorder[event.subject, beforeTimestamp, nowTimestamp]
+                .take(PluginConfig.historyMessageLimit) // 只取最近的部分消息，避免上下文过长
+                .sortedBy { it.time } // 按时间排序
+            // 构造历史消息
+            val historyText = StringBuilder()
+            if (event is GroupMessageEvent) {
                 for (record in history) {
                     if (event.bot.id == record.fromId) {
                         historyText.append("你")
-                    } else if (event is GroupMessageEvent) {
+                    } else {
                         val recordSender = event.subject[record.fromId]
                         if (recordSender != null) {
                             // 群活跃等级
@@ -226,37 +230,57 @@ object JChatGPT : KotlinPlugin(
                             if (recordSender.specialTitle.isNotEmpty()) {
                                 historyText.append(recordSender.specialTitle)
                             } else {
-                                historyText.append(when (recordSender.permission) {
-                                    OWNER -> "群主"
-                                    ADMINISTRATOR -> "管理员"
-                                    MEMBER -> recordSender.temperatureTitle
-                                })
+                                historyText.append(
+                                    when (recordSender.permission) {
+                                        OWNER -> "群主"
+                                        ADMINISTRATOR -> "管理员"
+                                        MEMBER -> recordSender.temperatureTitle
+                                    }
+                                )
                             }
                             // 群名片
                             historyText
                                 .append("】 ")
                                 .append(recordSender.nameCardOrNick)
-                                // .append(" (").append(recordSender.id).append(")")
+                            // .append(" (").append(recordSender.id).append(")")
                         } else {
                             // 未知群员
                             historyText.append("未知群员(").append(record.fromId).append(")")
                         }
-                    } else {
-                        historyText.append(event.senderName)
                     }
                     historyText
                         .append(" ")
                         // 发言时间
                         .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
                         // 消息内容
-                        .append(" 说：").appendLine(record.toMessageChain().contentToString())
-                }
+                        .append(" 说：").appendLine(record.toMessageChain().joinToString("") {
+                            when (it) {
+                                is At -> {
+                                    it.getDisplay(event.subject)
+                                }
 
-                historyText.toString()
+                                is ForwardMessage -> {
+                                    it.title + "\n" + it.preview
+                                }
+
+                                is QuoteReply -> {
+                                    ">" + it.source.originalMessage.contentToString().replace("\n", "\n> ") + "\n"
+                                }
+
+                                else -> {
+                                    it.contentToString()
+                                }
+                            }
+                        })
+
+                }
             } else {
-                "暂无内容"
+                // TODO 私聊
             }
+
+            historyText.toString()
         }
+
         return prompt.toString()
     }
 
@@ -501,7 +525,7 @@ object JChatGPT : KotlinPlugin(
         // 过会撤回加载消息
         if (receipt != null) {
             launch {
-                delay(3.seconds);
+                delay(3.seconds)
                 try {
                     receipt.recall()
                 } catch (e: Throwable) {
