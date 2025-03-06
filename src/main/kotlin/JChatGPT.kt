@@ -6,6 +6,7 @@ import com.aallam.openai.api.chat.ChatRole
 import com.aallam.openai.api.chat.ToolCall
 import com.aallam.openai.api.http.Timeout
 import com.aallam.openai.api.model.ModelId
+import com.aallam.openai.client.Chat
 import com.aallam.openai.client.OpenAI
 import com.aallam.openai.client.OpenAIHost
 import io.ktor.util.collections.*
@@ -18,10 +19,8 @@ import net.mamoe.mirai.console.permission.PermissionService
 import net.mamoe.mirai.console.permission.PermissionService.Companion.hasPermission
 import net.mamoe.mirai.console.plugin.jvm.JvmPluginDescription
 import net.mamoe.mirai.console.plugin.jvm.KotlinPlugin
-import net.mamoe.mirai.contact.Contact
+import net.mamoe.mirai.contact.*
 import net.mamoe.mirai.contact.MemberPermission.*
-import net.mamoe.mirai.contact.isOperator
-import net.mamoe.mirai.contact.nameCardOrNick
 import net.mamoe.mirai.event.GlobalEventChannel
 import net.mamoe.mirai.event.events.FriendMessageEvent
 import net.mamoe.mirai.event.events.GroupMessageEvent
@@ -30,12 +29,8 @@ import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import net.mamoe.mirai.message.sourceIds
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
-import net.mamoe.mirai.utils.MiraiExperimentalApi
 import net.mamoe.mirai.utils.info
-import top.jie65535.mirai.tools.EpicFreeGame
-import top.jie65535.mirai.tools.RunCode
-import top.jie65535.mirai.tools.WeatherService
-import top.jie65535.mirai.tools.WebSearch
+import top.jie65535.mirai.tools.*
 import xyz.cssxsh.mirai.hibernate.MiraiHibernateRecorder
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -43,6 +38,7 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.regex.Pattern
 import kotlin.collections.*
+import kotlin.math.max
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -50,13 +46,13 @@ object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.4.0",
+        version = "1.5.0",
     ) {
         author("jie65535")
 //        dependsOn("xyz.cssxsh.mirai.plugin.mirai-hibernate-plugin", true)
     }
 ) {
-    private var openAi: OpenAI? = null
+    private var llm: Chat? = null
 
     /**
      * 是否包含历史对话
@@ -94,11 +90,13 @@ object JChatGPT : KotlinPlugin(
 
     fun updateOpenAiToken(token: String) {
         val timeout = PluginConfig.timeout.milliseconds
-        openAi = OpenAI(
+        llm = OpenAI(
             token,
             host = OpenAIHost(baseUrl = PluginConfig.openAiApi),
-            timeout = Timeout(request = timeout, connect = timeout, socket = timeout)
+            timeout = Timeout(request = timeout, connect = timeout, socket = timeout),
+            // logging = LoggingConfig(LogLevel.All)
         )
+        reasoningAgent.llm = llm
     }
 
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
@@ -113,7 +111,7 @@ object JChatGPT : KotlinPlugin(
 
     private suspend fun onMessage(event: MessageEvent) {
         // 检查Token是否设置
-        if (openAi == null) return
+        if (llm == null) return
         // 发送者是否有权限
         if (!event.toCommandSender().hasPermission(chatPermission)) {
             if (event is GroupMessageEvent) {
@@ -186,19 +184,19 @@ object JChatGPT : KotlinPlugin(
             }
         }
 
-        replace("{sender}") {
-            if (event is GroupMessageEvent) {
-                event.sender.specialTitle
-                val permissionName = when (event.sender.permission) {
-                    MEMBER -> "普通群员"
-                    ADMINISTRATOR -> "管理员"
-                    OWNER -> "群主"
-                }
-                "\"${event.senderName}\" 身份：$permissionName"
-            } else {
-                "\"${event.senderName}\""
-            }
-        }
+//        replace("{sender}") {
+//            if (event is GroupMessageEvent) {
+//                event.sender.specialTitle
+//                val permissionName = when (event.sender.permission) {
+//                    MEMBER -> "普通群员"
+//                    ADMINISTRATOR -> "管理员"
+//                    OWNER -> "群主"
+//                }
+//                "\"${event.senderName}\" 身份：$permissionName"
+//            } else {
+//                "\"${event.senderName}\""
+//            }
+//        }
 
         replace("{history}") {
             if (!includeHistory) {
@@ -222,27 +220,7 @@ object JChatGPT : KotlinPlugin(
                         val recordSender = event.subject[record.fromId]
                         if (recordSender != null) {
                             // 群活跃等级
-                            historyText
-                                .append("【lv")
-                                .append(recordSender.active.temperature)
-                                .append(" ")
-                            // 群头衔
-                            if (recordSender.specialTitle.isNotEmpty()) {
-                                historyText.append(recordSender.specialTitle)
-                            } else {
-                                historyText.append(
-                                    when (recordSender.permission) {
-                                        OWNER -> "群主"
-                                        ADMINISTRATOR -> "管理员"
-                                        MEMBER -> recordSender.temperatureTitle
-                                    }
-                                )
-                            }
-                            // 群名片
-                            historyText
-                                .append("】 ")
-                                .append(recordSender.nameCardOrNick)
-                            // .append(" (").append(recordSender.id).append(")")
+                            historyText.append(getNameCard(recordSender))
                         } else {
                             // 未知群员
                             historyText.append("未知群员(").append(record.fromId).append(")")
@@ -284,7 +262,6 @@ object JChatGPT : KotlinPlugin(
         return prompt.toString()
     }
 
-    @OptIn(MiraiExperimentalApi::class)
     private suspend fun startChat(event: MessageEvent, context: List<ChatMessage>? = null) {
         val history = mutableListOf<ChatMessage>()
         if (!context.isNullOrEmpty()) {
@@ -298,7 +275,11 @@ object JChatGPT : KotlinPlugin(
         }
         val msg = event.message.plainText()
         if (msg.isNotEmpty()) {
-            history.add(ChatMessage(ChatRole.User, msg))
+            history.add(ChatMessage(ChatRole.User, if (event is GroupMessageEvent) {
+                "${getNameCard(event.sender)} 说：$msg"
+            } else {
+                msg
+            }))
         }
 
         try {
@@ -307,33 +288,41 @@ object JChatGPT : KotlinPlugin(
                 return
             }
 
-            var done: Boolean
-            var retry = 2
-            var hasTools = true
+            var done = true
+            // 至少重试两次
+            var retry = max(PluginConfig.retryMax, 2)
             do {
-                val reply = chatCompletion(history, hasTools)
-                history.add(reply)
-                done = true
+                try {
+                    val reply = chatCompletion(history, retry > 1)
+                    history.add(reply)
+                    done = true
 
-                for (toolCall in reply.toolCalls.orEmpty()) {
-                    require(toolCall is ToolCall.Function) { "Tool call is not a function" }
-                    val functionResponse = toolCall.execute(event)
-                    history.add(
-                        ChatMessage(
-                            role = ChatRole.Tool,
-                            toolCallId = toolCall.id,
-                            name = toolCall.function.name,
-                            content = functionResponse
+                    for (toolCall in reply.toolCalls.orEmpty()) {
+                        require(toolCall is ToolCall.Function) { "Tool call is not a function" }
+                        val functionResponse = toolCall.execute(event)
+                        history.add(
+                            ChatMessage(
+                                role = ChatRole.Tool,
+                                toolCallId = toolCall.id,
+                                name = toolCall.function.name,
+                                content = functionResponse
+                            )
                         )
-                    )
-                    done = false
-                    hasTools = false
+                        done = false
+                    }
+                } catch (e: Exception) {
+                    if (retry <= 1) {
+                        throw e
+                    } else {
+                        logger.warning("调用llm时发生异常，重试中", e)
+                        event.subject.sendMessage(event.message.quote() + "出错了...正在重试...")
+                    }
                 }
-            } while (!done && 0 < --retry)
+            } while (!done && 0 <-- retry)
 
             val content = history.last().content ?: "..."
             val replyMsg = event.subject.sendMessage(
-                if (content.length < 128) {
+                if (content.length < PluginConfig.messageMergeThreshold) {
                     event.message.quote() + toMessage(event.subject, content)
                 } else {
                     // 消息内容太长则转为转发消息避免刷屏
@@ -410,7 +399,7 @@ object JChatGPT : KotlinPlugin(
         "\\\\\\((.+?)\\\\\\)|" + // 匹配行内公式 \(...\)
                 "\\\\\\[(.+?)\\\\\\]|" + // 匹配独立公式 \[...\]
                 "\\$\\$([^$]+?)\\$\\$|" + // 匹配独立公式 $$...$$
-                "\\$(.+?)\\$|" + // 匹配行内公式 $...$
+                "\\$\\s(.+?)\\s\\$|" + // 匹配行内公式 $...$
                 "```latex\\s*([^`]+?)\\s*```" // 匹配 ```latex ... ```
         , Pattern.DOTALL
     )
@@ -459,6 +448,8 @@ object JChatGPT : KotlinPlugin(
         }
     }
 
+    private val reasoningAgent = ReasoningAgent()
+
     /**
      * 工具列表
      */
@@ -468,6 +459,9 @@ object JChatGPT : KotlinPlugin(
 
         // 运行代码
         RunCode(),
+
+        // 推理代理
+        reasoningAgent,
 
         // 天气服务
         WeatherService(),
@@ -484,7 +478,7 @@ object JChatGPT : KotlinPlugin(
         chatMessages: List<ChatMessage>,
         hasTools: Boolean = true
     ): ChatMessage {
-        val openAi = this.openAi ?: throw NullPointerException("OpenAI Token 未设置，无法开始")
+        val llm = this.llm ?: throw NullPointerException("OpenAI Token 未设置，无法开始")
         val availableTools = if (hasTools) {
             myTools.filter { it.isEnabled }.map { it.tool }
         } else null
@@ -496,10 +490,32 @@ object JChatGPT : KotlinPlugin(
         logger.info("API Requesting... Model=${PluginConfig.chatModel}"
 //                    " Tools=${availableTools?.joinToString(prefix = "[", postfix = "]")}"
         )
-        val response = openAi.chatCompletion(request)
+        val response = llm.chatCompletion(request)
         val message = response.choices.first().message
         logger.info("Response: $message ${response.usage}")
         return message
+    }
+
+    private fun getNameCard(member: Member): String {
+        val nameCard = StringBuilder()
+        // 群活跃等级
+        nameCard.append("【lv").append(member.active.temperature).append(" ")
+        // 群头衔
+        if (member.specialTitle.isNotEmpty()) {
+            nameCard.append(member.specialTitle)
+        } else {
+            nameCard.append(
+                when (member.permission) {
+                    OWNER -> "群主"
+                    ADMINISTRATOR -> "管理员"
+                    MEMBER -> member.temperatureTitle
+                }
+            )
+        }
+        // 群名片
+        nameCard.append("】 ").append(member.nameCardOrNick)
+        // .append(" (").append(recordSender.id).append(")")
+        return nameCard.toString()
     }
 
     private fun MessageChain.plainText() = this.filterIsInstance<PlainText>().joinToString().trim()
@@ -521,7 +537,7 @@ object JChatGPT : KotlinPlugin(
             logger.error("Failed to call ${function.name}", e)
             "工具调用失败，请尝试自行回答用户，或如实告知。"
         }
-        logger.info("Result=$result")
+        logger.info("Result=\"$result\"")
         // 过会撤回加载消息
         if (receipt != null) {
             launch {

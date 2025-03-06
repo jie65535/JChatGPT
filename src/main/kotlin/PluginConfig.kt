@@ -12,7 +12,10 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     var openAiToken: String by value("")
 
     @ValueDescription("Chat模型")
-    var chatModel: String by value("gpt-3.5-turbo-1106")
+    var chatModel: String by value("qwen-max")
+
+    @ValueDescription("推理模型")
+    var reasoningModel: String by value("qwq-plus")
 
     @ValueDescription("Chat默认提示")
     var prompt: String by value("")
@@ -43,4 +46,10 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("是否打印Prompt便于调试")
     val logPrompt by value(false)
+
+    @ValueDescription("达到需要合并转发消息的阈值")
+    val messageMergeThreshold by value(150)
+
+    @ValueDescription("最大重试次数，至少2次，最后一次请求不会带工具，非工具调用相当于正常回复")
+    val retryMax: Int by value(3)
 }
