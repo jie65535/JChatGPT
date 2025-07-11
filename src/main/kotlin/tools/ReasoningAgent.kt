@@ -5,8 +5,8 @@ import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.Tool
 import com.aallam.openai.api.core.Parameters
 import com.aallam.openai.api.model.ModelId
-import com.aallam.openai.client.Chat
 import kotlinx.serialization.json.*
+import top.jie65535.mirai.LargeLanguageModels
 import top.jie65535.mirai.PluginConfig
 
 class ReasoningAgent : BaseAgent(
@@ -18,26 +18,24 @@ class ReasoningAgent : BaseAgent(
             putJsonObject("properties") {
                 putJsonObject("prompt") {
                     put("type", "string")
-                    put("description", "用于调用推理模型的提示")
+                    put("description", "用于调用推理模型的提示词")
                 }
             }
             putJsonArray("required") {
-                add("question")
+                add("prompt")
             }
         },
     )
 ) {
-    var llm: Chat? = null
-
     override val loadingMessage: String
         get() = "深度思考中..."
 
     override val isEnabled: Boolean
-        get() = llm != null
+        get() = LargeLanguageModels.reasoning != null
 
     override suspend fun execute(args: JsonObject?): String {
         requireNotNull(args)
-        val llm = llm ?: return "未配置llm，无法进行推理。"
+        val llm = LargeLanguageModels.reasoning ?: return "未配置llm，无法进行推理。"
 
         val prompt = args.getValue("prompt").jsonPrimitive.content
         val answerContent = StringBuilder()

@@ -18,7 +18,7 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.setToken(token: String) {
         PluginConfig.openAiToken = token
         PluginConfig.save()
-        JChatGPT.updateOpenAiToken(token)
+        LargeLanguageModels.reload()
         sendMessage("OK")
     }
 
@@ -45,7 +45,7 @@ object PluginCommands : CompositeCommand(
     @SubCommand
     suspend fun CommandSender.reload() {
         PluginConfig.reload()
-        JChatGPT.updateOpenAiToken(PluginConfig.openAiToken)
+        LargeLanguageModels.reload()
         sendMessage("OK")
     }
 }

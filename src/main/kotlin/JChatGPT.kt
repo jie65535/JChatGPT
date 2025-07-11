@@ -4,14 +4,11 @@ import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.ChatRole
 import com.aallam.openai.api.chat.ToolCall
-import com.aallam.openai.api.http.Timeout
 import com.aallam.openai.api.model.ModelId
-import com.aallam.openai.client.Chat
-import com.aallam.openai.client.OpenAI
-import com.aallam.openai.client.OpenAIHost
 import io.ktor.util.collections.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import net.mamoe.mirai.console.command.CommandManager.INSTANCE.register
 import net.mamoe.mirai.console.command.CommandSender.Companion.toCommandSender
 import net.mamoe.mirai.console.permission.PermissionId
@@ -26,6 +23,7 @@ import net.mamoe.mirai.event.events.FriendMessageEvent
 import net.mamoe.mirai.event.events.GroupMessageEvent
 import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.message.data.*
+import net.mamoe.mirai.message.data.Image.Key.queryUrl
 import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.info
@@ -38,7 +36,6 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import kotlin.collections.*
 import kotlin.math.max
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 object JChatGPT : KotlinPlugin(
@@ -51,8 +48,6 @@ object JChatGPT : KotlinPlugin(
 //        dependsOn("xyz.cssxsh.mirai.plugin.mirai-hibernate-plugin", true)
     }
 ) {
-    private var llm: Chat? = null
-
     /**
      * 是否包含历史对话
      */
@@ -68,9 +63,7 @@ object JChatGPT : KotlinPlugin(
         PluginConfig.reload()
 
         // 设置Token
-        if (PluginConfig.openAiToken.isNotEmpty()) {
-            updateOpenAiToken(PluginConfig.openAiToken)
-        }
+        LargeLanguageModels.reload()
 
         // 注册插件命令
         PluginCommands.register()
@@ -93,17 +86,6 @@ object JChatGPT : KotlinPlugin(
         logger.info { "Plugin loaded" }
     }
 
-    fun updateOpenAiToken(token: String) {
-        val timeout = PluginConfig.timeout.milliseconds
-        llm = OpenAI(
-            token,
-            host = OpenAIHost(baseUrl = PluginConfig.openAiApi),
-            timeout = Timeout(request = timeout, connect = timeout, socket = timeout),
-            // logging = LoggingConfig(LogLevel.All)
-        )
-        reasoningAgent.llm = llm
-    }
-
     private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
         .withZone(ZoneOffset.systemDefault())
     private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy年MM月dd E HH:mm:ss")
@@ -112,7 +94,7 @@ object JChatGPT : KotlinPlugin(
 
     private suspend fun onMessage(event: MessageEvent) {
         // 检查Token是否设置
-        if (llm == null) return
+        if (LargeLanguageModels.chat == null) return
         // 发送者是否有权限
         if (!event.toCommandSender().hasPermission(chatPermission)) {
             if (event is GroupMessageEvent) {
@@ -244,11 +226,7 @@ object JChatGPT : KotlinPlugin(
                         it.getDisplay(event.subject)
                     }
 
-                    is ForwardMessage -> {
-                        it.title + "\n  " + it.preview
-                    }
-
-                    else -> it.content
+                    else -> singleMessageToText(it)
                 }
             })
     }
@@ -285,18 +263,36 @@ object JChatGPT : KotlinPlugin(
         val recordMessage = record.toMessageChain()
         recordMessage[QuoteReply.Key]?.let {
             historyText.append(" 引用\n > ")
-                .appendLine(it.source.originalMessage.content.replace("\n", "\n > "))
+                .appendLine(it.source.originalMessage
+                    .joinToString("", transform = ::singleMessageToText)
+                    .replace("\n", "\n > "))
         }
         // 消息内容
-        historyText.append(" 说：").appendLine(record.toMessageChain().joinToString("") {
-                when (it) {
-                    is ForwardMessage -> {
-                        it.title + "\n  " + it.preview
-                    }
+        historyText.append(" 说：").appendLine(
+            record.toMessageChain().joinToString("", transform = ::singleMessageToText))
+    }
 
-                    else -> it.content
+    private fun singleMessageToText(it: SingleMessage): String {
+        return when (it) {
+            is ForwardMessage -> {
+                it.title + "\n  " + it.preview
+            }
+
+            // 图片格式化
+            is Image -> {
+                try {
+                    val imageUrl = runBlocking {
+                        it.queryUrl()
+                    }
+                    "![图片]($imageUrl)"
+                } catch (e: Throwable) {
+                    logger.warning("图片地址获取失败", e)
+                    it.content
                 }
-            })
+            }
+
+            else -> it.content
+        }
     }
 
     // endregion - 历史消息相关 -
@@ -657,8 +653,6 @@ object JChatGPT : KotlinPlugin(
         }
     }
 
-    private val reasoningAgent = ReasoningAgent()
-
     /**
      * 工具列表
      */
@@ -682,7 +676,10 @@ object JChatGPT : KotlinPlugin(
         RunCode(),
 
         // 推理代理
-        reasoningAgent,
+        ReasoningAgent(),
+
+        // 视觉代理
+        VisualAgent(),
 
         // 天气服务
         WeatherService(),
@@ -713,7 +710,7 @@ object JChatGPT : KotlinPlugin(
         chatMessages: List<ChatMessage>,
         hasTools: Boolean = true
     ): ChatMessage {
-        val llm = this.llm ?: throw NullPointerException("OpenAI Token 未设置，无法开始")
+        val llm = LargeLanguageModels.chat ?: throw NullPointerException("OpenAI Token 未设置，无法开始")
         val availableTools = if (hasTools) {
             myTools.filter { it.isEnabled }.map { it.tool }
         } else null
@@ -733,17 +730,21 @@ object JChatGPT : KotlinPlugin(
         val nameCard = StringBuilder()
         // 群活跃等级
         nameCard.append("【lv").append(member.active.temperature).append(" ")
-        // 群头衔
-        if (member.specialTitle.isNotEmpty()) {
-            nameCard.append(member.specialTitle)
-        } else {
-            nameCard.append(
-                when (member.permission) {
-                    OWNER -> "群主"
-                    ADMINISTRATOR -> "管理员"
-                    MEMBER -> member.temperatureTitle
-                }
-            )
+        try {
+            // 群头衔
+            if (member.specialTitle.isNotEmpty()) {
+                nameCard.append(member.specialTitle)
+            } else {
+                nameCard.append(
+                    when (member.permission) {
+                        OWNER -> "群主"
+                        ADMINISTRATOR -> "管理员"
+                        MEMBER -> member.temperatureTitle
+                    }
+                )
+            }
+        } catch (e: Throwable) {
+            logger.warning("获取群头衔失败", e)
         }
         // 群名片
         nameCard.append("】 ").append(member.nameCardOrNick).append("(").append(member.id).append(")")
