@@ -7,6 +7,7 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.serialization.json.*
 import org.apache.commons.text.StringEscapeUtils
+import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.PluginConfig
 
 class WebSearch : BaseAgent(
@@ -20,33 +21,6 @@ class WebSearch : BaseAgent(
                 putJsonObject("q") {
                     put("type", "string")
                     put("description", "查询内容关键字")
-                }
-                putJsonObject("categories") {
-                    put("type", "array")
-                    putJsonObject("items") {
-                        put("type", "string")
-                        putJsonArray("enum") {
-                            add("general")
-                            add("images")
-                            add("videos")
-                            add("news")
-                            add("music")
-                            add("it")
-                            add("science")
-                            add("files")
-                            add("social_media")
-                        }
-                    }
-                    put("description", "可选择多项查询分类，通常情况下不传或用general即可。")
-                }
-                putJsonObject("time_range") {
-                    put("type", "string")
-                    putJsonArray("enum") {
-                        add("day")
-                        add("month")
-                        add("year")
-                    }
-                    put("description", "可选择获取最新消息，例如day表示只查询最近一天相关信息，以此类推。")
                 }
             }
             putJsonArray("required") {
@@ -67,25 +41,17 @@ class WebSearch : BaseAgent(
     override suspend fun execute(args: JsonObject?): String {
         requireNotNull(args)
         val q = args.getValue("q").jsonPrimitive.content
-        val categories = args["categories"]?.jsonArray
-        val timeRange = args["time_range"]?.jsonPrimitive?.contentOrNull
-        val response = httpClient.get(
-            buildString {
-                append(PluginConfig.searXngUrl)
-                append("?q=")
-                append(q.encodeURLParameter())
-                append("&format=json")
-                if (categories != null) {
-                    append("&")
-                    append(categories.joinToString { it.jsonPrimitive.content })
-                }
-                if (timeRange != null) {
-                    append("&")
-                    append(timeRange)
-                }
-            }
-        )
+        val url = buildString {
+            append(PluginConfig.searXngUrl)
+            append("?q=")
+            append(q.encodeURLParameter())
+            append("&format=json")
+        }
+
+        val response = httpClient.get(url)
+        JChatGPT.logger.info("Request: $url")
         val body = response.bodyAsText()
+        JChatGPT.logger.info("Response: $body")
         val responseJsonElement = Json.parseToJsonElement(body)
         val filteredResponse = buildJsonObject {
             val root = responseJsonElement.jsonObject

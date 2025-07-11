@@ -50,6 +50,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("达到需要合并转发消息的阈值")
     val messageMergeThreshold by value(150)
 
-    @ValueDescription("最大重试次数，至少2次，最后一次请求不会带工具，非工具调用相当于正常回复")
-    val retryMax: Int by value(3)
+    @ValueDescription("最大循环次数，至少2次")
+    val retryMax: Int by value(5)
+
+    @ValueDescription("关键字呼叫，支持正则表达式")
+    val callKeyword by value("[小筱][林淋月玥]")
+
+    @ValueDescription("Jina API Key")
+    val jinaApiKey by value("")
 }

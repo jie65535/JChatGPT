@@ -43,7 +43,7 @@ class ReasoningAgent : BaseAgent(
         val answerContent = StringBuilder()
         llm.chatCompletions(ChatCompletionRequest(
             model = ModelId(PluginConfig.reasoningModel),
-            messages = listOf(ChatMessage.Companion.User(prompt))
+            messages = listOf(ChatMessage.User(prompt))
         )).collect {
             if (it.choices.isNotEmpty()) {
                 val delta = it.choices[0].delta ?: return@collect

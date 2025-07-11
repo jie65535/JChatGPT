@@ -27,16 +27,15 @@ import net.mamoe.mirai.event.events.GroupMessageEvent
 import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.message.data.MessageSource.Key.quote
-import net.mamoe.mirai.message.sourceIds
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.info
 import top.jie65535.mirai.tools.*
 import xyz.cssxsh.mirai.hibernate.MiraiHibernateRecorder
+import xyz.cssxsh.mirai.hibernate.entry.MessageRecord
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
-import java.util.regex.Pattern
 import kotlin.collections.*
 import kotlin.math.max
 import kotlin.time.Duration.Companion.milliseconds
@@ -46,7 +45,7 @@ object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.5.0",
+        version = "1.7.0",
     ) {
         author("jie65535")
 //        dependsOn("xyz.cssxsh.mirai.plugin.mirai-hibernate-plugin", true)
@@ -60,6 +59,8 @@ object JChatGPT : KotlinPlugin(
     private var includeHistory: Boolean = false
 
     val chatPermission = PermissionId("JChatGPT", "Chat")
+
+    private var keyword: Regex? = null
 
     override fun onEnable() {
         // 注册聊天权限
@@ -80,6 +81,10 @@ object JChatGPT : KotlinPlugin(
             true
         } catch (_: Throwable) {
             false
+        }
+
+        if (PluginConfig.callKeyword.isNotEmpty()) {
+            keyword = Regex(PluginConfig.callKeyword)
         }
 
         GlobalEventChannel.parentScope(this)
@@ -103,10 +108,6 @@ object JChatGPT : KotlinPlugin(
         .withZone(ZoneOffset.systemDefault())
     private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy年MM月dd E HH:mm:ss")
 
-    //    private val userContext = ConcurrentMap<Long, MutableList<ChatMessage>>()
-    private const val REPLAY_QUEUE_MAX = 10
-    private val replyMap = ConcurrentMap<Int, MutableList<ChatMessage>>(REPLAY_QUEUE_MAX)
-    private val replyQueue = mutableListOf<Int>()
     private val requestMap = ConcurrentSet<Long>()
 
     private suspend fun onMessage(event: MessageEvent) {
@@ -132,34 +133,12 @@ object JChatGPT : KotlinPlugin(
             }
         }
 
-        // 是否@bot
-        val isAtBot = event.message.contains(At(event.bot))
-        // 是否包含引用消息
-        val quote = event.message[QuoteReply]
-        // 如果没有@bot或者引用消息则直接结束
-        if (!isAtBot && quote == null)
+        // 如果没有@bot或者触发关键字则直接结束
+        if (!event.message.contains(At(event.bot))
+            && keyword?.let { event.message.content.contains(it) } != true)
             return
 
-        // 如果有引用消息，则尝试从回复记录中找到对应消息
-        var context: List<ChatMessage>? = if (quote != null) {
-            replyMap[quote.source.ids[0]]
-        } else null
-
-        // 如果没有At机器人同时上下文是空的，直接忽略
-        if (!isAtBot && context == null) return
-
-
-        if (context == null) {
-            // 如果没有上下文但是引用了消息并且at了机器人，则用引用的消息内容作为上下文
-            if (quote != null) {
-                val msg = quote.source.originalMessage.plainText()
-                if (msg.isNotEmpty()) {
-                    context = listOf(ChatMessage(ChatRole.User, msg))
-                }
-            }
-        }
-
-        startChat(event, context)
+        startChat(event)
     }
 
     private fun getSystemPrompt(event: MessageEvent): String {
@@ -178,231 +157,450 @@ object JChatGPT : KotlinPlugin(
 
         replace("{subject}") {
             if (event is GroupMessageEvent) {
-                "\"${event.subject.name}\" 群聊中"
+                "\"${event.subject.name}\" 群聊中，你在本群的名片是：${getNameCard(event.subject.botAsMember)}"
             } else {
-                "私聊中"
+                "与 \"${event.senderName}\" 私聊中"
             }
         }
-
-//        replace("{sender}") {
-//            if (event is GroupMessageEvent) {
-//                event.sender.specialTitle
-//                val permissionName = when (event.sender.permission) {
-//                    MEMBER -> "普通群员"
-//                    ADMINISTRATOR -> "管理员"
-//                    OWNER -> "群主"
-//                }
-//                "\"${event.senderName}\" 身份：$permissionName"
-//            } else {
-//                "\"${event.senderName}\""
-//            }
-//        }
-
-        replace("{history}") {
-            if (!includeHistory) {
-                return@replace "暂无内容"
-            }
-
-            // 一段时间内的消息
-            val beforeTimestamp = now.minusMinutes(PluginConfig.historyWindowMin.toLong()).toEpochSecond().toInt()
-            val nowTimestamp = now.toEpochSecond().toInt()
-            // 最近这段时间的历史对话
-            val history = MiraiHibernateRecorder[event.subject, beforeTimestamp, nowTimestamp]
-                .take(PluginConfig.historyMessageLimit) // 只取最近的部分消息，避免上下文过长
-                .sortedBy { it.time } // 按时间排序
-            // 构造历史消息
-            val historyText = StringBuilder()
-            if (event is GroupMessageEvent) {
-                for (record in history) {
-                    if (event.bot.id == record.fromId) {
-                        historyText.append("你")
-                    } else {
-                        val recordSender = event.subject[record.fromId]
-                        if (recordSender != null) {
-                            // 群活跃等级
-                            historyText.append(getNameCard(recordSender))
-                        } else {
-                            // 未知群员
-                            historyText.append("未知群员(").append(record.fromId).append(")")
-                        }
-                    }
-                    historyText
-                        .append(" ")
-                        // 发言时间
-                        .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
-                        // 消息内容
-                        .append(" 说：").appendLine(record.toMessageChain().joinToString("") {
-                            when (it) {
-                                is At -> {
-                                    it.getDisplay(event.subject)
-                                }
-
-                                is ForwardMessage -> {
-                                    it.title + "\n" + it.preview
-                                }
-
-                                is QuoteReply -> {
-                                    ">" + it.source.originalMessage.contentToString().replace("\n", "\n> ") + "\n"
-                                }
-
-                                else -> {
-                                    it.contentToString()
-                                }
-                            }
-                        })
-
-                }
-            } else {
-                // TODO 私聊
-            }
-
-            historyText.toString()
-        }
-
         return prompt.toString()
     }
 
-    private suspend fun startChat(event: MessageEvent, context: List<ChatMessage>? = null) {
+    // region - 历史消息相关 -
+
+    /**
+     * 获取历史消息
+     * @param event 消息事件
+     * @return 如果未获取到则返回空字符串
+     */
+    private fun getHistory(event: MessageEvent): String {
+        if (!includeHistory) {
+            return event.message.content
+        }
+        val now = OffsetDateTime.now()
+        // 一段时间内的消息
+        val beforeTimestamp = now.minusMinutes(PluginConfig.historyWindowMin.toLong()).toEpochSecond().toInt()
+        return getAfterHistory(beforeTimestamp, event)
+    }
+
+    /**
+     * 获取指定时间后的历史消息
+     * @param time Epoch时间戳
+     * @param event 消息事件
+     * @return 如果未获取到则返回空字符串
+     */
+    private fun getAfterHistory(time: Int, event: MessageEvent): String {
+        if (!includeHistory) {
+            return ""
+        }
+        // 现在时间
+        val nowTimestamp = OffsetDateTime.now().toEpochSecond().toInt()
+        // 最近这段时间的历史对话
+        val history = MiraiHibernateRecorder[event.subject, time, nowTimestamp]
+            .take(PluginConfig.historyMessageLimit) // 只取最近的部分消息，避免上下文过长
+            .sortedBy { it.time } // 按时间排序
+        // 构造历史消息
+        val historyText = StringBuilder()
+        if (event is GroupMessageEvent) {
+            for (record in history) {
+                appendGroupMessageRecord(historyText, record, event)
+            }
+        } else {
+            for (record in history) {
+                appendMessageRecord(historyText, record, event)
+            }
+        }
+
+        return historyText.toString()
+    }
+
+    /**
+     * 添加群消息记录到历史上下文中
+     * @param historyText 历史消息构造器
+     * @param record 群消息记录
+     * @param event 群消息事件
+     */
+    fun appendGroupMessageRecord(
+        historyText: StringBuilder,
+        record: MessageRecord,
+        event: GroupMessageEvent
+    ) {
+        if (event.bot.id == record.fromId) {
+            historyText.append("**你** " + getNameCard(event.subject.botAsMember))
+        } else {
+            historyText.append(getNameCard(event.subject, record.fromId))
+        }
+        // 发言时间
+        historyText.append(' ')
+            .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
+        val recordMessage = record.toMessageChain()
+        recordMessage[QuoteReply.Key]?.let {
+            historyText.append(" 引用 ${getNameCard(event.subject, it.source.fromId)} 说的\n > ")
+                .appendLine(it.source.originalMessage.content.replace("\n", "\n > "))
+        }
+            // 消息内容
+        historyText.append(" 说：").appendLine(record.toMessageChain().joinToString("") {
+                when (it) {
+                    is At -> {
+                        it.getDisplay(event.subject)
+                    }
+
+                    is ForwardMessage -> {
+                        it.title + "\n  " + it.preview
+                    }
+
+                    else -> it.content
+                }
+            })
+    }
+
+    private fun getNameCard(group: Group, qq: Long): String {
+        val member = group[qq]
+        return if (member == null) {
+            "未知群员($qq)"
+        } else {
+            getNameCard(member)
+        }
+    }
+
+    /**
+     * 添加消息记录到历史上下文中
+     * @param historyText 历史消息构造器
+     * @param record 消息记录
+     * @param event 消息事件
+     */
+    fun appendMessageRecord(
+        historyText: StringBuilder,
+        record: MessageRecord,
+        event: MessageEvent
+    ) {
+        if (event.bot.id == record.fromId) {
+            historyText.append("**你** " + event.bot.nameCardOrNick)
+        } else {
+            historyText.append(event.senderName)
+        }
+        historyText
+            .append(" ")
+            // 发言时间
+            .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
+        val recordMessage = record.toMessageChain()
+        recordMessage[QuoteReply.Key]?.let {
+            historyText.append(" 引用\n > ")
+                .appendLine(it.source.originalMessage.content.replace("\n", "\n > "))
+        }
+        // 消息内容
+        historyText.append(" 说：").appendLine(record.toMessageChain().joinToString("") {
+                when (it) {
+                    is ForwardMessage -> {
+                        it.title + "\n  " + it.preview
+                    }
+
+                    else -> it.content
+                }
+            })
+    }
+
+    // endregion - 历史消息相关 -
+
+    private val thinkRegex = Regex("<think>[\\s\\S]*?</think>")
+
+    private suspend fun startChat(event: MessageEvent) {
+        if (!requestMap.add(event.sender.id)) {
+            event.subject.sendMessage("再等等...")
+            return
+        }
+
         val history = mutableListOf<ChatMessage>()
-        if (!context.isNullOrEmpty()) {
-            history.addAll(context)
-        } else if (PluginConfig.prompt.isNotEmpty()) {
+        if (PluginConfig.prompt.isNotEmpty()) {
             val prompt = getSystemPrompt(event)
             if (PluginConfig.logPrompt) {
                 logger.info("Prompt: $prompt")
             }
             history.add(ChatMessage(ChatRole.System, prompt))
         }
-        val msg = event.message.plainText()
-        if (msg.isNotEmpty()) {
-            history.add(ChatMessage(ChatRole.User, if (event is GroupMessageEvent) {
-                "${getNameCard(event.sender)} 说：$msg"
-            } else {
-                msg
-            }))
-        }
+        val historyText = getHistory(event)
+        logger.info("History: $historyText")
+        history.add(ChatMessage.User(historyText))
 
         try {
-            if (!requestMap.add(event.sender.id)) {
-                event.subject.sendMessage(event.message.quote() + "再等等...")
-                return
-            }
-
-            var done = true
-            // 至少重试两次
-            var retry = max(PluginConfig.retryMax, 2)
+            var done: Boolean
+            // 至少循环3次
+            var retry = max(PluginConfig.retryMax, 3)
             do {
                 try {
-                    val reply = chatCompletion(history, retry > 1)
-                    history.add(reply)
-                    done = true
+                    val startedAt = OffsetDateTime.now().toEpochSecond().toInt()
+                    val response = chatCompletion(history)
+                    // 移除思考内容
+                    val responseContent = response.content?.replace(thinkRegex, "")?.trim()
+                    history.add(ChatMessage.Assistant(
+                        content = responseContent,
+                        name = response.name,
+                        toolCalls = response.toolCalls
+                    ))
 
-                    for (toolCall in reply.toolCalls.orEmpty()) {
-                        require(toolCall is ToolCall.Function) { "Tool call is not a function" }
-                        val functionResponse = toolCall.execute(event)
-                        history.add(
-                            ChatMessage(
-                                role = ChatRole.Tool,
-                                toolCallId = toolCall.id,
-                                name = toolCall.function.name,
-                                content = functionResponse
-                            )
-                        )
+                    if (response.toolCalls.isNullOrEmpty()) {
+                        done = true
+                    } else {
                         done = false
+                        // 处理函数调用
+                        for (toolCall in response.toolCalls) {
+                            require(toolCall is ToolCall.Function) { "Tool call is not a function" }
+                            val functionResponse = toolCall.execute(event)
+                            history.add(
+                                ChatMessage(
+                                    role = ChatRole.Tool,
+                                    toolCallId = toolCall.id,
+                                    name = toolCall.function.name,
+                                    content = functionResponse
+                                )
+                            )
+                            if (toolCall.function.name == "endConversation") {
+                                done = true
+                            }
+                        }
+                    }
+
+                    if (!done) {
+                        history.add(ChatMessage.User(
+                            buildString {
+                                append("系统提示：本次运行还剩${retry-1}轮")
+
+//                                if (response.toolCalls.isNullOrEmpty()) {
+//                                    append("\n在上一轮对话中未检测到调用任何工具，请检查工具调用语法是否正确？")
+//                                    append("\n如果你确实不需要调用其它工具比如发送消息，请调用`endConversation`来结束对话。")
+//                                }
+
+                                val newMessages = getAfterHistory(startedAt, event)
+                                if (newMessages.isNotEmpty()) {
+                                    append("\n以下是上次运行至今的新消息\n\n$newMessages")
+                                }
+                            }
+                        ))
                     }
                 } catch (e: Exception) {
                     if (retry <= 1) {
                         throw e
                     } else {
+                        done = false
                         logger.warning("调用llm时发生异常，重试中", e)
                         event.subject.sendMessage(event.message.quote() + "出错了...正在重试...")
                     }
                 }
-            } while (!done && 0 <-- retry)
-
-            val content = history.last().content ?: "..."
-            val replyMsg = event.subject.sendMessage(
-                if (content.length < PluginConfig.messageMergeThreshold) {
-                    event.message.quote() + toMessage(event.subject, content)
-                } else {
-                    // 消息内容太长则转为转发消息避免刷屏
-                    event.buildForwardMessage {
-                        event.bot says toMessage(event.subject, content)
-                    }
-
-                    // 不再将历史对话记录加入其中
-//                    event.buildForwardMessage {
-//                        for (item in history) {
-//                            if (item.content.isNullOrEmpty())
-//                                continue
-//                            val temp = toMessage(event.subject, item.content!!)
-//                            when (item.role) {
-//                                Role.User -> event.sender says temp
-//                                Role.Assistant -> event.bot says temp
-//                            }
-//                        }
-//
-//                        // 检查并移除超出转发消息上限的消息
-//                        var isOverflow = false
-//                        var count = 0
-//                        for (i in size - 1 downTo 0) {
-//                            if (count > 4900) {
-//                                isOverflow = true
-//                                // 删除早期上下文消息
-//                                removeAt(i)
-//                            } else {
-//                                for (text in this[i].messageChain.filterIsInstance<PlainText>()) {
-//                                    count += text.content.length
-//                                }
-//                            }
-//                        }
-//                        if (count > 5000) {
-//                            removeAt(0)
-//                        }
-//                        if (isOverflow) {
-//                            // 如果溢出了，插入一条提示到最开始
-//                            add(
-//                                0, ForwardMessage.Node(
-//                                    senderId = event.bot.id,
-//                                    time = this[0].time - 1,
-//                                    senderName = event.bot.nameCardOrNick,
-//                                    message = PlainText("更早的消息已隐藏，避免超出转发消息上限。")
-//                                )
-//                            )
-//                        }
-//                    }
-                }
-            )
-
-            // 将回复的消息和对话历史保存到队列
-            if (replyMsg.sourceIds.isNotEmpty()) {
-                val msgId = replyMsg.sourceIds[0]
-                replyMap[msgId] = history
-                replyQueue.add(msgId)
-            }
-            // 移除超出队列的对话
-            if (replyQueue.size > REPLAY_QUEUE_MAX) {
-                replyMap.remove(replyQueue.removeAt(0))
-            }
+            } while (!done && 0 < --retry)
         } catch (ex: Throwable) {
             logger.warning(ex)
             event.subject.sendMessage(event.message.quote() + "很抱歉，发生异常，请稍后重试")
         } finally {
-            requestMap.remove(event.sender.id)
+            // 一段时间后才允许再次提问，防止高频对话
+            launch {
+                delay(5.seconds)
+                requestMap.remove(event.sender.id)
+            }
         }
-//        catch (ex: OpenAITimeoutException) {
-//            event.subject.sendMessage(event.message.quote() + "很抱歉，服务器没响应，请稍后重试")
-//        }
     }
 
-    private val laTeXPattern = Pattern.compile(
+//    private suspend fun startChat(event: MessageEvent) {
+//        if (!requestMap.add(event.sender.id)) {
+//            // CD中不再引用消息，否则可能导致和机器人无限循环对话
+//            event.subject.sendMessage("再等等...")
+//            return
+//        }
+//
+//        val history = mutableListOf<ChatMessage>()
+//        if (PluginConfig.prompt.isNotEmpty()) {
+//            val prompt = getSystemPrompt(event)
+//            if (PluginConfig.logPrompt) {
+//                logger.info("Prompt: $prompt")
+//            }
+//            history.add(ChatMessage(ChatRole.System, prompt))
+//        }
+//        val historyText = getHistory(event)
+//        logger.info("History: $historyText")
+//        history.add(ChatMessage.User(historyText))
+//
+//        try {
+//            var done = true
+//            // 至少重试两次
+//            var retry = max(PluginConfig.retryMax, 3)
+//            val finalToolCalls = mutableMapOf<Int, ToolCall.Function>()
+//            val contentBuilder = StringBuilder()
+//            do {
+//                finalToolCalls.clear()
+//                contentBuilder.setLength(0)
+//
+//                try {
+//                    var sent = false
+//                    // 流式处理响应
+//                    withTimeout(PluginConfig.timeout) {
+//                        chatCompletions(history, retry > 1).collect { chunk ->
+//                            val delta = chunk.choices[0].delta
+//                            if (delta == null) return@collect
+//
+//                            // 处理工具调用
+//                            val toolCalls = delta.toolCalls
+//                            if (toolCalls != null) {
+//                                for (toolCall in toolCalls) {
+//                                    val index = toolCall.index
+//                                    val toolId = toolCall.id
+//                                    val function = toolCall.function
+//                                    // 取出未完成的函数调用
+//                                    val incompleteCall = finalToolCalls[index]
+//                                    // 如果是新的函数调用，保存起来
+//                                    if (incompleteCall == null && toolId != null && function != null) {
+//                                        // 添加函数调用
+//                                        finalToolCalls[index] = ToolCall.Function(toolId, function)
+//                                    } else if (incompleteCall != null && function != null && function.argumentsOrNull != null) {
+//                                        // 更新参数内容
+//                                        finalToolCalls[index] = incompleteCall.copy(
+//                                            function = incompleteCall.function.copy(
+//                                                argumentsOrNull = incompleteCall.function.arguments + function.arguments
+//                                            )
+//                                        )
+//                                    }
+//                                }
+//                            }
+//
+//                            // 处理响应内容
+//                            val contentChunk = delta.content
+//                            // 避免连续发送多次，只拆分第一次进行发送
+//                            if (contentChunk != null && !sent) {
+//                                // 填入内容
+//                                contentBuilder.append(contentChunk)
+//                                sent = parseStreamingContent(contentBuilder, event)
+//                            }
+//                        }
+//                    }
+//
+//                    val lastBlock = contentBuilder.toString().trim()
+//                    if (lastBlock.isNotEmpty()) {
+//                        event.subject.sendMessage(
+//                            if (lastBlock.length > PluginConfig.messageMergeThreshold) {
+//                                event.buildForwardMessage {
+//                                    event.bot says toMessage(event.subject, lastBlock)
+//                                }
+//                            } else {
+//                                toMessage(event.subject, lastBlock)
+//                            }
+//                        )
+//                    }
+//
+//                    if (finalToolCalls.isNotEmpty()) {
+//                        val toolCalls = finalToolCalls.values.toList()
+//                        history.add(ChatMessage.Assistant(toolCalls = toolCalls))
+//                        for (toolCall in toolCalls) {
+//                            val functionResponse = toolCall.execute(event)
+//                            history.add(
+//                                ChatMessage(
+//                                    role = ChatRole.Tool,
+//                                    toolCallId = toolCall.id,
+//                                    name = toolCall.function.name,
+//                                    content = functionResponse
+//                                )
+//                            )
+//                            done = false
+//                        }
+//                    } else {
+//                        done = true
+//                    }
+//                } catch (e: Exception) {
+//                    if (retry <= 1) {
+//                        throw e
+//                    } else {
+//                        done = false
+//                        logger.warning("调用llm时发生异常，重试中", e)
+//                        event.subject.sendMessage(event.message.quote() + "出错了...正在重试...")
+//                    }
+//                }
+//            } while (!done && 0 < --retry)
+//        } catch (ex: Throwable) {
+//            logger.warning(ex)
+//            event.subject.sendMessage(event.message.quote() + "很抱歉，发生异常，请稍后重试")
+//        } finally {
+//            // 一段时间后才允许再次提问，防止高频对话
+//            launch {
+//                delay(10.seconds)
+//                requestMap.remove(event.sender.id)
+//            }
+//        }
+//    }
+
+//    /**
+//     * 解析流消息
+//     */
+//    private fun parseStreamingContent(contentBuilder: StringBuilder, event: MessageEvent): Boolean {
+//        // 处理推理内容
+//        val thinkBeginAt = contentBuilder.indexOf("<think")
+//        if (thinkBeginAt >= 0) {
+//            val thinkEndAt = contentBuilder.indexOf("</think>")
+//            if (thinkEndAt > 0) {
+//                // 去除思考内容
+//                contentBuilder.delete(thinkBeginAt, thinkEndAt + "</think>".length)
+//            }
+//            // 跳过本轮处理
+//            return false
+//        }
+//
+//        // 处理代码块
+//        val codeBlockBeginAt = contentBuilder.indexOf("```")
+//        if (codeBlockBeginAt >= 0) {
+//            val codeBlockEndAt = contentBuilder.indexOf("```", codeBlockBeginAt + 3)
+//            if (codeBlockEndAt >= 0) {
+//                val codeBlockContentBegin = contentBuilder.indexOf("\n", codeBlockBeginAt + 3)
+//                if (codeBlockContentBegin in codeBlockBeginAt..codeBlockEndAt) {
+//                    val codeBlockContent = contentBuilder.substring(codeBlockContentBegin, codeBlockEndAt).trim()
+//                    contentBuilder.delete(codeBlockBeginAt, codeBlockEndAt + 3)
+//                    launch {
+//                        // 发送代码块内容
+//                        event.subject.sendMessage(
+//                            if (codeBlockContent.length < PluginConfig.messageMergeThreshold) {
+//                                toMessage(event.subject, codeBlockContent)
+//                            } else {
+//                                // 消息内容太长则转为转发消息避免刷屏
+//                                event.buildForwardMessage {
+//                                    event.bot says toMessage(event.subject, codeBlockContent)
+//                                }
+//                            }
+//                        )
+//                    }
+//                }
+//            }
+//            // 跳过本轮处理
+//            return true
+//        }
+//
+//        // 徒手trimStart
+//        var contentBeginAt = 0
+//        while (contentBeginAt < contentBuilder.length) {
+//            if (contentBuilder[contentBeginAt].isWhitespace()) {
+//                contentBeginAt++
+//            } else {
+//                break
+//            }
+//        }
+//
+//        // 对空行进行分割输出
+//        val emptyLineAt = contentBuilder.indexOf("\n\n", contentBeginAt)
+//        if (emptyLineAt > 0) {
+//            val lineContent = contentBuilder.substring(contentBeginAt, emptyLineAt)
+//            contentBuilder.delete(0, emptyLineAt + 2)
+//            launch {
+//                // 发送消息内容
+//                event.subject.sendMessage(toMessage(event.subject, lineContent))
+//            }
+//            return true
+//        }
+//        return false
+//    }
+
+
+    private val regexAtQq = Regex("@(\\d+)")
+
+    private val regexLaTeX = Regex(
         "\\\\\\((.+?)\\\\\\)|" + // 匹配行内公式 \(...\)
                 "\\\\\\[(.+?)\\\\\\]|" + // 匹配独立公式 \[...\]
-                "\\$\\$([^$]+?)\\$\\$|" + // 匹配独立公式 $$...$$
-                "\\$\\s(.+?)\\s\\$|" + // 匹配行内公式 $...$
-                "```latex\\s*([^`]+?)\\s*```" // 匹配 ```latex ... ```
-        , Pattern.DOTALL
+                "\\$\\s(.+?)\\s\\$|" // 匹配行内公式 $...$
     )
+
+    private data class MessageChunk(val range: IntRange, val content: Message)
 
     /**
      * 将聊天内容转为聊天消息，如果聊天中包含LaTeX表达式，将会转为图片拼接到消息中。
@@ -411,40 +609,51 @@ object JChatGPT : KotlinPlugin(
      * @param content 文本内容
      * @return 构造的消息
      */
-    private suspend fun toMessage(contact: Contact, content: String): Message {
+    suspend fun toMessage(contact: Contact, content: String): Message {
         return if (content.isEmpty()) {
             PlainText("...")
         } else if (content.length < 3) {
             PlainText(content)
-        } else buildMessageChain {
-            // 匹配LaTeX表达式
-            val matcher = laTeXPattern.matcher(content)
-            var index = 0
-            while (matcher.find()) {
-                for (i in 1..matcher.groupCount()) {
-                    if (matcher.group(i) == null) {
-                        continue
-                    }
+        } else {
+            val t = mutableListOf<MessageChunk>()
+            regexAtQq.findAll(content).forEach {
+                val qq = it.groups[1]?.value?.toLongOrNull()
+                if (qq != null && contact is Group) {
+                    contact[qq]?.let { member -> t.add(MessageChunk(it.range, At(member))) }
+                }
+            }
+
+            regexLaTeX.findAll(content).forEach {
+                it.groups.forEach { group ->
+                    if (group == null || group.value.isEmpty()) return@forEach
                     try {
                         // 将所有匹配的LaTeX公式转为图片拼接到消息中
-                        val formula = matcher.group(i)
+                        val formula = group.value
                         val imageByteArray = LaTeXConverter.convertToImage(formula, "png")
                         val resource = imageByteArray.toExternalResource("png")
                         val image = contact.uploadImage(resource)
 
-                        // 拼接公式前的文本
-                        append(content, index, matcher.start())
-                        // 插入图片
-                        append(image)
-                        // 移动索引
-                        index = matcher.end()
+                        t.add(MessageChunk(group.range, image))
                     } catch (ex: Throwable) {
                         logger.warning("处理LaTeX表达式时异常", ex)
                     }
                 }
             }
-            // 拼接后续消息
-            append(content, index, content.length)
+
+            buildMessageChain {
+                var index = 0
+                for ((range, msg) in t.sortedBy { it.range.start }) {
+                    if (index < range.start) {
+                        append(content, index, range.start)
+                    }
+                    append(msg)
+                    index = range.endInclusive + 1
+                }
+                // 拼接后续消息
+                if (index < content.length) {
+                    append(content, index, content.length)
+                }
+            }
         }
     }
 
@@ -454,8 +663,20 @@ object JChatGPT : KotlinPlugin(
      * 工具列表
      */
     private val myTools = listOf(
+        // 发送单条消息
+        SendSingleMessageAgent(),
+
+        // 发送组合消息
+        SendCompositeMessage(),
+
+        // 继续循环
+        StopLoopAgent(),
+
         // 网页搜索
         WebSearch(),
+
+        // 访问网页
+        VisitWeb(),
 
         // 运行代码
         RunCode(),
@@ -466,13 +687,27 @@ object JChatGPT : KotlinPlugin(
         // 天气服务
         WeatherService(),
 
-        // IP所在地查询 暂时取消，几乎不会用到
-        // IpAddressQuery(),
-
         // Epic 免费游戏
         EpicFreeGame(),
     )
 
+
+//    private fun chatCompletions(
+//        chatMessages: List<ChatMessage>,
+//        hasTools: Boolean = true
+//    ): Flow<ChatCompletionChunk> {
+//        val llm = this.llm ?: throw NullPointerException("OpenAI Token 未设置，无法开始")
+//        val availableTools = if (hasTools) {
+//            myTools.filter { it.isEnabled }.map { it.tool }
+//        } else null
+//        val request = ChatCompletionRequest(
+//            model = ModelId(PluginConfig.chatModel),
+//            messages = chatMessages,
+//            tools = availableTools,
+//        )
+//        logger.info("API Requesting... Model=${PluginConfig.chatModel}")
+//        return llm.chatCompletions(request)
+//    }
 
     private suspend fun chatCompletion(
         chatMessages: List<ChatMessage>,
@@ -487,9 +722,7 @@ object JChatGPT : KotlinPlugin(
             messages = chatMessages,
             tools = availableTools,
         )
-        logger.info("API Requesting... Model=${PluginConfig.chatModel}"
-//                    " Tools=${availableTools?.joinToString(prefix = "[", postfix = "]")}"
-        )
+        logger.info("API Requesting... Model=${PluginConfig.chatModel}")
         val response = llm.chatCompletion(request)
         val message = response.choices.first().message
         logger.info("Response: $message ${response.usage}")
@@ -513,26 +746,24 @@ object JChatGPT : KotlinPlugin(
             )
         }
         // 群名片
-        nameCard.append("】 ").append(member.nameCardOrNick)
-        // .append(" (").append(recordSender.id).append(")")
+        nameCard.append("】 ").append(member.nameCardOrNick).append("(").append(member.id).append(")")
         return nameCard.toString()
     }
 
-    private fun MessageChain.plainText() = this.filterIsInstance<PlainText>().joinToString().trim()
 
     private suspend fun ToolCall.Function.execute(event: MessageEvent): String {
         val agent = myTools.find { it.tool.function.name == function.name }
             ?: return "Function ${function.name} not found"
         // 提示正在执行函数
         val receipt = if (agent.loadingMessage.isNotEmpty()) {
-            event.subject.sendMessage(event.message.quote() + agent.loadingMessage)
+            event.subject.sendMessage(agent.loadingMessage)
         } else null
         // 提取参数
         val args = function.argumentsAsJsonOrNull()
         logger.info("Calling ${function.name}(${args})")
         // 执行函数
         val result = try {
-            agent.execute(args)
+            agent.execute(args, event)
         } catch (e: Throwable) {
             logger.error("Failed to call ${function.name}", e)
             "工具调用失败，请尝试自行回答用户，或如实告知。"
@@ -545,9 +776,11 @@ object JChatGPT : KotlinPlugin(
                 try {
                     receipt.recall()
                 } catch (e: Throwable) {
-                    logger.error("消息撤回失败，调试信息：" +
-                            "source.internalIds=${receipt.source.internalIds.joinToString()} " +
-                            "source.ids= ${receipt.source.ids.joinToString()}", e)
+                    logger.error(
+                        "消息撤回失败，调试信息：" +
+                                "source.internalIds=${receipt.source.internalIds.joinToString()} " +
+                                "source.ids= ${receipt.source.ids.joinToString()}", e
+                    )
                 }
             }
         }

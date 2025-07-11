@@ -23,7 +23,7 @@ object LaTeXConverter {
         g2.color = Color.white
         g2.fillRect(0, 0, icon.iconWidth, icon.iconHeight)
         val jl = JLabel()
-        jl.setForeground(Color(0, 0, 0))
+        jl.setForeground(Color.black)
         icon.paintIcon(jl, g2, 0, 0)
         val stream = ByteArrayOutputStream()
         ImageIO.write(image, format, stream)
