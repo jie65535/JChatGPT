@@ -663,7 +663,7 @@ object JChatGPT : KotlinPlugin(
         // 发送组合消息
         SendCompositeMessage(),
 
-        // 继续循环
+        // 结束循环
         StopLoopAgent(),
 
         // 网页搜索

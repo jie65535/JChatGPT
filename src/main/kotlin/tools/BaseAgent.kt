@@ -3,6 +3,7 @@ package top.jie65535.mirai.tools
 import com.aallam.openai.api.chat.Tool
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
+import io.ktor.client.plugins.HttpTimeout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -26,7 +27,13 @@ abstract class BaseAgent(
      * HTTP客户端
      */
     protected val httpClient by lazy {
-        HttpClient(OkHttp)
+        HttpClient(OkHttp) {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 60000
+                connectTimeoutMillis = 5000
+                socketTimeoutMillis = 15000
+            }
+        }
     }
 
     /**
