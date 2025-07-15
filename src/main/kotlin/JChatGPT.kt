@@ -61,6 +61,7 @@ object JChatGPT : KotlinPlugin(
         // 注册聊天权限
         PermissionService.INSTANCE.register(chatPermission, "JChatGPT Chat Permission")
         PluginConfig.reload()
+        PluginData.reload()
 
         // 设置Token
         LargeLanguageModels.reload()
@@ -144,6 +145,14 @@ object JChatGPT : KotlinPlugin(
                 "与 \"${event.senderName}\" 私聊中"
             }
         }
+
+        replace("{memory}") {
+            val memoryText = PluginData.contactMemory[event.subject.id]
+            if (memoryText.isNullOrEmpty()) {
+                "暂无相关记忆"
+            } else memoryText
+        }
+
         return prompt.toString()
     }
 
@@ -662,6 +671,9 @@ object JChatGPT : KotlinPlugin(
 
         // 发送组合消息
         SendCompositeMessage(),
+
+        // 记忆代理
+        MemoryAgent(),
 
         // 结束循环
         StopLoopAgent(),
