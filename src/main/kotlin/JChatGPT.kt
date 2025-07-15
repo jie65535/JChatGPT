@@ -309,8 +309,8 @@ object JChatGPT : KotlinPlugin(
     private val thinkRegex = Regex("<think>[\\s\\S]*?</think>")
 
     private suspend fun startChat(event: MessageEvent) {
-        if (!requestMap.add(event.sender.id)) {
-            event.subject.sendMessage("再等等...")
+        if (!requestMap.add(event.subject.id)) {
+            logger.warning("The current Contact is busy!")
             return
         }
 
@@ -397,8 +397,8 @@ object JChatGPT : KotlinPlugin(
         } finally {
             // 一段时间后才允许再次提问，防止高频对话
             launch {
-                delay(5.seconds)
-                requestMap.remove(event.sender.id)
+                delay(3.seconds)
+                requestMap.remove(event.subject.id)
             }
         }
     }
