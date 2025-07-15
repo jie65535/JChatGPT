@@ -728,6 +728,7 @@ object JChatGPT : KotlinPlugin(
         } else null
         val request = ChatCompletionRequest(
             model = ModelId(PluginConfig.chatModel),
+            temperature = 1.3,
             messages = chatMessages,
             tools = availableTools,
         )
