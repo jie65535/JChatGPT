@@ -314,19 +314,20 @@ object JChatGPT : KotlinPlugin(
             return
         }
 
-        val history = mutableListOf<ChatMessage>()
-        if (PluginConfig.prompt.isNotEmpty()) {
-            val prompt = getSystemPrompt(event)
-            if (PluginConfig.logPrompt) {
-                logger.info("Prompt: $prompt")
-            }
-            history.add(ChatMessage(ChatRole.System, prompt))
-        }
-        val historyText = getHistory(event)
-        logger.info("History: $historyText")
-        history.add(ChatMessage.User(historyText))
-
         try {
+            val history = mutableListOf<ChatMessage>()
+            if (PluginConfig.prompt.isNotEmpty()) {
+                val prompt = getSystemPrompt(event)
+                if (PluginConfig.logPrompt) {
+                    logger.info("Prompt: $prompt")
+                }
+                history.add(ChatMessage(ChatRole.System, prompt))
+            }
+            val historyText = getHistory(event)
+            logger.info("History: $historyText")
+            history.add(ChatMessage.User(historyText))
+
+
             var done: Boolean
             // 至少循环3次
             var retry = max(PluginConfig.retryMax, 3)
@@ -387,13 +388,13 @@ object JChatGPT : KotlinPlugin(
                     } else {
                         done = false
                         logger.warning("调用llm时发生异常，重试中", e)
-                        event.subject.sendMessage(event.message.quote() + "出错了...正在重试...")
+                        event.subject.sendMessage("出错了...正在重试...")
                     }
                 }
             } while (!done && 0 < --retry)
         } catch (ex: Throwable) {
             logger.warning(ex)
-            event.subject.sendMessage(event.message.quote() + "很抱歉，发生异常，请稍后重试")
+            event.subject.sendMessage("很抱歉，发生异常，请稍后重试")
         } finally {
             // 一段时间后才允许再次提问，防止高频对话
             launch {
@@ -728,7 +729,7 @@ object JChatGPT : KotlinPlugin(
         } else null
         val request = ChatCompletionRequest(
             model = ModelId(PluginConfig.chatModel),
-            temperature = 1.3,
+            temperature = PluginConfig.chatTemperature,
             messages = chatMessages,
             tools = availableTools,
         )

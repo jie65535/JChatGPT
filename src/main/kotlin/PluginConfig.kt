@@ -14,6 +14,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("Chat模型")
     var chatModel: String by value("qwen-max")
 
+    @ValueDescription("Chat模型温度，默认为null")
+    var chatTemperature: Double? by value(null)
+
     @ValueDescription("推理模型API")
     var reasoningModelApi: String by value("https://dashscope.aliyuncs.com/compatible-mode/v1/")
 
