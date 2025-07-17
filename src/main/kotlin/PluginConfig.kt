@@ -50,6 +50,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("好友是否自动拥有对话权限，默认是")
     val friendHasChatPermission: Boolean by value(true)
 
+    @ValueDescription("机器人是否可以禁言别人，默认禁止")
+    val canMute: Boolean by value(false)
+
     @ValueDescription("群荣誉等级权限门槛，达到这个等级相当于自动拥有对话权限。")
     val temperaturePermission: Int by value(50)
 

@@ -699,6 +699,9 @@ object JChatGPT : KotlinPlugin(
 
         // Epic 免费游戏
         EpicFreeGame(),
+
+        // 群管代理
+        GroupManageAgent(),
     )
 
 
