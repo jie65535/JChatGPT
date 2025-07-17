@@ -15,7 +15,7 @@ import top.jie65535.mirai.PluginData
 class MemoryAgent : BaseAgent(
     tool = Tool.function(
         name = "remember",
-        description = "更新当前记忆块。新增记忆时请带上原记忆，否则会被覆盖！",
+        description = "用于更新当前记忆块，可以用于记住网友的特征和事实等。新增记忆时请带上原记忆，否则会被覆盖！",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
