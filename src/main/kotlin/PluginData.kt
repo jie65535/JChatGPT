@@ -15,9 +15,9 @@ object PluginData : AutoSavePluginData("data") {
     fun appendContactMemory(contactId: Long, newMemory: String) {
         val memory = contactMemory[contactId]
         if (memory.isNullOrEmpty()) {
-            contactMemory[contactId] = "* $newMemory"
+            contactMemory[contactId] = newMemory
         } else {
-            contactMemory[contactId] = "$memory\n* $newMemory"
+            contactMemory[contactId] = "$memory\n$newMemory"
         }
     }
 
@@ -27,7 +27,7 @@ object PluginData : AutoSavePluginData("data") {
     fun replaceContactMemory(contactId: Long, oldMemory: String, newMemory: String) {
         val memory = contactMemory[contactId]
         if (memory.isNullOrEmpty()) {
-            contactMemory[contactId] = "* $newMemory"
+            contactMemory[contactId] = newMemory
         } else {
             contactMemory[contactId] = memory.replace(oldMemory, newMemory)
         }
