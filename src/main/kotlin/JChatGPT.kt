@@ -548,7 +548,10 @@ object JChatGPT : KotlinPlugin(
         SendCompositeMessage(),
 
         // 记忆代理
-        MemoryAgent(),
+        MemoryAppend(),
+
+        // 记忆修改
+        MemoryReplace(),
 
         // 结束循环
         StopLoopAgent(),

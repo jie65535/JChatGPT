@@ -12,16 +12,16 @@ import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.PluginData
 
-class MemoryAgent : BaseAgent(
+class MemoryAppend : BaseAgent(
     tool = Tool.function(
-        name = "remember",
-        description = "用于更新当前记忆块，可以用于记住网友的特征和事实等。新增记忆时请带上原记忆，否则会被覆盖！",
+        name = "memoryAppend",
+        description = "新增记忆项",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
                 putJsonObject("memory") {
                     put("type", "string")
-                    put("description", "新记忆内容，无序列表文本块。")
+                    put("description", "记忆项")
                 }
             }
             putJsonArray("required") {
@@ -34,9 +34,8 @@ class MemoryAgent : BaseAgent(
         requireNotNull(args)
         val contactId = event.subject.id
         val memoryText = args.getValue("memory").jsonPrimitive.content
-        JChatGPT.logger.info("Remember ($contactId): $memoryText")
-        PluginData.contactMemory[contactId] = memoryText
-
+        JChatGPT.logger.info("Remember ($contactId): \"$memoryText\"")
+        PluginData.appendContactMemory(contactId, memoryText)
         return "OK"
     }
 }
