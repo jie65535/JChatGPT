@@ -465,7 +465,7 @@ object JChatGPT : KotlinPlugin(
         } finally {
             // 一段时间后才允许再次提问，防止高频对话
             launch {
-                delay(3.seconds)
+                delay(1.seconds)
                 requestMap.remove(event.subject.id)
             }
         }
