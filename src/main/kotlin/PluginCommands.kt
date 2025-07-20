@@ -45,6 +45,7 @@ object PluginCommands : CompositeCommand(
     @SubCommand
     suspend fun CommandSender.reload() {
         PluginConfig.reload()
+        PluginData.reload()
         LargeLanguageModels.reload()
         sendMessage("OK")
     }
