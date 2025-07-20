@@ -29,7 +29,6 @@ import net.mamoe.mirai.event.events.GroupMessageEvent
 import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.message.data.Image.Key.queryUrl
-import net.mamoe.mirai.message.data.MessageSource.Key.quote
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.info
 import top.jie65535.mirai.tools.*
@@ -480,6 +479,8 @@ object JChatGPT : KotlinPlugin(
                 """\$(.+?)\$"""     // 匹配行内公式 $...$
     )
 
+    private val regexImage = Regex("""!\[(.*?)]\(([^\s"']+).*?\)""")
+
     private data class MessageChunk(val range: IntRange, val content: Message)
 
     /**
@@ -496,6 +497,7 @@ object JChatGPT : KotlinPlugin(
             PlainText(content)
         } else {
             val t = mutableListOf<MessageChunk>()
+            // @某人
             regexAtQq.findAll(content).forEach {
                 val qq = it.groups[1]?.value?.toLongOrNull()
                 if (qq != null && contact is Group) {
@@ -503,6 +505,16 @@ object JChatGPT : KotlinPlugin(
                 }
             }
 
+            // 图片
+            regexImage.findAll(content).forEach {
+                // val placeholder = it.groupValues[1]
+                val url = it.groupValues[2]
+                t.add(MessageChunk(
+                    it.range,
+                    Image(url)))
+            }
+
+            // LeTeX渲染
             regexLaTeX.findAll(content).forEach {
                 it.groups.forEach { group ->
                     if (group == null || group.value.isEmpty()) return@forEach
@@ -520,6 +532,7 @@ object JChatGPT : KotlinPlugin(
                 }
             }
 
+            // 构造消息链
             buildMessageChain {
                 var index = 0
                 for ((range, msg) in t.sortedBy { it.range.start }) {
