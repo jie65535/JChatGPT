@@ -11,7 +11,8 @@ import top.jie65535.mirai.PluginConfig
 class RunCode : BaseAgent(
     tool = Tool.function(
         name = "runCode",
-        description = "执行代码，请尽量避免需要运行时输入或可能导致死循环的代码！",
+        description = "运行目标代码，请尽量避免需要运行时输入或可能导致死循环的代码！" +
+                "注意，这些代码对用户不可见，如果用户要求展示代码，你应该直接发送相关代码而不是执行。",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
