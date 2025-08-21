@@ -18,8 +18,8 @@ import top.jie65535.mirai.PluginConfig
 
 class VisualAgent : BaseAgent(
     tool = Tool.function(
-        name = "visualAgent",
-        description = "可通过调用视觉模型识别图片。",
+        name = "imageRecognition",
+        description = "可通过调用视觉模型来识别图片内容。备注：该方法成本较高，非必要尽量不要调用。",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
