@@ -29,9 +29,9 @@ abstract class BaseAgent(
     protected val httpClient by lazy {
         HttpClient(OkHttp) {
             install(HttpTimeout) {
-                requestTimeoutMillis = 60000
-                connectTimeoutMillis = 5000
-                socketTimeoutMillis = 15000
+                requestTimeoutMillis = 120_000
+                connectTimeoutMillis = 30_000
+                socketTimeoutMillis = 120_000
             }
         }
     }
