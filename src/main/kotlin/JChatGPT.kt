@@ -344,8 +344,7 @@ object JChatGPT : KotlinPlugin(
                     val toolCallTasks = mutableListOf<Deferred<ChatMessage>>()
                     // 处理聊天流式响应
                     responseFlow.collect { chunk ->
-                        val delta = chunk.choices[0].delta
-                        if (delta == null) return@collect
+                        val delta = chunk.choices[0].delta ?: return@collect
 
                         // 处理内容更新
                         if (delta.content != null) {
@@ -408,6 +407,7 @@ object JChatGPT : KotlinPlugin(
 
                     // 移除思考内容
                     val responseContent = responseMessageBuilder?.replace(thinkRegex, "")?.trim()
+                    logger.info("LLM Response: $responseContent")
                     // 记录AI回答
                     history.add(ChatMessage.Assistant(
                         content = responseContent,
@@ -440,11 +440,14 @@ object JChatGPT : KotlinPlugin(
                     if (!done) {
                         history.add(ChatMessage.User(
                             buildString {
-                                append("系统提示：本次运行还剩${retry-1}轮")
+                                appendLine("系统提示：本次运行最多还剩${retry-1}轮。")
+                                appendLine("如果要多次发言，可以一次性调用多次发言工具。")
+                                appendLine("如果没有什么要做的，可以提前结束。")
+                                appendLine("当前时间：" + dateTimeFormatter.format(OffsetDateTime.now()))
 
                                 val newMessages = getAfterHistory(startedAt, event)
                                 if (newMessages.isNotEmpty()) {
-                                    append("\n以下是上次运行至今的新消息\n\n$newMessages")
+                                    append("以下是上次运行至今的新消息\n\n$newMessages")
                                 }
                             }
                         ))
@@ -535,12 +538,12 @@ object JChatGPT : KotlinPlugin(
             // 构造消息链
             buildMessageChain {
                 var index = 0
-                for ((range, msg) in t.sortedBy { it.range.start }) {
-                    if (index < range.start) {
-                        append(content, index, range.start)
+                for ((range, msg) in t.sortedBy { it.range.first }) {
+                    if (index < range.first) {
+                        append(content, index, range.first)
                     }
                     append(msg)
-                    index = range.endInclusive + 1
+                    index = range.last + 1
                 }
                 // 拼接后续消息
                 if (index < content.length) {
@@ -560,14 +563,14 @@ object JChatGPT : KotlinPlugin(
         // 发送组合消息
         SendCompositeMessage(),
 
+        // 结束循环
+        StopLoopAgent(),
+
         // 记忆代理
         MemoryAppend(),
 
         // 记忆修改
         MemoryReplace(),
-
-        // 结束循环
-        StopLoopAgent(),
 
         // 网页搜索
         WebSearch(),
@@ -584,11 +587,14 @@ object JChatGPT : KotlinPlugin(
         // 视觉代理
         VisualAgent(),
 
+        // 图像编辑模型
+        ImageEdit(),
+
         // 天气服务
         WeatherService(),
 
         // Epic 免费游戏
-        EpicFreeGame(),
+        // EpicFreeGame(),
 
         // 群管代理
         GroupManageAgent(),
@@ -666,15 +672,15 @@ object JChatGPT : KotlinPlugin(
         val receipt = if (agent.loadingMessage.isNotEmpty()) {
             event.subject.sendMessage(agent.loadingMessage)
         } else null
-        // 提取参数
-        val args = function.argumentsAsJsonOrNull()
-        logger.info("Calling ${function.name}(${args})")
         // 执行函数
         val result = try {
+            // 提取参数
+            val args = function.argumentsAsJsonOrNull()
+            logger.info("Calling ${function.name}(${args})")
             agent.execute(args, event)
         } catch (e: Throwable) {
             logger.error("Failed to call ${function.name}", e)
-            "工具调用失败，请尝试自行回答用户，或如实告知。"
+            "工具调用失败，请尝试自行回答用户，或如实告知。\n异常信息：${e.message}"
         }
         logger.info("Result=\"$result\"")
         // 过会撤回加载消息
