@@ -35,6 +35,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("视觉模型")
     var visualModel: String by value("qwen-vl-plus")
 
+    @ValueDescription("百炼平台API KEY")
+    val dashScopeApiKey: String by value("")
+
+    @ValueDescription("百炼平台图片编辑模型")
+    val imageEditModel: String by value("qwen-image-edit")
+
     @ValueDescription("Jina API Key")
     val jinaApiKey by value("")
 
