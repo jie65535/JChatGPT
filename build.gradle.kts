@@ -7,15 +7,22 @@ plugins {
 }
 
 group = "top.jie65535.mirai"
-version = "1.7.0"
+version = "1.8.0"
 
 mirai {
     jvmTarget = JavaVersion.VERSION_11
+    noTestCore = true
+    setupConsoleTestRuntime {
+        // 移除 mirai-core 依赖
+        classpath = classpath.filter {
+            !it.nameWithoutExtension.startsWith("mirai-core-jvm")
+        }
+    }
 }
 
 repositories {
-    mavenCentral()
     maven("https://maven.aliyun.com/repository/public")
+    mavenCentral()
 }
 
 val openaiClientVersion = "4.0.1"
@@ -23,6 +30,7 @@ val ktorVersion = "3.0.3"
 val jLatexMathVersion = "1.0.7"
 val commonTextVersion = "1.13.0"
 val hibernateVersion = "2.9.0"
+val overflowVersion = "1.0.7"
 
 dependencies {
     implementation("com.aallam.openai:openai-client:$openaiClientVersion")
@@ -32,4 +40,6 @@ dependencies {
 
     // 聊天记录插件
     compileOnly("xyz.cssxsh.mirai:mirai-hibernate-plugin:$hibernateVersion")
+
+    testConsoleRuntime("top.mrxiaom.mirai:overflow-core:$overflowVersion")
 }

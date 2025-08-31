@@ -34,7 +34,7 @@ class WeatherService : BaseAgent(
     )
 ) {
     override val loadingMessage: String
-        get() = "查询天气中..."
+        get() = "观天中..."
 
     override suspend fun execute(args: JsonObject?): String {
         requireNotNull(args)

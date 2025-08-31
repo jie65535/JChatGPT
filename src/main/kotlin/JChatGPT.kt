@@ -46,7 +46,7 @@ object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.7.0",
+        version = "1.8.0",
     ) {
         author("jie65535")
 //        dependsOn("xyz.cssxsh.mirai.plugin.mirai-hibernate-plugin", true)
@@ -57,8 +57,14 @@ object JChatGPT : KotlinPlugin(
      */
     private var includeHistory: Boolean = false
 
+    /**
+     * 聊天权限
+     */
     val chatPermission = PermissionId("JChatGPT", "Chat")
 
+    /**
+     * 唤醒关键字
+     */
     private var keyword: Regex? = null
 
     override fun onEnable() {
@@ -130,7 +136,7 @@ object JChatGPT : KotlinPlugin(
 
     private fun getSystemPrompt(event: MessageEvent): String {
         val now = OffsetDateTime.now()
-        val prompt = StringBuilder(PluginConfig.prompt)
+        val prompt = StringBuilder(LargeLanguageModels.systemPrompt)
         fun replace(target: String, replacement: () -> String) {
             val i = prompt.indexOf(target)
             if (i != -1) {
@@ -297,7 +303,7 @@ object JChatGPT : KotlinPlugin(
                     val imageUrl = runBlocking {
                         it.queryUrl()
                     }
-                    "![图片]($imageUrl)"
+                    "![${if (it.isEmoji) "表情包" else "图片"}]($imageUrl)"
                 } catch (e: Throwable) {
                     logger.warning("图片地址获取失败", e)
                     it.content
@@ -320,13 +326,13 @@ object JChatGPT : KotlinPlugin(
 
         try {
             val history = mutableListOf<ChatMessage>()
-            if (PluginConfig.prompt.isNotEmpty()) {
-                val prompt = getSystemPrompt(event)
-                if (PluginConfig.logPrompt) {
-                    logger.info("Prompt: $prompt")
-                }
-                history.add(ChatMessage(ChatRole.System, prompt))
+
+            val prompt = getSystemPrompt(event)
+            if (PluginConfig.logPrompt) {
+                logger.info("Prompt: $prompt")
             }
+            history.add(ChatMessage(ChatRole.System, prompt))
+
             val historyText = getHistory(event)
             logger.info("History: $historyText")
             history.add(ChatMessage.User(historyText))
@@ -563,6 +569,9 @@ object JChatGPT : KotlinPlugin(
         // 发送组合消息
         SendCompositeMessage(),
 
+        // 发送语音消息
+        SendVoiceMessage(),
+
         // 结束循环
         StopLoopAgent(),
 
@@ -669,7 +678,7 @@ object JChatGPT : KotlinPlugin(
         val agent = myTools.find { it.tool.function.name == function.name }
             ?: return "Function ${function.name} not found"
         // 提示正在执行函数
-        val receipt = if (agent.loadingMessage.isNotEmpty()) {
+        val receipt = if (PluginConfig.showToolCallingMessage && agent.loadingMessage.isNotEmpty()) {
             event.subject.sendMessage(agent.loadingMessage)
         } else null
         // 执行函数

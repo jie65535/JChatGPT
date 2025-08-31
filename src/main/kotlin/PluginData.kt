@@ -30,6 +30,7 @@ object PluginData : AutoSavePluginData("data") {
             contactMemory[contactId] = newMemory
         } else {
             contactMemory[contactId] = memory.replace(oldMemory, newMemory)
+                .replace("\n\n", "\n")
         }
     }
 }

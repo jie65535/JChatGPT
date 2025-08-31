@@ -41,6 +41,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("百炼平台图片编辑模型")
     val imageEditModel: String by value("qwen-image-edit")
 
+    @ValueDescription("百炼平台TTS模型")
+    val ttsModel: String by value("qwen-tts")
+
     @ValueDescription("Jina API Key")
     val jinaApiKey by value("")
 
@@ -65,8 +68,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("等待响应超时时间，单位毫秒，默认60秒")
     val timeout: Long by value(60000L)
 
+    @Deprecated("使用外部文件而不是在配置文件内保存提示词")
     @ValueDescription("系统提示词")
     var prompt: String by value("你是一个乐于助人的助手")
+
+    @ValueDescription("系统提示词文件路径，相对于插件配置目录")
+    val promptFile: String by value("SystemPrompt.md")
 
     @ValueDescription("创建Prompt时取最近多少分钟内的消息")
     val historyWindowMin: Int by value(10)
@@ -85,4 +92,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("关键字呼叫，支持正则表达式")
     val callKeyword by value("[小筱][林淋月玥]")
+
+    @ValueDescription("是否显示工具调用消息，默认是")
+    val showToolCallingMessage by value(true)
 }

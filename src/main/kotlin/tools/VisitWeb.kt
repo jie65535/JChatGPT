@@ -44,7 +44,7 @@ class VisitWeb : BaseAgent(
         get() = PluginConfig.jinaApiKey.isNotEmpty()
 
     override val loadingMessage: String
-        get() = "访问网页中..."
+        get() = "上网中..."
 
     override suspend fun execute(args: JsonObject?): String {
         requireNotNull(args)

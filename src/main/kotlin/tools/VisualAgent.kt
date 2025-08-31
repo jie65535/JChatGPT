@@ -40,7 +40,7 @@ class VisualAgent : BaseAgent(
     )
 ) {
     override val loadingMessage: String
-        get() = "图片识别中..."
+        get() = "识别中..."
 
     override val isEnabled: Boolean
         get() = LargeLanguageModels.visual != null

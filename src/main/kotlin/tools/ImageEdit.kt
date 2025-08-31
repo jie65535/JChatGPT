@@ -2,7 +2,6 @@ package top.jie65535.mirai.tools
 
 import com.aallam.openai.api.chat.Tool
 import com.aallam.openai.api.core.Parameters
-import io.ktor.client.call.body
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -38,11 +37,11 @@ class ImageEdit : BaseAgent(
                     put("type", "string")
                     put("description", "正向提示词，用来描述需要对图片进行修改的要求。")
                 }
-                putJsonObject("negative_prompt") {
-                    put("type", "string")
-                    put("description", "反向提示词，用来描述不希望在画面中看到的内容，可以对画面进行限制。" +
-                            "示例值：低分辨率、错误、最差质量、低质量、残缺、多余的手指、比例不良等。")
-                }
+//                putJsonObject("negative_prompt") {
+//                    put("type", "string")
+//                    put("description", "反向提示词，用来描述不希望在画面中看到的内容，可以对画面进行限制。" +
+//                            "示例值：低分辨率、错误、最差质量、低质量、残缺、多余的手指、比例不良等。")
+//                }
             }
             putJsonArray("required") {
                 add("image_url")
@@ -59,13 +58,13 @@ class ImageEdit : BaseAgent(
         get() = PluginConfig.dashScopeApiKey.isNotEmpty()
 
     override val loadingMessage: String
-        get() = "图片编辑中..."
+        get() = "改图中..."
 
     override suspend fun execute(args: JsonObject?): String {
         requireNotNull(args)
         val imageUrl = args.getValue("image_url").jsonPrimitive.content
         val prompt = args.getValue("prompt").jsonPrimitive.content
-        val negativePrompt = args["negative_prompt"]?.jsonPrimitive?.content
+//        val negativePrompt = args["negative_prompt"]?.jsonPrimitive?.content
         val response = httpClient.post(API_URL) {
             contentType(ContentType("application", "json"))
             header("Authorization", "Bearer " + PluginConfig.dashScopeApiKey)
@@ -86,11 +85,11 @@ class ImageEdit : BaseAgent(
                         }
                     }
                 }
-                if (negativePrompt != null) {
-                    putJsonObject("parameters") {
-                        put("negative_prompt", negativePrompt)
-                    }
-                }
+//                if (negativePrompt != null) {
+//                    putJsonObject("parameters") {
+//                        put("negative_prompt", negativePrompt)
+//                    }
+//                }
             }.toString())
         }
 
@@ -103,10 +102,10 @@ class ImageEdit : BaseAgent(
                 .getValue("message").jsonObject
                 .getValue("content").jsonArray[0].jsonObject
                 .getValue("image").jsonPrimitive.content
-            "图片已编辑完成，发送时请务必包含完整的url和查询参数，因为下载地址存在鉴权。图片地址：$url"
-        } catch (e: Exception) {
+            "图片已编辑完成，发送时请务必包含完整的url和查询参数，因为下载地址存在鉴权：![图片]($url)"
+        } catch (e: Throwable) {
             JChatGPT.logger.error("图像编辑结果解析异常", e)
-            responseObject.toString()
+            responseJson
         }
     }
 }

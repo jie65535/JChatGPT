@@ -88,7 +88,7 @@ class RunCode : BaseAgent(
         get() = PluginConfig.glotToken.isNotEmpty()
 
     override val loadingMessage: String
-        get() = "执行代码中..."
+        get() = "执行中..."
 
     override suspend fun execute(args: JsonObject?): String {
         requireNotNull(args)

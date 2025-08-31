@@ -28,7 +28,7 @@ class ReasoningAgent : BaseAgent(
     )
 ) {
     override val loadingMessage: String
-        get() = "深度思考中..."
+        get() = "思考中..."
 
     override val isEnabled: Boolean
         get() = LargeLanguageModels.reasoning != null
