@@ -126,9 +126,10 @@ object JChatGPT : KotlinPlugin(
             }
         }
 
-        // 如果没有@bot或者触发关键字则直接结束
+        // 如果没有 @bot 或者 触发关键字 或者 回复bot的消息 则直接结束
         if (!event.message.contains(At(event.bot))
-            && keyword?.let { event.message.content.contains(it) } != true)
+            && keyword?.let { event.message.content.contains(it) } != true
+            && event.message[QuoteReply]?.source?.fromId != event.bot.id)
             return
 
         startChat(event)
