@@ -200,15 +200,28 @@ object JChatGPT : KotlinPlugin(
         val history = MiraiHibernateRecorder[event.subject, time, nowTimestamp]
             .take(PluginConfig.historyMessageLimit) // 只取最近的部分消息，避免上下文过长
             .sortedBy { it.time } // 按时间排序
+            .toMutableList()
+
+        // 有一定概率最后一条消息没加入，这里检查然后补充一下
+        val msgIds = event.message.ids.joinToString(",")
+        if (!history.any { it.ids == msgIds }) {
+            history.add(MessageRecord.fromSuccess(event.message.source, event.message))
+        }
+
         // 构造历史消息
         val historyText = StringBuilder()
+        var lastId = 0L
         if (event is GroupMessageEvent) {
             for (record in history) {
-                appendGroupMessageRecord(historyText, record, event)
+                // 同一人发言不要反复出现这人的名字，减少上下文
+                appendGroupMessageRecord(historyText, record, event, lastId != record.fromId)
+                lastId = record.fromId
             }
         } else {
             for (record in history) {
-                appendMessageRecord(historyText, record, event)
+                // 同一人发言不要反复出现这人的名字，减少上下文
+                appendMessageRecord(historyText, record, event, lastId != record.fromId)
+                lastId = record.fromId
             }
         }
 
@@ -224,23 +237,33 @@ object JChatGPT : KotlinPlugin(
     fun appendGroupMessageRecord(
         historyText: StringBuilder,
         record: MessageRecord,
-        event: GroupMessageEvent
+        event: GroupMessageEvent,
+        showSender: Boolean,
     ) {
-        if (event.bot.id == record.fromId) {
-            historyText.append("**你** " + getNameCard(event.subject.botAsMember))
-        } else {
-            historyText.append(getNameCard(event.subject, record.fromId))
+        if (showSender) {
+            if (event.bot.id == record.fromId) {
+                historyText.append("**你** " + getNameCard(event.subject.botAsMember))
+            } else {
+                historyText.append(getNameCard(event.subject, record.fromId))
+            }
+            // 发言时间
+            historyText.append(' ')
+                .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
         }
-        // 发言时间
-        historyText.append(' ')
-            .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
+
+
         val recordMessage = record.toMessageChain()
         recordMessage[QuoteReply.Key]?.let {
             historyText.append(" 引用 ${getNameCard(event.subject, it.source.fromId)} 说的\n > ")
                 .appendLine(it.source.originalMessage.content.replace("\n", "\n > "))
         }
+
+        if (showSender) {
             // 消息内容
-        historyText.append(" 说：").appendLine(record.toMessageChain().joinToString("") {
+            historyText.append(" 说：")
+        }
+
+        historyText.appendLine(record.toMessageChain().joinToString("") {
                 when (it) {
                     is At -> {
                         it.getDisplay(event.subject)
@@ -269,17 +292,20 @@ object JChatGPT : KotlinPlugin(
     fun appendMessageRecord(
         historyText: StringBuilder,
         record: MessageRecord,
-        event: MessageEvent
+        event: MessageEvent,
+        showSender: Boolean
     ) {
-        if (event.bot.id == record.fromId) {
-            historyText.append("**你** " + event.bot.nameCardOrNick)
-        } else {
-            historyText.append(event.senderName)
+        if (showSender) {
+            if (event.bot.id == record.fromId) {
+                historyText.append("**你** " + event.bot.nameCardOrNick)
+            } else {
+                historyText.append(event.senderName)
+            }
+            historyText
+                .append(" ")
+                // 发言时间
+                .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
         }
-        historyText
-            .append(" ")
-            // 发言时间
-            .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
         val recordMessage = record.toMessageChain()
         recordMessage[QuoteReply.Key]?.let {
             historyText.append(" 引用\n > ")
@@ -287,8 +313,11 @@ object JChatGPT : KotlinPlugin(
                     .joinToString("", transform = ::singleMessageToText)
                     .replace("\n", "\n > "))
         }
+        if (showSender) {
+            historyText.append(" 说：")
+        }
         // 消息内容
-        historyText.append(" 说：").appendLine(
+        historyText.appendLine(
             record.toMessageChain().joinToString("", transform = ::singleMessageToText))
     }
 
