@@ -10,13 +10,14 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
+import top.jie65535.mirai.PluginConfig
 import top.jie65535.mirai.PluginData
 
 class MemoryReplace : BaseAgent(
-    tool = Tool.Companion.function(
+    tool = Tool.function(
         name = "memoryReplace",
         description = "替换记忆项",
-        parameters = Parameters.Companion.buildJsonObject {
+        parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
                 putJsonObject("oldMemory") {
@@ -35,6 +36,9 @@ class MemoryReplace : BaseAgent(
         }
     )
 ) {
+    override val isEnabled: Boolean
+        get() = PluginConfig.memoryEnabled
+
     override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         requireNotNull(args)
         val contactId = event.subject.id
