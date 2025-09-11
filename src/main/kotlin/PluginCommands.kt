@@ -49,4 +49,10 @@ object PluginCommands : CompositeCommand(
         LargeLanguageModels.reload()
         sendMessage("OK")
     }
+
+    @SubCommand
+    suspend fun CommandSender.clearMemory() {
+        PluginData.contactMemory.clear()
+        sendMessage("OK")
+    }
 }
