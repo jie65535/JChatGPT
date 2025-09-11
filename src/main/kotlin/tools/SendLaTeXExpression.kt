@@ -38,7 +38,7 @@ class SendLaTeXExpression : BaseAgent(
             // 发送图片消息
             event.subject.sendMessage(image)
             
-            return "成功发送LaTeX表达式"
+            return "已成功将LaTeX表达式转为图片发送"
         } catch (ex: Throwable) {
             return "处理LaTeX表达式时发生异常: ${ex.message}"
         }
