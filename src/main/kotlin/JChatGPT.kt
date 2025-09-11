@@ -512,18 +512,12 @@ object JChatGPT : KotlinPlugin(
 
     private val regexAtQq = Regex("""@(\d{5,12})""")
 
-    private val regexLaTeX = Regex(
-        """\\\((.+?)\\\)|""" +  // 匹配行内公式 \(...\)
-                """\\\[(.+?)\\]|""" +   // 匹配独立公式 \[...\]
-                """\$(.+?)\$"""     // 匹配行内公式 $...$
-    )
-
     private val regexImage = Regex("""!\[(.*?)]\(([^\s"']+).*?\)""")
 
     private data class MessageChunk(val range: IntRange, val content: Message)
 
     /**
-     * 将聊天内容转为聊天消息，如果聊天中包含LaTeX表达式，将会转为图片拼接到消息中。
+     * 将聊天内容转为聊天消息
      *
      * @param contact 联系对象
      * @param content 文本内容
@@ -551,24 +545,6 @@ object JChatGPT : KotlinPlugin(
                 t.add(MessageChunk(
                     it.range,
                     Image(url)))
-            }
-
-            // LeTeX渲染
-            regexLaTeX.findAll(content).forEach {
-                it.groups.forEach { group ->
-                    if (group == null || group.value.isEmpty()) return@forEach
-                    try {
-                        // 将所有匹配的LaTeX公式转为图片拼接到消息中
-                        val formula = group.value
-                        val imageByteArray = LaTeXConverter.convertToImage(formula, "png")
-                        val resource = imageByteArray.toExternalResource("png")
-                        val image = contact.uploadImage(resource)
-
-                        t.add(MessageChunk(group.range, image))
-                    } catch (ex: Throwable) {
-                        logger.warning("处理LaTeX表达式时异常", ex)
-                    }
-                }
             }
 
             // 构造消息链
@@ -601,6 +577,9 @@ object JChatGPT : KotlinPlugin(
 
         // 发送语音消息
         SendVoiceMessage(),
+
+        // 发送LaTeX表达式
+        SendLaTeXExpression(),
 
         // 结束循环
         StopLoopAgent(),
