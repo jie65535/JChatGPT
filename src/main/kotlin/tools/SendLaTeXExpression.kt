@@ -10,7 +10,7 @@ import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 class SendLaTeXExpression : BaseAgent(
     tool = Tool.function(
         name = "sendLaTeXExpression",
-        description = "发送LaTeX数学表达式，将其渲染为图片并发送",
+        description = "发送LaTeX数学表达式，将其渲染为图片并发送。（暂不支持中文）",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {

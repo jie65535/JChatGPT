@@ -29,7 +29,6 @@ import net.mamoe.mirai.event.events.GroupMessageEvent
 import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.message.data.Image.Key.queryUrl
-import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import net.mamoe.mirai.utils.info
 import top.jie65535.mirai.tools.*
 import xyz.cssxsh.mirai.hibernate.MiraiHibernateRecorder
@@ -40,13 +39,16 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import kotlin.collections.*
 import kotlin.math.max
+import kotlin.math.pow
+import kotlin.math.sign
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Duration.Companion.hours
 
 object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.8.0",
+        version = "1.9.0",
     ) {
         author("jie65535")
 //        dependsOn("xyz.cssxsh.mirai.plugin.mirai-hibernate-plugin", true)
@@ -94,6 +96,16 @@ object JChatGPT : KotlinPlugin(
         GlobalEventChannel.parentScope(this)
             .subscribeAlways<MessageEvent> { event -> onMessage(event) }
 
+        // 启动定时任务处理好感度时间偏移
+        if (PluginConfig.enableFavorabilitySystem) {
+            launch {
+                while (true) {
+                    delay(24.hours) // 每24小时执行一次
+                    shiftFavorabilityOverTime()
+                }
+            }
+        }
+
         logger.info { "Plugin loaded" }
     }
 
@@ -131,6 +143,24 @@ object JChatGPT : KotlinPlugin(
             && keyword?.let { event.message.content.contains(it) } != true
             && event.message[QuoteReply]?.source?.fromId != event.bot.id)
             return
+
+        // 好感度系统检查
+        if (PluginConfig.enableFavorabilitySystem) {
+            val userId = event.sender.id
+            PluginData.userFavorability[userId]?.let { favorabilityInfo ->
+                val favorability = favorabilityInfo.value
+                if (favorability < 0) {
+                    // 负好感度有一定概率不回复
+                    val probability = kotlin.math.abs(favorability).toDouble() / 100.0
+                    if (kotlin.random.Random.nextDouble() < probability) {
+                        // 不回复此消息
+                        logger.info("根据好感度系统，用户 ${event.senderName}($userId) (好感度: $favorability) 的消息被忽略，忽略概率: ${probability * 100}%")
+                        event.subject.sendMessage("[实验功能] 因好感度低，此消息已被忽略(${probability * 100}%)")
+                        return
+                    }
+                }
+            }
+        }
 
         startChat(event)
     }
@@ -212,12 +242,38 @@ object JChatGPT : KotlinPlugin(
         val historyText = StringBuilder()
         var lastId = 0L
         if (event is GroupMessageEvent) {
+            if (PluginConfig.enableFavorabilitySystem) {
+                val favorabilityInfos = history.map { it.fromId }
+                    .filter { it != event.bot.id }
+                    .distinct()
+                    .mapNotNull { PluginData.userFavorability[it] }
+                if (favorabilityInfos.isNotEmpty()) {
+                    historyText.appendLine("## 相关成员的好感信息")
+                    for (info in favorabilityInfos) {
+                        historyText.append(getNameCard(event.group, info.userId)).append('\t')
+                            .appendLine(info).appendLine()
+                    }
+                    historyText.appendLine("---").appendLine()
+                }
+            }
+
+            historyText.appendLine("## 近期群消息（更早已隐藏）")
             for (record in history) {
                 // 同一人发言不要反复出现这人的名字，减少上下文
                 appendGroupMessageRecord(historyText, record, event, lastId != record.fromId)
                 lastId = record.fromId
             }
         } else {
+            if (PluginConfig.enableFavorabilitySystem) {
+                val favorabilityInfo = PluginData.userFavorability[event.sender.id]
+                if (favorabilityInfo != null) {
+                    historyText.append("你对\"").append(event.senderName).append("\"的好感信息如下: ")
+                        .appendLine(favorabilityInfo).appendLine()
+                    historyText.appendLine("---").appendLine()
+                }
+            }
+
+            historyText.appendLine("## 近期对话（更早已隐藏）")
             for (record in history) {
                 // 同一人发言不要反复出现这人的名字，减少上下文
                 appendMessageRecord(historyText, record, event, lastId != record.fromId)
@@ -241,6 +297,9 @@ object JChatGPT : KotlinPlugin(
         showSender: Boolean,
     ) {
         if (showSender) {
+            // 名字前空行
+            historyText.appendLine()
+            // 名称显示
             if (event.bot.id == record.fromId) {
                 historyText.append("**你** " + getNameCard(event.subject.botAsMember))
             } else {
@@ -476,14 +535,15 @@ object JChatGPT : KotlinPlugin(
                     if (!done) {
                         history.add(ChatMessage.User(
                             buildString {
-                                appendLine("系统提示：本次运行最多还剩${retry-1}轮。")
+                                appendLine("## 系统提示")
+                                append("本次运行最多还剩").append(retry-1).appendLine("轮。")
                                 appendLine("如果要多次发言，可以一次性调用多次发言工具。")
                                 appendLine("如果没有什么要做的，可以提前结束。")
                                 appendLine("当前时间：" + dateTimeFormatter.format(OffsetDateTime.now()))
 
                                 val newMessages = getAfterHistory(startedAt, event)
                                 if (newMessages.isNotEmpty()) {
-                                    append("以下是上次运行至今的新消息\n\n$newMessages")
+                                    append("## 以下是上次运行至今的新消息\n\n$newMessages")
                                 }
                             }
                         ))
@@ -494,7 +554,7 @@ object JChatGPT : KotlinPlugin(
                     } else {
                         done = false
                         logger.warning("调用llm时发生异常，重试中", e)
-                        event.subject.sendMessage("出错了...正在重试...")
+                        // event.subject.sendMessage("出错了...正在重试...")
                     }
                 }
             } while (!done && 0 < --retry)
@@ -611,6 +671,9 @@ object JChatGPT : KotlinPlugin(
         // 天气服务
         WeatherService(),
 
+        // 好感度调整
+        AdjustUserFavorabilityAgent(),
+
         // Epic 免费游戏
         // EpicFreeGame(),
 
@@ -678,7 +741,7 @@ object JChatGPT : KotlinPlugin(
             logger.warning("获取群头衔失败", e)
         }
         // 群名片
-        nameCard.append("】 ").append(member.nameCardOrNick).append("(").append(member.id).append(")")
+        nameCard.append("】\t\"").append(member.nameCardOrNick).append("\"\t(qq=").append(member.id).append(")")
         return nameCard.toString()
     }
 
@@ -719,4 +782,41 @@ object JChatGPT : KotlinPlugin(
         return result
     }
 
+    /**
+     * 好感度时间偏移处理函数
+     * 使好感度逐渐向0回归，偏移速度与当前好感度绝对值相关
+     */
+    private fun shiftFavorabilityOverTime() {
+        logger.info("开始执行好感度时间偏移处理")
+        
+        val iterator = PluginData.userFavorability.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            val userId = entry.key
+            val favorabilityInfo = entry.value
+            val currentFavorability = favorabilityInfo.value
+            
+            // 计算偏移量
+            // 偏移公式：偏移量 = sign(好感度) * (1 - (|好感度| / 100)^2) * 基础偏移速度
+            val sign = sign(currentFavorability.toFloat()).toInt()
+            val absFavorability = kotlin.math.abs(currentFavorability)
+            val shiftAmount = sign * (1 - (absFavorability / 100.0).pow(2)) * PluginConfig.favorabilityBaseShiftSpeed
+            
+            // 更新好感度
+            val newFavorability = (currentFavorability - shiftAmount).toInt().coerceIn(-100, 100)
+            
+            // 如果新的好感度为0，则移除该条目以节省空间
+            if (newFavorability == 0) {
+                iterator.remove()
+                logger.info("用户 $userId 的好感度已回归0，移除记录")
+            } else {
+                // 创建新的好感度信息，保持原因和印象不变
+                val newInfo = favorabilityInfo.copy(value = newFavorability)
+                PluginData.userFavorability[userId] = newInfo
+                logger.info("用户 $userId 的好感度 ($currentFavorability -> $newFavorability)")
+            }
+        }
+        
+        logger.info("好感度时间偏移处理完成")
+    }
 }
