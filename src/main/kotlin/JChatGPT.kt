@@ -33,6 +33,7 @@ import net.mamoe.mirai.utils.info
 import top.jie65535.mirai.tools.*
 import xyz.cssxsh.mirai.hibernate.MiraiHibernateRecorder
 import xyz.cssxsh.mirai.hibernate.entry.MessageRecord
+import java.io.File
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -165,6 +166,8 @@ object JChatGPT : KotlinPlugin(
         startChat(event)
     }
 
+    private var memePrompt: String? = null
+
     private fun getSystemPrompt(event: MessageEvent): String {
         val now = OffsetDateTime.now()
         val prompt = StringBuilder(LargeLanguageModels.systemPrompt)
@@ -192,6 +195,46 @@ object JChatGPT : KotlinPlugin(
             if (memoryText.isNullOrEmpty()) {
                 "暂无相关记忆"
             } else memoryText
+        }
+
+        replace("{meme}") {
+            memePrompt?.let { return@replace it }
+
+            if (PluginConfig.memeDir.isEmpty()) {
+                ""
+            } else {
+                buildString {
+                    val dir = File(PluginConfig.memeDir)
+                    if (dir.exists() && dir.isDirectory) {
+                        append("memes文件夹地址为：")
+                        append(PluginConfig.memeDir)
+                        appendLine()
+
+                        val memes = dir.list()
+
+                        if (memes.isEmpty()) {
+                            append("暂无表情包~")
+                        } else {
+                            for (name in memes) {
+                                append("- ")
+                                append(name)
+                                appendLine()
+                            }
+                            appendLine()
+                            append("表情包示例：![")
+                            append(memes[0])
+                            append("](")
+                            append(File(dir, memes[0]).absoluteFile)
+                            append(")")
+                            appendLine()
+                        }
+                    } else {
+                        append("配置的meme路径不存在！")
+                    }
+                }.also {
+                    memePrompt = it
+                }
+            }
         }
 
         return prompt.toString()
@@ -583,7 +626,7 @@ object JChatGPT : KotlinPlugin(
      * @param content 文本内容
      * @return 构造的消息
      */
-    suspend fun toMessage(contact: Contact, content: String): Message {
+    fun toMessage(contact: Contact, content: String): Message {
         return if (content.isEmpty()) {
             PlainText("...")
         } else if (content.length < 3) {

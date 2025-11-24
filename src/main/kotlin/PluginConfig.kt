@@ -104,4 +104,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("好感度每日基础偏移速度（点/天）")
     val favorabilityBaseShiftSpeed by value(2.0)
+
+    @ValueDescription("表情包路径，配置后会加载目录下的文件名，提示词中需要用{meme}来插入上下文")
+    val memeDir: String by value("")
 }
