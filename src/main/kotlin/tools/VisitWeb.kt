@@ -41,7 +41,7 @@ class VisitWeb : BaseAgent(
     }
 
     override val isEnabled: Boolean
-        get() = PluginConfig.jinaApiKey.isNotEmpty()
+        get() = true // PluginConfig.jinaApiKey.isNotEmpty()
 
     override val loadingMessage: String
         get() = "上网中..."
@@ -62,7 +62,9 @@ class VisitWeb : BaseAgent(
     private suspend fun jinaReadPage(url: String): String {
         return try {
             httpClient.get(JINA_READER_URL_PREFIX + url) {
-                header("Authorization", "Bearer ${PluginConfig.jinaApiKey}")
+                if (PluginConfig.jinaApiKey.isNotEmpty()) {
+                    header("Authorization", "Bearer ${PluginConfig.jinaApiKey}")
+                }
             }.bodyAsText()
         } catch (e: Throwable) {
             "Error fetching \"$url\": ${e.message}"
