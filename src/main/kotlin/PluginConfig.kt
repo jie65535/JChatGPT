@@ -5,6 +5,9 @@ import net.mamoe.mirai.console.data.ValueDescription
 import net.mamoe.mirai.console.data.value
 
 object PluginConfig : AutoSavePluginConfig("Config") {
+    @ValueDescription("主人QQ，AI可以通过工具向主人发起请求，会等待一段时间")
+    val ownerId: Long by value()
+
     @ValueDescription("OpenAI API base url")
     val openAiApi: String by value("https://dashscope.aliyuncs.com/compatible-mode/v1/")
 
@@ -107,4 +110,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("表情包路径，配置后会加载目录下的文件名，提示词中需要用{meme}来插入上下文")
     val memeDir: String by value("")
+
+    @ValueDescription("请求主人回复等待时间，单位毫秒，默认300秒")
+    val requestOwnerWaitTimeout: Long by value(300000L)
 }

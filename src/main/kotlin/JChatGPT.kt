@@ -717,6 +717,9 @@ object JChatGPT : KotlinPlugin(
         // 好感度调整
         AdjustUserFavorabilityAgent(),
 
+        // 请求主人帮助
+        RequestOwner(),
+
         // Epic 免费游戏
         // EpicFreeGame(),
 
