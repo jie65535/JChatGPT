@@ -44,6 +44,7 @@ import kotlin.math.pow
 import kotlin.math.sign
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
 
 object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
@@ -116,6 +117,32 @@ object JChatGPT : KotlinPlugin(
 
     private val requestMap = ConcurrentSet<Long>()
 
+    /**
+     * 对话上下文缓存
+     */
+    private val contextCache = ConcurrentMap<Long, ConversationCache>()
+
+    /**
+     * 清空所有对话上下文缓存（供管理员命令使用）
+     */
+    fun clearContextCache() {
+        contextCache.clear()
+    }
+
+    /**
+     * 对话上下文缓存数据类
+     * @param history 完整的消息历史
+     * @param lastActivityAt 最后活动时间戳
+     */
+    private data class ConversationCache(
+        val history: MutableList<ChatMessage>,
+        val lastActivityAt: Int
+    ) {
+        fun isExpired(ttlSeconds: Int): Boolean {
+            return OffsetDateTime.now().toEpochSecond().toInt() - lastActivityAt > ttlSeconds
+        }
+    }
+
     private suspend fun onMessage(event: MessageEvent) {
         // 检查Token是否设置
         if (LargeLanguageModels.chat == null) return
@@ -142,7 +169,8 @@ object JChatGPT : KotlinPlugin(
         // 如果没有 @bot 或者 触发关键字 或者 回复bot的消息 则直接结束
         if (!event.message.contains(At(event.bot))
             && keyword?.let { event.message.content.contains(it) } != true
-            && event.message[QuoteReply]?.source?.fromId != event.bot.id)
+            && event.message[QuoteReply]?.source?.fromId != event.bot.id
+        )
             return
 
         // 好感度系统检查
@@ -366,14 +394,14 @@ object JChatGPT : KotlinPlugin(
         }
 
         historyText.appendLine(record.toMessageChain().joinToString("") {
-                when (it) {
-                    is At -> {
-                        it.getDisplay(event.subject)
-                    }
-
-                    else -> singleMessageToText(it)
+            when (it) {
+                is At -> {
+                    it.getDisplay(event.subject)
                 }
-            })
+
+                else -> singleMessageToText(it)
+            }
+        })
     }
 
     private fun getNameCard(group: Group, qq: Long): String {
@@ -411,16 +439,19 @@ object JChatGPT : KotlinPlugin(
         val recordMessage = record.toMessageChain()
         recordMessage[QuoteReply.Key]?.let {
             historyText.append(" 引用\n > ")
-                .appendLine(it.source.originalMessage
-                    .joinToString("", transform = ::singleMessageToText)
-                    .replace("\n", "\n > "))
+                .appendLine(
+                    it.source.originalMessage
+                        .joinToString("", transform = ::singleMessageToText)
+                        .replace("\n", "\n > ")
+                )
         }
         if (showSender) {
             historyText.append(" 说：")
         }
         // 消息内容
         historyText.appendLine(
-            record.toMessageChain().joinToString("", transform = ::singleMessageToText))
+            record.toMessageChain().joinToString("", transform = ::singleMessageToText)
+        )
     }
 
     private fun singleMessageToText(it: SingleMessage): String {
@@ -457,18 +488,41 @@ object JChatGPT : KotlinPlugin(
         }
 
         try {
-            val history = mutableListOf<ChatMessage>()
-
-            val prompt = getSystemPrompt(event)
-            if (PluginConfig.logPrompt) {
-                logger.info("Prompt: $prompt")
+            // 尝试从缓存加载上下文
+            val subjectId = event.subject.id
+            val cache = contextCache[subjectId]
+            val history = if (PluginConfig.enableContextCache
+                && cache != null
+                && !cache.isExpired(PluginConfig.contextCacheTimeoutMinutes * 60)
+            ) {
+                // 缓存有效，复用历史
+                logger.info("使用缓存的对话上下文，包含 ${cache.history.size} 条互动消息")
+                cache.history
+            } else {
+                // 缓存无效或不存在，创建新上下文
+                mutableListOf()
             }
-            history.add(ChatMessage(ChatRole.System, prompt))
 
-            val historyText = getHistory(event)
-            logger.info("History: $historyText")
-            history.add(ChatMessage.User(historyText))
+            // 如果历史为空，添加系统提示词和聊天记录
+            if (history.isEmpty() || cache == null) {
+                val prompt = getSystemPrompt(event)
+                if (PluginConfig.logPrompt) {
+                    logger.info("Prompt: $prompt")
+                }
+                history.add(ChatMessage(ChatRole.System, prompt))
 
+                val historyText = getHistory(event)
+                logger.info("注入聊天记录：\n$historyText")
+                history.add(ChatMessage.User(historyText))
+            } else {
+                val newMessages = getAfterHistory(cache.lastActivityAt, event)
+                logger.info("补充聊天记录：\n$newMessages")
+                history.add(
+                    ChatMessage.User(
+                        "## 以下是上次对话结束至今的新消息\n\n$newMessages"
+                    )
+                )
+            }
 
             var done: Boolean
             // 至少循环3次
@@ -547,10 +601,12 @@ object JChatGPT : KotlinPlugin(
                     val responseContent = responseMessageBuilder?.replace(thinkRegex, "")?.trim()
                     logger.info("LLM Response: $responseContent")
                     // 记录AI回答
-                    history.add(ChatMessage.Assistant(
-                        content = responseContent,
-                        toolCalls = responseToolCalls
-                    ))
+                    history.add(
+                        ChatMessage.Assistant(
+                            content = responseContent,
+                            toolCalls = responseToolCalls
+                        )
+                    )
 
                     // 处理最后一个工具调用
                     if (responseToolCalls.size > toolCallTasks.size) {
@@ -563,6 +619,7 @@ object JChatGPT : KotlinPlugin(
                                 content = functionResponse
                             )
                         }
+
                         if (toolCallTasks.isNotEmpty()) {
                             // 等待之前的所有工具完成
                             history.addAll(toolCallTasks.awaitAll())
@@ -570,16 +627,17 @@ object JChatGPT : KotlinPlugin(
                         // 将最后一个也加入对话历史中
                         history.add(toolCallMessage)
                         // 如果调用中包含结束对话工具则表示完成，反之则继续循环
-                        done = history.any { it.name == "endConversation" }
+                        done = responseToolCalls.any { it.function.name == "endConversation" }
                     } else {
                         done = true
                     }
 
                     if (!done) {
-                        history.add(ChatMessage.User(
+                        history.add(
+                            ChatMessage.User(
                             buildString {
                                 appendLine("## 系统提示")
-                                append("本次运行最多还剩").append(retry-1).appendLine("轮。")
+                                append("本次运行最多还剩").append(retry - 1).appendLine("轮。")
                                 appendLine("如果要多次发言，可以一次性调用多次发言工具。")
                                 appendLine("如果没有什么要做的，可以提前结束。")
                                 appendLine("当前时间：" + dateTimeFormatter.format(OffsetDateTime.now()))
@@ -590,6 +648,15 @@ object JChatGPT : KotlinPlugin(
                                 }
                             }
                         ))
+                    } else {
+                        // 保存对话上下文到缓存
+                        if (PluginConfig.enableContextCache) {
+                            contextCache[subjectId] = ConversationCache(
+                                history = history,
+                                lastActivityAt = startedAt
+                            )
+                            logger.debug("已保存对话上下文到缓存")
+                        }
                     }
                 } catch (e: Exception) {
                     if (retry <= 1) {
@@ -607,7 +674,7 @@ object JChatGPT : KotlinPlugin(
         } finally {
             // 一段时间后才允许再次提问，防止高频对话
             launch {
-                delay(1.seconds)
+                delay(500.milliseconds)
                 requestMap.remove(event.subject.id)
             }
         }
@@ -645,9 +712,12 @@ object JChatGPT : KotlinPlugin(
             regexImage.findAll(content).forEach {
                 // val placeholder = it.groupValues[1]
                 val url = it.groupValues[2]
-                t.add(MessageChunk(
-                    it.range,
-                    Image(url)))
+                t.add(
+                    MessageChunk(
+                        it.range,
+                        Image(url)
+                    )
+                )
             }
 
             // 构造消息链
@@ -834,23 +904,23 @@ object JChatGPT : KotlinPlugin(
      */
     private fun shiftFavorabilityOverTime() {
         logger.info("开始执行好感度时间偏移处理")
-        
+
         val iterator = PluginData.userFavorability.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
             val userId = entry.key
             val favorabilityInfo = entry.value
             val currentFavorability = favorabilityInfo.value
-            
+
             // 计算偏移量
             // 偏移公式：偏移量 = sign(好感度) * (1 - (|好感度| / 100)^2) * 基础偏移速度
             val sign = sign(currentFavorability.toFloat()).toInt()
             val absFavorability = kotlin.math.abs(currentFavorability)
             val shiftAmount = sign * (1 - (absFavorability / 100.0).pow(2)) * PluginConfig.favorabilityBaseShiftSpeed
-            
+
             // 更新好感度
             val newFavorability = (currentFavorability - shiftAmount).toInt().coerceIn(-100, 100)
-            
+
             // 如果新的好感度为0，则移除该条目以节省空间
             if (newFavorability == 0) {
                 iterator.remove()
@@ -862,7 +932,7 @@ object JChatGPT : KotlinPlugin(
                 logger.info("用户 $userId 的好感度 ($currentFavorability -> $newFavorability)")
             }
         }
-        
+
         logger.info("好感度时间偏移处理完成")
     }
 }

@@ -84,6 +84,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("创建Prompt时取最多几条消息")
     val historyMessageLimit: Int by value(20)
 
+    @ValueDescription("启用对话上下文内存缓存，允许在短时间内保持上下文连续")
+    val enableContextCache by value(true)
+
+    @ValueDescription("上下文缓存有效期（分钟），超过此时间未活动则重新创建上下文")
+    val contextCacheTimeoutMinutes by value(10)
+
     @ValueDescription("是否打印Prompt便于调试")
     val logPrompt by value(false)
 

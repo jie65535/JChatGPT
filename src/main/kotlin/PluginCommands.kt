@@ -66,4 +66,10 @@ object PluginCommands : CompositeCommand(
         PluginData.userFavorability.clear()
         sendMessage("OK")
     }
+
+    @SubCommand
+    suspend fun CommandSender.clearContextCache() {
+        JChatGPT.clearContextCache()
+        sendMessage("已清空所有对话上下文缓存")
+    }
 }
