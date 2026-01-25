@@ -481,6 +481,17 @@ object JChatGPT : KotlinPlugin(
 
     private val thinkRegex = Regex("<think>[\\s\\S]*?</think>")
 
+    /**
+     * 截断过长的工具输出，并添加省略标记
+     */
+    private fun truncateToolOutput(content: String, maxLength: Int = PluginConfig.maxToolOutputLength): String {
+        if (content.length <= maxLength) return content
+
+        val truncated = content.take(maxLength)
+        val marker = "\n\n[系统提示：因内容过长，部分内容已被省略]"
+        return truncated + marker
+    }
+
     private suspend fun startChat(event: MessageEvent) {
         if (!requestMap.add(event.subject.id)) {
             logger.warning("The current Contact is busy!")
@@ -880,6 +891,13 @@ object JChatGPT : KotlinPlugin(
             "工具调用失败，请尝试自行回答用户，或如实告知。\n异常信息：${e.message}"
         }
         logger.info("Result=\"$result\"")
+
+        // 截断过长的工具输出
+        val truncatedResult = truncateToolOutput(result)
+        if (truncatedResult.length != result.length) {
+            logger.warning("工具 ${function.name} 返回内容过长，已从 ${result.length} 字符截断至 ${truncatedResult.length} 字符")
+        }
+
         // 过会撤回加载消息
         if (receipt != null) {
             launch {
@@ -895,7 +913,7 @@ object JChatGPT : KotlinPlugin(
                 }
             }
         }
-        return result
+        return truncatedResult
     }
 
     /**

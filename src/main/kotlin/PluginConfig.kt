@@ -119,4 +119,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("请求主人回复等待时间，单位毫秒，默认300秒")
     val requestOwnerWaitTimeout: Long by value(300000L)
+
+    @ValueDescription("单个工具调用返回内容的最大字符数，超过将被截断并标注")
+    val maxToolOutputLength: Int by value(15000)
 }
