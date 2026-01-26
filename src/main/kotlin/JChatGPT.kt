@@ -31,6 +31,7 @@ import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.message.data.Image.Key.queryUrl
 import net.mamoe.mirai.utils.info
 import top.jie65535.mirai.tools.*
+import util.LunarDateUtil
 import xyz.cssxsh.mirai.hibernate.MiraiHibernateRecorder
 import xyz.cssxsh.mirai.hibernate.entry.MessageRecord
 import java.io.File
@@ -207,7 +208,9 @@ object JChatGPT : KotlinPlugin(
         }
 
         replace("{time}") {
-            dateTimeFormatter.format(now)
+            val solarTime = dateTimeFormatter.format(now)
+            val lunarInfo = LunarDateUtil.getFormattedLunarAndHoliday(now)
+            "$solarTime\n农历$lunarInfo"
         }
 
         replace("{subject}") {
