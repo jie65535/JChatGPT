@@ -5,6 +5,7 @@ import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.ChatRole
 import com.aallam.openai.api.chat.ToolCall
+import com.aallam.openai.api.core.Usage
 import com.aallam.openai.api.model.ModelId
 import io.ktor.util.collections.*
 import kotlinx.coroutines.Deferred
@@ -51,7 +52,7 @@ object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.9.0",
+        version = "1.10.0",
     ) {
         author("jie65535")
 //        dependsOn("xyz.cssxsh.mirai.plugin.mirai-hibernate-plugin", true)
@@ -548,6 +549,7 @@ object JChatGPT : KotlinPlugin(
                     var responseMessageBuilder: StringBuilder? = null
                     val responseToolCalls = mutableListOf<ToolCall.Function>()
                     val toolCallTasks = mutableListOf<Deferred<ChatMessage>>()
+                    var lastTokenUsage: Usage? = null
                     // 处理聊天流式响应
                     responseFlow.collect { chunk ->
                         val delta = chunk.choices[0].delta ?: return@collect
@@ -609,6 +611,9 @@ object JChatGPT : KotlinPlugin(
                                 }
                             }
                         }
+
+                        // 捕获token使用量
+                        chunk.usage?.let { lastTokenUsage = it }
                     }
 
                     // 移除思考内容
@@ -621,6 +626,23 @@ object JChatGPT : KotlinPlugin(
                             toolCalls = responseToolCalls
                         )
                     )
+
+                    // 记录token使用量
+                    lastTokenUsage?.let { usage ->
+                        val now = OffsetDateTime.now().toEpochSecond()
+                        val groupId = if (event is GroupMessageEvent) event.subject.id else null
+                        val record = TokenUsageRecord(
+                            timestamp = now,
+                            userId = event.sender.id,
+                            userNickname = event.senderName,
+                            groupId = groupId,
+                            model = PluginConfig.chatModel,
+                            promptTokens = usage.promptTokens ?: 0,
+                            completionTokens = usage.completionTokens ?: 0,
+                            totalTokens = usage.totalTokens ?: 0
+                        )
+                        PluginData.tokenUsageRecords.add(record)
+                    }
 
                     // 处理最后一个工具调用
                     if (responseToolCalls.size > toolCallTasks.size) {

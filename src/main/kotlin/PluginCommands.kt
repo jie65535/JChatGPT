@@ -10,6 +10,10 @@ import net.mamoe.mirai.contact.Group
 import net.mamoe.mirai.contact.Member
 import net.mamoe.mirai.contact.User
 import top.jie65535.mirai.JChatGPT.reload
+import java.time.Instant
+import java.time.ZoneId
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 
 object PluginCommands : CompositeCommand(
     JChatGPT, "jgpt", description = "J OpenAI ChatGPT"
@@ -71,5 +75,133 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.clearContextCache() {
         JChatGPT.clearContextCache()
         sendMessage("已清空所有对话上下文缓存")
+    }
+
+    @SubCommand
+    suspend fun CommandSender.tokens() {
+        sendMessage("请使用子命令：daily, users, groups, query")
+    }
+
+    @SubCommand
+    suspend fun CommandSender.tokensDaily(days: Int = 7) {
+        val now = Instant.now().epochSecond
+        val secondsPerDay = 86400
+        val cutoff = now - (days * secondsPerDay)
+
+        val dailyStats = PluginData.tokenUsageRecords
+            .filter { it.timestamp >= cutoff }
+            .groupBy {
+                LocalDate.ofInstant(
+                    Instant.ofEpochSecond(it.timestamp),
+                    ZoneId.systemDefault()
+                )
+            }
+            .mapValues { (_, records) ->
+                records.sumOf { it.totalTokens }
+            }
+            .toSortedMap()
+
+        if (dailyStats.isEmpty()) {
+            sendMessage("指定时间范围内无使用记录")
+            return
+        }
+
+        val response = buildString {
+            appendLine("最近 $days 天 Token 使用统计：")
+            appendLine()
+            dailyStats.forEach { (date, total) ->
+                appendLine("$date: $total tokens")
+            }
+        }
+        sendMessage(response)
+    }
+
+    @SubCommand
+    suspend fun CommandSender.tokensUsers(limit: Int = 10) {
+        val userStats = PluginData.tokenUsageRecords
+            .groupBy { it.userId }
+            .mapValues { (_, records) ->
+                Pair(
+                    records.first().userNickname,
+                    records.sumOf { it.totalTokens }
+                )
+            }
+            .toList()
+            .sortedByDescending { it.second.second }
+            .take(limit)
+
+        if (userStats.isEmpty()) {
+            sendMessage("暂无使用记录")
+            return
+        }
+
+        val response = buildString {
+            appendLine("Token 使用排名 Top $limit：")
+            appendLine()
+            userStats.forEach {
+                appendLine("- ${it.second.first}(${it.first}): ${it.second.second} tokens")
+            }
+        }
+        sendMessage(response)
+    }
+
+    @SubCommand
+    suspend fun CommandSender.tokensGroups(limit: Int = 10) {
+        val groupStats = PluginData.tokenUsageRecords
+            .filter { it.groupId != null }
+            .groupBy { it.groupId!! }
+            .mapValues { (_, records) ->
+                records.sumOf { it.totalTokens }
+            }
+            .toList()
+            .sortedByDescending { it.second }
+            .take(limit)
+
+        if (groupStats.isEmpty()) {
+            sendMessage("暂无群组使用记录")
+            return
+        }
+
+        val response = buildString {
+            appendLine("群组 Token 使用排名 Top $limit：")
+            appendLine()
+            groupStats.forEach { (groupId, total) ->
+                appendLine("- $groupId: $total tokens")
+            }
+        }
+        sendMessage(response)
+    }
+
+    @SubCommand
+    suspend fun CommandSender.tokensQuery(userId: Long?, days: Int = 7) {
+        val now = Instant.now().epochSecond
+        val cutoff = now - (days * 86400)
+
+        val filtered = PluginData.tokenUsageRecords
+            .filter { it.timestamp >= cutoff }
+            .filter { userId == null || it.userId == userId }
+            .sortedByDescending { it.timestamp }
+            .take(20)
+
+        if (filtered.isEmpty()) {
+            sendMessage("指定时间范围内无使用记录")
+            return
+        }
+
+        val response = buildString {
+            appendLine("最近 $days 天使用记录（最多显示20条）：")
+            appendLine()
+            filtered.forEach { record ->
+                val time = Instant.ofEpochSecond(record.timestamp)
+                    .atZone(ZoneId.systemDefault())
+                    .format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))
+                val location = if (record.groupId != null) "群${record.groupId}" else "私聊"
+                appendLine("[$time] $location - ${record.userNickname}")
+                appendLine("  模型: ${record.model}, Tokens: ${record.totalTokens} " +
+                          "(输入: ${record.promptTokens}, 输出: ${record.completionTokens})")
+                appendLine()
+            }
+        }
+        sendMessage(response)
     }
 }

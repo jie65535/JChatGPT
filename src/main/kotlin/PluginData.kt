@@ -34,6 +34,29 @@ data class FavorabilityInfo(
     }
 }
 
+/**
+ * Token使用记录数据类
+ * @param timestamp Unix时间戳
+ * @param userId 用户QQ号
+ * @param userNickname 用户昵称
+ * @param groupId 群号（私聊时为null）
+ * @param model 模型名称
+ * @param promptTokens 输入token数
+ * @param completionTokens 输出token数
+ * @param totalTokens 总token数
+ */
+@Serializable
+data class TokenUsageRecord(
+    val timestamp: Long,
+    val userId: Long,
+    val userNickname: String,
+    val groupId: Long?,
+    val model: String,
+    val promptTokens: Int,
+    val completionTokens: Int,
+    val totalTokens: Int
+)
+
 object PluginData : AutoSavePluginData("data") {
     /**
      * 联系人记忆
@@ -46,6 +69,11 @@ object PluginData : AutoSavePluginData("data") {
      * Value: 好感度信息
      */
     val userFavorability by value(mutableMapOf<Long, FavorabilityInfo>())
+
+    /**
+     * Token使用记录
+     */
+    val tokenUsageRecords by value(mutableListOf<TokenUsageRecord>())
 
     /**
      * 添加对话记忆
