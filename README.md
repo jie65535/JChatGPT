@@ -50,10 +50,12 @@ AI 可以自动调用多种工具来完成复杂任务：
 - `/jgpt clearFavor` - 重置所有用户的好感度
 
 ### Token统计
+- `/jgpt tokens [days]` - 查看Token使用简报（默认7天）
 - `/jgpt tokensDaily [days]` - 查看指定天数的每日Token消耗统计（默认7天）
 - `/jgpt tokensUsers [limit]` - 查看Token消耗最多的用户排名（默认Top 10）
 - `/jgpt tokensGroups [limit]` - 查看Token消耗最多的群组排名（默认Top 10）
 - `/jgpt tokensQuery [userId] [days]` - 查询详细的使用记录（可按用户和时间过滤）
+- `/jgpt tokensUserDaily <userId> [days]` - 查询指定用户每天的消费统计（默认7天）
 
 ## 配置文件
 
@@ -317,6 +319,35 @@ JChatGPT 插件内置了Token消耗统计功能，可以记录每次对话的Tok
 
 ### 统计命令
 
+#### 使用简报
+```
+/jgpt tokens [days]
+```
+- 快速查看指定时间范围内的Token使用概况
+- 默认显示最近7天
+- 包含总计、今日、最活跃用户/群组
+- 输出示例：
+  ```
+  📊 Token 使用简报（最近 7 天）
+
+  总计: 1,452,279 tokens
+  今日: 215,432 tokens
+  活跃用户: 15 人
+
+  👤 最活跃用户:
+    张三 - 523,456 tokens
+
+  👥 最活跃群组:
+    987654321 - 876,543 tokens
+
+  📋 详细查询:
+    /jgpt tokensDaily [days]  - 每日统计
+    /jgpt tokensUsers [limit] - 用户排名
+    /jgpt tokensGroups [limit] - 群组排名
+    /jgpt tokensQuery [userId] [days] - 详细记录
+    /jgpt tokensUserDaily <userId> [days] - 用户日统计
+  ```
+
 #### 每日统计
 ```
 /jgpt tokensDaily [days]
@@ -327,9 +358,9 @@ JChatGPT 插件内置了Token消耗统计功能，可以记录每次对话的Tok
   ```
   最近 7 天 Token 使用统计：
 
-  2026-03-18: 15342 tokens
-  2026-03-17: 12890 tokens
-  2026-03-16: 9567 tokens
+  2026-03-18: 15,342 tokens
+  2026-03-17: 12,890 tokens
+  2026-03-16: 9,567 tokens
   ```
 
 #### 用户排名
@@ -342,9 +373,9 @@ JChatGPT 插件内置了Token消耗统计功能，可以记录每次对话的Tok
   ```
   Token 使用排名 Top 10：
 
-  张三(QQ:123456): 25430 tokens
-  李四(QQ:234567): 18920 tokens
-  王五(QQ:345678): 12450 tokens
+  张三(QQ:123456): 25,430 tokens
+  李四(QQ:234567): 18,920 tokens
+  王五(QQ:345678): 12,450 tokens
   ```
 
 #### 群组排名
@@ -358,9 +389,9 @@ JChatGPT 插件内置了Token消耗统计功能，可以记录每次对话的Tok
   ```
   群组 Token 使用排名 Top 10：
 
-  群 987654321: 45670 tokens
-  群 876543210: 32100 tokens
-  群 765432109: 28930 tokens
+  群 987654321: 45,670 tokens
+  群 876543210: 32,100 tokens
+  群 765432109: 28,930 tokens
   ```
 
 #### 详细查询
@@ -376,10 +407,29 @@ JChatGPT 插件内置了Token消耗统计功能，可以记录每次对话的Tok
   最近 7 天使用记录（最多显示20条）：
 
   [03-18 14:35] 群987654321 - 张三
-    模型: qwen-max, Tokens: 2345 (提示: 1234, 完成: 1111)
+    模型: qwen-max, Tokens: 2,345 (提示: 1,234, 输出: 1,111)
 
   [03-18 14:30] 私聊 - 李四
-    模型: qwen-max, Tokens: 1876 (提示: 980, 完成: 896)
+    模型: qwen-max, Tokens: 1,876 (提示: 980, 输出: 896)
+  ```
+
+#### 用户日统计
+```
+/jgpt tokensUserDaily <userId> [days]
+```
+- 查询指定用户每天的消费统计
+- 按天汇总显示，不会刷屏
+- 必须提供用户ID（QQ号）
+- 可指定时间范围（默认7天）
+- 输出示例：
+  ```
+  用户 张三 最近 7 天 Token 使用统计：
+
+  2026-03-18: 12,450 tokens
+  2026-03-17: 8,320 tokens
+  2026-03-16: 15,670 tokens
+
+  总计: 36,440 tokens
   ```
 
 ### 数据存储
