@@ -61,7 +61,7 @@ object JChatGPT : KotlinPlugin(
     /**
      * 是否包含历史对话
      */
-    private var includeHistory: Boolean = false
+    internal var includeHistory: Boolean = false
 
     /**
      * 聊天权限
@@ -813,6 +813,9 @@ object JChatGPT : KotlinPlugin(
 
         // 记忆修改
         MemoryReplace(),
+
+        // 搜索聊天历史
+        SearchChatHistory(),
 
         // 网页搜索
         WebSearch(),
