@@ -547,12 +547,22 @@ object JChatGPT : KotlinPlugin(
                     val startedAt = OffsetDateTime.now().toEpochSecond().toInt()
                     val responseFlow = chatCompletions(history)
                     var responseMessageBuilder: StringBuilder? = null
+                    var reasoningContentBuilder: StringBuilder? = null
                     val responseToolCalls = mutableListOf<ToolCall.Function>()
                     val toolCallTasks = mutableListOf<Deferred<ChatMessage>>()
                     var lastTokenUsage: Usage? = null
                     // 处理聊天流式响应
                     responseFlow.collect { chunk ->
                         val delta = chunk.choices[0].delta ?: return@collect
+
+                        // 处理推理内容更新
+                        if (delta.reasoningContent != null) {
+                            if (reasoningContentBuilder == null) {
+                                reasoningContentBuilder = StringBuilder(delta.reasoningContent)
+                            } else {
+                                reasoningContentBuilder.append(delta.reasoningContent)
+                            }
+                        }
 
                         // 处理内容更新
                         if (delta.content != null) {
@@ -620,10 +630,15 @@ object JChatGPT : KotlinPlugin(
                     val responseContent = responseMessageBuilder?.replace(thinkRegex, "")?.trim()
                     logger.info("LLM Response: $responseContent")
                     // 记录AI回答
+                    // reasoning_content仅在工具调用时需要回传（DeepSeek规范），否则丢弃
+                    // toolCalls空列表转null，避免序列化为"tool_calls":[]导致DeepSeek V4报400
+                    // explicitNulls=false确保null字段不会序列化到JSON中，兼容所有API
                     history.add(
-                        ChatMessage.Assistant(
+                        ChatMessage(
+                            role = ChatRole.Assistant,
                             content = responseContent,
-                            toolCalls = responseToolCalls
+                            toolCalls = responseToolCalls.ifEmpty { null },
+                            reasoningContent = if (responseToolCalls.isNotEmpty()) reasoningContentBuilder?.toString() else null
                         )
                     )
 

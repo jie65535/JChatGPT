@@ -39,18 +39,28 @@ class ReasoningAgent : BaseAgent(
 
         val prompt = args.getValue("prompt").jsonPrimitive.content
         val answerContent = StringBuilder()
+        val reasoningContent = StringBuilder()
         llm.chatCompletions(ChatCompletionRequest(
             model = ModelId(PluginConfig.reasoningModel),
             messages = listOf(ChatMessage.User(prompt))
         )).collect {
             if (it.choices.isNotEmpty()) {
                 val delta = it.choices[0].delta ?: return@collect
+                if (!delta.reasoningContent.isNullOrEmpty()) {
+                    reasoningContent.append(delta.reasoningContent)
+                }
                 if (!delta.content.isNullOrEmpty()) {
                     answerContent.append(delta.content)
                 }
             }
         }
 
-        return answerContent.toString().ifEmpty { "推理出错，结果为空" }
+        val result = answerContent.toString()
+        val reasoning = reasoningContent.toString()
+        return when {
+            result.isNotEmpty() -> result
+            reasoning.isNotEmpty() -> reasoning
+            else -> "推理出错，结果为空"
+        }
     }
 }
