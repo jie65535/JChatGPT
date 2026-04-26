@@ -1,13 +1,11 @@
 package top.jie65535.mirai
 
-import com.aallam.openai.api.http.Timeout
-import com.aallam.openai.client.Chat
-import com.aallam.openai.client.OpenAI
-import com.aallam.openai.client.OpenAIHost
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlin.time.Duration.Companion.milliseconds
 
 object LargeLanguageModels {
-
 
     /**
      * 系统提示词
@@ -18,46 +16,62 @@ object LargeLanguageModels {
     /**
      * 聊天助手
      */
-    var chat: Chat? = null
+    var chat: ModelService? = null
 
     /**
      * 推理模型
      */
-    var reasoning: Chat? = null
+    var reasoning: ModelService? = null
 
     /**
      * 视觉模型
      */
-    var visual: Chat? = null
+    var visual: ModelService? = null
+
+    private val json = Json {
+        isLenient = true
+        ignoreUnknownKeys = true
+    }
+
+    private fun parseExtraBody(raw: String): JsonObject? {
+        if (raw.isBlank()) return null
+        return try {
+            json.parseToJsonElement(raw).jsonObject
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     fun reload() {
-        // 载入超时时间
         val timeout = PluginConfig.timeout.milliseconds
 
         // 初始化聊天模型
         if (PluginConfig.openAiApi.isNotBlank() && PluginConfig.openAiToken.isNotBlank()) {
-            chat = OpenAI(
+            chat = ModelService(
+                baseUrl = PluginConfig.openAiApi,
                 token = PluginConfig.openAiToken,
-                host = OpenAIHost(baseUrl = PluginConfig.openAiApi),
-                timeout = Timeout(request = timeout, connect = timeout, socket = timeout)
+                timeout = timeout,
+                extraBody = parseExtraBody(PluginConfig.chatModelExtraBody)
             )
         }
 
         // 初始化推理模型
         if (PluginConfig.reasoningModelApi.isNotBlank() && PluginConfig.reasoningModelToken.isNotBlank()) {
-            reasoning = OpenAI(
+            reasoning = ModelService(
+                baseUrl = PluginConfig.reasoningModelApi,
                 token = PluginConfig.reasoningModelToken,
-                host = OpenAIHost(baseUrl = PluginConfig.reasoningModelApi),
-                timeout = Timeout(request = timeout, connect = timeout, socket = timeout)
+                timeout = timeout,
+                extraBody = parseExtraBody(PluginConfig.reasoningModelExtraBody)
             )
         }
 
         // 初始化视觉模型
         if (PluginConfig.visualModelApi.isNotBlank() && PluginConfig.visualModelToken.isNotBlank()) {
-            visual = OpenAI(
+            visual = ModelService(
+                baseUrl = PluginConfig.visualModelApi,
                 token = PluginConfig.visualModelToken,
-                host = OpenAIHost(baseUrl = PluginConfig.visualModelApi),
-                timeout = Timeout(request = timeout, connect = timeout, socket = timeout)
+                timeout = timeout,
+                extraBody = parseExtraBody(PluginConfig.visualModelExtraBody)
             )
         }
 

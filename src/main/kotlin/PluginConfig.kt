@@ -38,6 +38,15 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("视觉模型")
     var visualModel: String by value("qwen-vl-plus")
 
+    @ValueDescription("聊天模型额外请求体JSON，会合并到请求体中。例如DeepSeek关闭思维: {\"thinking\": {\"type\": \"disabled\"}}")
+    val chatModelExtraBody: String by value("")
+
+    @ValueDescription("推理模型额外请求体JSON，会合并到请求体中。例如DeepSeek启用思维: {\"thinking\": {\"type\": \"enabled\"}}")
+    val reasoningModelExtraBody: String by value("")
+
+    @ValueDescription("视觉模型额外请求体JSON，会合并到请求体中。")
+    val visualModelExtraBody: String by value("")
+
     @ValueDescription("百炼平台API KEY")
     val dashScopeApiKey: String by value("")
 

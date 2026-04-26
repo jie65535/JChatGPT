@@ -25,7 +25,7 @@ repositories {
     mavenCentral()
 }
 
-val openaiClientVersion = "4.0.1"
+val openaiClientVersion = "4.1.0"
 val ktorVersion = "3.0.3"
 val jLatexMathVersion = "1.0.7"
 val commonTextVersion = "1.13.0"
