@@ -133,8 +133,8 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     val maxToolOutputLength: Int by value(15000)
 
     @ValueDescription("聊天记录搜索最大天数")
-    val searchHistoryMaxDays: Int by value(7)
+    val searchHistoryMaxDays: Int by value(30)
 
     @ValueDescription("聊天记录搜索最大查询条数，防止内存溢出")
-    val searchHistoryMaxRecords: Int by value(500)
+    val searchHistoryMaxRecords: Int by value(5000)
 }

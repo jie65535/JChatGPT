@@ -25,8 +25,8 @@ import java.time.format.DateTimeParseException
 class SearchChatHistory : BaseAgent(
     tool = Tool.function(
         name = "searchChatHistory",
-        description = "搜索群聊消息历史，可按关键词、发送者、时间范围筛选。用于回溯之前的讨论、查找某人说过的话等。" +
-                "不指定时间范围时默认搜索最近7天。指定时间时范围不能超过7天，如需更长跨度可分多次查询。" +
+        description = "搜索群聊消息历史，可按关键词、发送者、时间范围筛选。用于回溯之前的讨论、查找某人说过的话、统计话题等。" +
+                "不指定时间范围时默认搜索最近30天。指定时间时范围不能超过30天，如需更长跨度可分多次查询。" +
                 "可以通过多轮搜索来实现找到某条消息的上下文。",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
@@ -49,7 +49,7 @@ class SearchChatHistory : BaseAgent(
                 }
                 putJsonObject("limit") {
                     put("type", "integer")
-                    put("description", "返回消息数量上限，默认20，最大50")
+                    put("description", "返回消息数量上限，默认20，最大200")
                 }
             }
         }
@@ -121,7 +121,7 @@ class SearchChatHistory : BaseAgent(
             return "未找到匹配的聊天记录"
         }
 
-        val limit = args["limit"]?.jsonPrimitive?.intOrNull?.coerceIn(1, 50) ?: 20
+        val limit = args["limit"]?.jsonPrimitive?.intOrNull?.coerceIn(1, 200) ?: 20
         val total = filtered.size
         val result = filtered.takeLast(limit)
 

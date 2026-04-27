@@ -136,9 +136,9 @@ enableFavorabilitySystem: true
 # 好感度每日基础偏移速度（点/天）
 favorabilityBaseShiftSpeed: 2.0
 # 聊天记录搜索最大天数
-searchHistoryMaxDays: 7
+searchHistoryMaxDays: 30
 # 聊天记录搜索最大查询条数，防止内存溢出
-searchHistoryMaxRecords: 500
+searchHistoryMaxRecords: 5000
 ```
 
 ## 系统提示词
