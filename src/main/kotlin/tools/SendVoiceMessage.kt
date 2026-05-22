@@ -21,13 +21,17 @@ import kotlin.time.measureTime
 class SendVoiceMessage : BaseAgent(
     tool = Tool.function(
         name = "sendVoiceMessage",
-        description = "发送一条文本转语音消息。",
+        description = "发送一条文本转语音消息。可选传入 instructions 用自然语言指令控制语气、语速、情感等表达方式，让语音更贴合当前对话氛围。",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
                 putJsonObject("content") {
                     put("type", "string")
                     put("description", "语音消息文本内容")
+                }
+                putJsonObject("instructions") {
+                    put("type", "string")
+                    put("description", "可选。自然语言描述本句话的表达方式，例如\"语速较快，带有明显的上扬语调\"或\"温柔知性，语调平和\"。仅支持中英文。")
                 }
             }
             putJsonArray("required") {
@@ -52,6 +56,7 @@ class SendVoiceMessage : BaseAgent(
         if (event.subject !is AudioSupported) return "当前聊天环境不支持发送语音！"
 
         val content = args.getValue("content").jsonPrimitive.content
+        val instructions = args["instructions"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
 
         // https://help.aliyun.com/zh/model-studio/qwen-tts
         val response = httpClient.post(API_URL) {
@@ -62,6 +67,10 @@ class SendVoiceMessage : BaseAgent(
                 putJsonObject("input") {
                     put("text", content)
                     put("voice", "Chelsie") // Chelsie（女） Cherry（女） Ethan（男） Serena（女）
+                    if (instructions != null) {
+                        put("instructions", instructions)
+                        put("optimize_instructions", true)
+                    }
                 }
             }.toString())
         }

@@ -95,8 +95,8 @@ dashScopeApiKey: ''
 imageModel: 'qwen-image-2.0'
 # 是否在生成图片右下角添加 Qwen-Image 水印
 imageWatermark: false
-# 百炼平台TTS模型
-ttsModel: 'qwen-tts'
+# 百炼平台TTS模型，qwen3-tts-instruct-flash 支持 instructions 指令控制语气
+ttsModel: 'qwen3-tts-instruct-flash'
 # Jina API Key
 jinaApiKey: ''
 # SearXNG 搜索引擎地址，如 http://127.0.0.1:8080/search 必须启用允许json格式返回

@@ -56,8 +56,8 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("是否在生成的图片右下角添加 Qwen-Image 水印")
     val imageWatermark: Boolean by value(false)
 
-    @ValueDescription("百炼平台TTS模型")
-    val ttsModel: String by value("qwen-tts")
+    @ValueDescription("百炼平台TTS模型。qwen3-tts-instruct-flash 支持 instructions 指令控制；纯发音可用 qwen3-tts-flash 或 qwen-tts")
+    val ttsModel: String by value("qwen3-tts-instruct-flash")
 
     @ValueDescription("Jina API Key")
     val jinaApiKey by value("")
