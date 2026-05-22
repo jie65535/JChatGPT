@@ -318,17 +318,27 @@ object JChatGPT : KotlinPlugin(
         var lastId = 0L
         if (event is GroupMessageEvent) {
             if (PluginConfig.enableFavorabilitySystem) {
-                val favorabilityInfos = history.map { it.fromId }
+                val knownUsers = history.asSequence()
+                    .map { it.fromId }
                     .filter { it != event.bot.id }
                     .distinct()
                     .mapNotNull { PluginData.userFavorability[it] }
-                if (favorabilityInfos.isNotEmpty()) {
-                    historyText.appendLine("## 相关成员的好感信息")
-                    for (info in favorabilityInfos) {
-                        historyText.append(getNameCard(event.group, info.userId)).append('\t')
-                            .appendLine(info).appendLine()
+                    .filter { it.name.isNotEmpty() || it.tags.isNotEmpty() || it.impression.isNotEmpty() }
+                    .sortedBy { it.userId }
+                    .toList()
+                if (knownUsers.isNotEmpty()) {
+                    historyText.appendLine("【你认识的群友】")
+                    for (info in knownUsers) {
+                        val displayName = if (info.name.isNotEmpty()) info.name
+                                          else getNameCard(event.subject, info.userId)
+                        historyText.append("- ").append(displayName)
+                            .append("(${info.userId})")
+                            .append(" 好感度${if (info.value >= 0) "+" else ""}${info.value}")
+                        if (info.tags.isNotEmpty()) historyText.append(" [${info.tags.joinToString(", ")}]")
+                        if (info.impression.isNotEmpty()) historyText.append(" ${info.impression}")
+                        historyText.appendLine()
                     }
-                    historyText.appendLine("---").appendLine()
+                    historyText.appendLine()
                 }
             }
 
@@ -341,10 +351,15 @@ object JChatGPT : KotlinPlugin(
         } else {
             if (PluginConfig.enableFavorabilitySystem) {
                 val favorabilityInfo = PluginData.userFavorability[event.sender.id]
-                if (favorabilityInfo != null) {
-                    historyText.append("你对\"").append(event.senderName).append("\"的好感信息如下: ")
-                        .appendLine(favorabilityInfo).appendLine()
-                    historyText.appendLine("---").appendLine()
+                if (favorabilityInfo != null && (favorabilityInfo.name.isNotEmpty() || favorabilityInfo.tags.isNotEmpty() || favorabilityInfo.impression.isNotEmpty())) {
+                    val displayName = if (favorabilityInfo.name.isNotEmpty()) favorabilityInfo.name else event.senderName
+                    historyText.appendLine("【你认识的对方】")
+                    historyText.append("- ").append(displayName)
+                        .append("(${event.sender.id})")
+                        .append(" 好感度${if (favorabilityInfo.value >= 0) "+" else ""}${favorabilityInfo.value}")
+                    if (favorabilityInfo.tags.isNotEmpty()) historyText.append(" [${favorabilityInfo.tags.joinToString(", ")}]")
+                    if (favorabilityInfo.impression.isNotEmpty()) historyText.append(" ${favorabilityInfo.impression}")
+                    historyText.appendLine().appendLine()
                 }
             }
 

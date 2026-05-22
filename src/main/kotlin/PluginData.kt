@@ -10,22 +10,27 @@ import net.mamoe.mirai.console.data.value
  * @param value 好感度值 (-100 ~ 100)
  * @param reasons 调整原因列表，用于溯源
  * @param impression 对用户的印象/画像
+ * @param name Bot给此人起的代号
+ * @param tags 标签列表，最多5个
  */
 @Serializable
 data class FavorabilityInfo(
     val userId: Long,
     val value: Int = 0,
     val reasons: List<String> = emptyList(),
-    val impression: String = ""
+    val impression: String = "",
+    val name: String = "",
+    val tags: List<String> = emptyList()
 ) {
     override fun toString(): String {
         return buildString {
             append("好感度：$value")
-            if (impression.isNotEmpty()) {
-                append("\t印象：$impression")
-            }
+            if (name.isNotEmpty()) append("，代号：$name")
+            if (tags.isNotEmpty()) append("，标签：[${tags.joinToString(", ")}]")
+            if (impression.isNotEmpty()) append("，印象：$impression")
             if (reasons.isNotEmpty()) {
-                appendLine("\t调整原因：")
+                appendLine()
+                appendLine("调整原因：")
                 reasons.forEach { reason ->
                     appendLine("* $reason")
                 }
