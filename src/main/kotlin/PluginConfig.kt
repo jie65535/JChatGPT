@@ -77,8 +77,11 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("群荣誉等级权限门槛，达到这个等级相当于自动拥有对话权限。")
     val temperaturePermission: Int by value(50)
 
-    @ValueDescription("等待响应超时时间，单位毫秒，默认60秒")
+    @ValueDescription("等待响应超时时间（整个请求的总超时与socket读超时），单位毫秒，默认60秒")
     val timeout: Long by value(60000L)
+
+    @ValueDescription("首块响应超时时间，单位毫秒，默认10秒。若连接建立后在此时间内没收到首块data:则中断走重试")
+    val firstChunkTimeout: Long by value(10000L)
 
     @Deprecated("使用外部文件而不是在配置文件内保存提示词")
     @ValueDescription("系统提示词，该字段已弃用，使用提示词文件而不是在这里修改")

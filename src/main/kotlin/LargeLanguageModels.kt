@@ -44,6 +44,7 @@ object LargeLanguageModels {
 
     fun reload() {
         val timeout = PluginConfig.timeout.milliseconds
+        val firstChunkTimeout = PluginConfig.firstChunkTimeout.milliseconds
 
         // 初始化聊天模型
         if (PluginConfig.openAiApi.isNotBlank() && PluginConfig.openAiToken.isNotBlank()) {
@@ -51,6 +52,7 @@ object LargeLanguageModels {
                 baseUrl = PluginConfig.openAiApi,
                 token = PluginConfig.openAiToken,
                 timeout = timeout,
+                firstChunkTimeout = firstChunkTimeout,
                 extraBody = parseExtraBody(PluginConfig.chatModelExtraBody)
             )
         }
@@ -61,6 +63,7 @@ object LargeLanguageModels {
                 baseUrl = PluginConfig.reasoningModelApi,
                 token = PluginConfig.reasoningModelToken,
                 timeout = timeout,
+                firstChunkTimeout = firstChunkTimeout,
                 extraBody = parseExtraBody(PluginConfig.reasoningModelExtraBody)
             )
         }
@@ -71,6 +74,7 @@ object LargeLanguageModels {
                 baseUrl = PluginConfig.visualModelApi,
                 token = PluginConfig.visualModelToken,
                 timeout = timeout,
+                firstChunkTimeout = firstChunkTimeout,
                 extraBody = parseExtraBody(PluginConfig.visualModelExtraBody)
             )
         }
