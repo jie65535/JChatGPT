@@ -50,8 +50,11 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("百炼平台API KEY")
     val dashScopeApiKey: String by value("")
 
-    @ValueDescription("百炼平台图片编辑模型")
-    val imageEditModel: String by value("qwen-image-edit")
+    @ValueDescription("百炼平台图像模型，支持文生图与图像编辑。可选：qwen-image-2.0 / qwen-image-2.0-pro / qwen-image-edit-max / qwen-image-edit-plus 等")
+    val imageModel: String by value("qwen-image-2.0")
+
+    @ValueDescription("是否在生成的图片右下角添加 Qwen-Image 水印")
+    val imageWatermark: Boolean by value(false)
 
     @ValueDescription("百炼平台TTS模型")
     val ttsModel: String by value("qwen-tts")

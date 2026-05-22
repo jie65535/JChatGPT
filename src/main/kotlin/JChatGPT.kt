@@ -848,8 +848,8 @@ object JChatGPT : KotlinPlugin(
         // 视觉代理
         VisualAgent(),
 
-        // 图像编辑模型
-        ImageEdit(),
+        // 图像生成与编辑
+        ImageAgent(),
 
         // 天气服务
         WeatherService(),

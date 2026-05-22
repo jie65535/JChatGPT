@@ -22,29 +22,30 @@ import kotlinx.serialization.json.putJsonObject
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.PluginConfig
 
-class ImageEdit : BaseAgent(
+class ImageAgent : BaseAgent(
     tool = Tool.function(
-        name = "imageEdit",
-        description = "可通过调用图像编辑模型来修改图片。备注：该方法成本较高，非必要尽量不要调用。编辑图片前无需识别图片内容，图像编辑模型自己会理解图片内容！",
+        name = "imageAgent",
+        description = "调用千问图像模型生成或编辑图片。不传 image_urls 即纯文生图；" +
+                "传 1~3 张图片可进行编辑、修改或多图融合。" +
+                "备注：该方法成本较高，非必要尽量不要调用。" +
+                "编辑图片前无需识别图片内容，模型自己会理解图片内容。",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
-                putJsonObject("image_url") {
-                    put("type", "string")
-                    put("description", "原始图片地址")
+                putJsonObject("image_urls") {
+                    put("type", "array")
+                    putJsonObject("items") {
+                        put("type", "string")
+                    }
+                    put("description", "参考图片地址列表，可传 0~3 张。" +
+                            "不传或为空即纯文生图；传 1 张为编辑；多张为融合，输出比例与最后一张对齐。")
                 }
                 putJsonObject("prompt") {
                     put("type", "string")
-                    put("description", "正向提示词，用来描述需要对图片进行修改的要求。")
+                    put("description", "提示词，描述期望生成或修改的画面内容。")
                 }
-//                putJsonObject("negative_prompt") {
-//                    put("type", "string")
-//                    put("description", "反向提示词，用来描述不希望在画面中看到的内容，可以对画面进行限制。" +
-//                            "示例值：低分辨率、错误、最差质量、低质量、残缺、多余的手指、比例不良等。")
-//                }
             }
             putJsonArray("required") {
-                add("image_url")
                 add("prompt")
             }
         }
@@ -58,25 +59,29 @@ class ImageEdit : BaseAgent(
         get() = PluginConfig.dashScopeApiKey.isNotEmpty()
 
     override val loadingMessage: String
-        get() = "改图中..."
+        get() = "作图中..."
 
     override suspend fun execute(args: JsonObject?): String {
         requireNotNull(args)
-        val imageUrl = args.getValue("image_url").jsonPrimitive.content
         val prompt = args.getValue("prompt").jsonPrimitive.content
-//        val negativePrompt = args["negative_prompt"]?.jsonPrimitive?.content
+        val imageUrls = args["image_urls"]?.jsonArray
+            ?.map { it.jsonPrimitive.content }
+            ?: emptyList()
+
         val response = httpClient.post(API_URL) {
             contentType(ContentType("application", "json"))
             header("Authorization", "Bearer " + PluginConfig.dashScopeApiKey)
             setBody(buildJsonObject {
-                put("model", PluginConfig.imageEditModel)
+                put("model", PluginConfig.imageModel)
                 putJsonObject("input") {
                     putJsonArray("messages") {
                         addJsonObject {
                             put("role", "user")
                             putJsonArray("content") {
-                                addJsonObject {
-                                    put("image", imageUrl)
+                                for (url in imageUrls) {
+                                    addJsonObject {
+                                        put("image", url)
+                                    }
                                 }
                                 addJsonObject {
                                     put("text", prompt)
@@ -85,11 +90,11 @@ class ImageEdit : BaseAgent(
                         }
                     }
                 }
-//                if (negativePrompt != null) {
-//                    putJsonObject("parameters") {
-//                        put("negative_prompt", negativePrompt)
-//                    }
-//                }
+                putJsonObject("parameters") {
+                    put("n", 1)
+                    put("prompt_extend", true)
+                    put("watermark", PluginConfig.imageWatermark)
+                }
             }.toString())
         }
 
@@ -102,9 +107,9 @@ class ImageEdit : BaseAgent(
                 .getValue("message").jsonObject
                 .getValue("content").jsonArray[0].jsonObject
                 .getValue("image").jsonPrimitive.content
-            "图片已编辑完成，发送时请务必包含完整的url和查询参数，因为下载地址存在鉴权：![图片]($url)"
+            "图片已生成，发送时请务必包含完整的url和查询参数，因为下载地址存在鉴权：![图片]($url)"
         } catch (e: Throwable) {
-            JChatGPT.logger.error("图像编辑结果解析异常", e)
+            JChatGPT.logger.error("图像生成结果解析异常", e)
             responseJson
         }
     }
