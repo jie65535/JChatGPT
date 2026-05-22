@@ -79,6 +79,9 @@ object JChatGPT : KotlinPlugin(
         PluginConfig.reload()
         PluginData.reload()
 
+        // 初始化 token 使用日聚合存储（独立 JSON 文件，绕开 yamlkt 大数据 bug）
+        TokenUsageStore.init(dataFolder)
+
         // 设置Token
         LargeLanguageModels.reload()
 
@@ -657,21 +660,19 @@ object JChatGPT : KotlinPlugin(
                         )
                     )
 
-                    // 记录token使用量
+                    // 记录token使用量（按日聚合，独立JSON文件）
                     lastTokenUsage?.let { usage ->
                         val now = OffsetDateTime.now().toEpochSecond()
                         val groupId = if (event is GroupMessageEvent) event.subject.id else null
-                        val record = TokenUsageRecord(
+                        TokenUsageStore.record(
                             timestamp = now,
                             userId = event.sender.id,
                             userNickname = event.senderName,
                             groupId = groupId,
-                            model = PluginConfig.chatModel,
                             promptTokens = usage.promptTokens ?: 0,
                             completionTokens = usage.completionTokens ?: 0,
                             totalTokens = usage.totalTokens ?: 0
                         )
-                        PluginData.tokenUsageRecords.add(record)
                     }
 
                     // 处理最后一个工具调用

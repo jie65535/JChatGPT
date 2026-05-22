@@ -10,10 +10,7 @@ import net.mamoe.mirai.contact.Group
 import net.mamoe.mirai.contact.Member
 import net.mamoe.mirai.contact.User
 import top.jie65535.mirai.JChatGPT.reload
-import java.time.Instant
-import java.time.ZoneId
 import java.time.LocalDate
-import java.time.format.DateTimeFormatter
 
 object PluginCommands : CompositeCommand(
     JChatGPT, "jgpt", description = "J OpenAI ChatGPT"
@@ -81,29 +78,27 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.tokens(days: Int = 7) {
         validateDays(days)
 
-        if (PluginData.tokenUsageRecords.isEmpty()) {
+        if (TokenUsageStore.all.isEmpty()) {
             sendMessage("暂无 Token 使用记录")
             return
         }
 
-        val cutoff = calculateCutoffTimestamp(days)
-        val todayStart = calculateTodayStartTimestamp()
+        val cutoff = calculateCutoffDate(days)
+        val today = LocalDate.now().toString()
 
-        // 一次遍历计算所有统计数据
         data class Statistics(
-            var totalTokens: Int = 0,
-            var todayTokens: Int = 0,
-            val userTotals: MutableMap<Long, Pair<String, Int>> = mutableMapOf(),
-            val groupTotals: MutableMap<Long, Int> = mutableMapOf(),
+            var totalTokens: Long = 0,
+            var todayTokens: Long = 0,
+            val userTotals: MutableMap<Long, Pair<String, Long>> = mutableMapOf(),
+            val groupTotals: MutableMap<Long, Long> = mutableMapOf(),
             val users: MutableSet<Long> = mutableSetOf()
         )
 
-        val stats = PluginData.tokenUsageRecords.fold(Statistics()) { acc, record ->
-            if (record.timestamp >= cutoff) {
+        val stats = TokenUsageStore.all.fold(Statistics()) { acc, record ->
+            if (record.date >= cutoff) {
                 acc.totalTokens += record.totalTokens
                 acc.users.add(record.userId)
 
-                // 累计用户Token
                 val existing = acc.userTotals[record.userId]
                 if (existing == null) {
                     acc.userTotals[record.userId] = record.userNickname to record.totalTokens
@@ -111,13 +106,12 @@ object PluginCommands : CompositeCommand(
                     acc.userTotals[record.userId] = existing.first to (existing.second + record.totalTokens)
                 }
 
-                // 累计群组Token
                 record.groupId?.let { groupId ->
-                    acc.groupTotals[groupId] = acc.groupTotals.getOrDefault(groupId, 0) + record.totalTokens
+                    acc.groupTotals[groupId] = acc.groupTotals.getOrDefault(groupId, 0L) + record.totalTokens
                 }
             }
 
-            if (record.timestamp >= todayStart) {
+            if (record.date == today) {
                 acc.todayTokens += record.totalTokens
             }
 
@@ -151,7 +145,7 @@ object PluginCommands : CompositeCommand(
             appendLine("  /jgpt tokensDaily [days]  - 每日统计")
             appendLine("  /jgpt tokensUsers [limit] - 用户排名")
             appendLine("  /jgpt tokensGroups [limit] - 群组排名")
-            appendLine("  /jgpt tokensQuery [userId] [days] - 详细记录")
+            appendLine("  /jgpt tokensQuery [userId] [days] - 每日逐人记录")
             appendLine("  /jgpt tokensUserDaily <userId> [days] - 用户日统计")
         }
 
@@ -162,19 +156,12 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.tokensDaily(days: Int = 7) {
         validateDays(days)
 
-        val cutoff = calculateCutoffTimestamp(days)
+        val cutoff = calculateCutoffDate(days)
 
-        val dailyStats = PluginData.tokenUsageRecords
-            .filter { it.timestamp >= cutoff }
-            .groupBy {
-                LocalDate.ofInstant(
-                    Instant.ofEpochSecond(it.timestamp),
-                    ZoneId.systemDefault()
-                )
-            }
-            .mapValues { (_, records) ->
-                records.sumOf { it.totalTokens }
-            }
+        val dailyStats = TokenUsageStore.all
+            .filter { it.date >= cutoff }
+            .groupBy { it.date }
+            .mapValues { (_, records) -> records.sumOf { it.totalTokens } }
             .toSortedMap()
 
         if (dailyStats.isEmpty()) {
@@ -196,13 +183,11 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.tokensUsers(limit: Int = 10) {
         require(limit > 0) { "limit must be positive: $limit" }
 
-        val userStats = PluginData.tokenUsageRecords
+        val userStats = TokenUsageStore.all
             .groupBy { it.userId }
             .mapValues { (_, records) ->
-                Pair(
-                    records.first().userNickname,
-                    records.sumOf { it.totalTokens }
-                )
+                val latest = records.maxByOrNull { it.date }!!
+                Pair(latest.userNickname, records.sumOf { it.totalTokens })
             }
             .toList()
             .sortedByDescending { it.second.second }
@@ -227,12 +212,10 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.tokensGroups(limit: Int = 10) {
         require(limit > 0) { "limit must be positive: $limit" }
 
-        val groupStats = PluginData.tokenUsageRecords
+        val groupStats = TokenUsageStore.all
             .filter { it.groupId != null }
             .groupBy { it.groupId!! }
-            .mapValues { (_, records) ->
-                records.sumOf { it.totalTokens }
-            }
+            .mapValues { (_, records) -> records.sumOf { it.totalTokens } }
             .toList()
             .sortedByDescending { it.second }
             .take(limit)
@@ -256,12 +239,12 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.tokensQuery(userId: Long?, days: Int = 7) {
         validateDays(days)
 
-        val cutoff = calculateCutoffTimestamp(days)
+        val cutoff = calculateCutoffDate(days)
 
-        val filtered = PluginData.tokenUsageRecords
-            .filter { it.timestamp >= cutoff }
+        val filtered = TokenUsageStore.all
+            .filter { it.date >= cutoff }
             .filter { userId == null || it.userId == userId }
-            .sortedByDescending { it.timestamp }
+            .sortedWith(compareByDescending<TokenUsageDailyRecord> { it.date }.thenByDescending { it.totalTokens })
             .take(DEFAULT_QUERY_LIMIT)
 
         if (filtered.isEmpty()) {
@@ -270,15 +253,12 @@ object PluginCommands : CompositeCommand(
         }
 
         val response = buildString {
-            appendLine("最近 $days 天使用记录（最多显示${DEFAULT_QUERY_LIMIT}条）：")
+            appendLine("最近 $days 天使用记录（最多显示${DEFAULT_QUERY_LIMIT}条，按日聚合）：")
             appendLine()
             filtered.forEach { record ->
-                val time = Instant.ofEpochSecond(record.timestamp)
-                    .atZone(ZoneId.systemDefault())
-                    .format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))
                 val location = if (record.groupId != null) "群${record.groupId}" else "私聊"
-                appendLine("[$time] $location - ${record.userNickname}")
-                appendLine("  模型: ${record.model}, Tokens: ${formatNumber(record.totalTokens)} " +
+                appendLine("[${record.date}] $location - ${record.userNickname}")
+                appendLine("  调用 ${record.callCount} 次, Tokens: ${formatNumber(record.totalTokens)} " +
                           "(输入: ${formatNumber(record.promptTokens)}, 输出: ${formatNumber(record.completionTokens)})")
                 appendLine()
             }
@@ -290,36 +270,28 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.tokensUserDaily(userId: Long, days: Int = 7) {
         validateDays(days)
 
-        val cutoff = calculateCutoffTimestamp(days)
+        val cutoff = calculateCutoffDate(days)
 
-        // 先过滤用户记录，同时获取昵称
-        val userRecords = PluginData.tokenUsageRecords
-            .filter { it.timestamp >= cutoff && it.userId == userId }
+        val userRecords = TokenUsageStore.all
+            .filter { it.date >= cutoff && it.userId == userId }
 
         if (userRecords.isEmpty()) {
             sendMessage("用户 $userId 在指定时间范围内无使用记录")
             return
         }
 
-        val userNickname = userRecords.first().userNickname
+        val userNickname = userRecords.maxByOrNull { it.date }!!.userNickname
 
         val userDailyStats = userRecords
-            .groupBy {
-                LocalDate.ofInstant(
-                    Instant.ofEpochSecond(it.timestamp),
-                    ZoneId.systemDefault()
-                )
-            }
-            .mapValues { (_, records) ->
-                records.sumOf { it.totalTokens }
-            }
+            .groupBy { it.date }
+            .mapValues { (_, records) -> records.sumOf { it.totalTokens } }
             .toSortedMap()
 
         val response = buildString {
             appendLine("用户 $userNickname 最近 $days 天 Token 使用统计：")
             appendLine()
             userDailyStats.forEach { (date, total) ->
-                appendLine("$date: $total tokens")
+                appendLine("$date: ${formatNumber(total)} tokens")
             }
             appendLine()
             appendLine("总计: ${formatNumber(userDailyStats.values.sum())} tokens")
@@ -330,23 +302,10 @@ object PluginCommands : CompositeCommand(
     // ==================== 辅助函数 ====================
 
     /**
-     * 计算截止时间戳（指定天数前的起始时间 00:00:00）
-     * 最近N天包含今天，所以要从 (N-1) 天前开始算
+     * 计算截止日期字符串（指定天数前的日期，含今天共 days 天）
      */
-    private fun calculateCutoffTimestamp(days: Int): Long {
-        return LocalDate.now()
-            .minusDays((days - 1).toLong())
-            .atStartOfDay(ZoneId.systemDefault())
-            .toEpochSecond()
-    }
-
-    /**
-     * 计算今天的起始时间戳（00:00:00）
-     */
-    private fun calculateTodayStartTimestamp(): Long {
-        return LocalDate.now()
-            .atStartOfDay(ZoneId.systemDefault())
-            .toEpochSecond()
+    private fun calculateCutoffDate(days: Int): String {
+        return LocalDate.now().minusDays((days - 1).toLong()).toString()
     }
 
     /**

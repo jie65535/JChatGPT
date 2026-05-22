@@ -40,26 +40,26 @@ data class FavorabilityInfo(
 }
 
 /**
- * Token使用记录数据类
- * @param timestamp Unix时间戳
- * @param userId 用户QQ号
- * @param userNickname 用户昵称
+ * Token使用日聚合记录。按 (date, userId, groupId) 维度合并。由 [TokenUsageStore] 持久化到独立 JSON 文件。
+ * @param date 本地时区下的日期，格式 yyyy-MM-dd
+ * @param userId QQ
+ * @param userNickname 最近一次记录到的昵称
  * @param groupId 群号（私聊时为null）
- * @param model 模型名称
- * @param promptTokens 输入token数
- * @param completionTokens 输出token数
- * @param totalTokens 总token数
+ * @param promptTokens 当天累计输入token
+ * @param completionTokens 当天累计输出token
+ * @param totalTokens 当天累计总token
+ * @param callCount 当天调用次数
  */
 @Serializable
-data class TokenUsageRecord(
-    val timestamp: Long,
+data class TokenUsageDailyRecord(
+    val date: String,
     val userId: Long,
     val userNickname: String,
     val groupId: Long?,
-    val model: String,
-    val promptTokens: Int,
-    val completionTokens: Int,
-    val totalTokens: Int
+    val promptTokens: Long = 0,
+    val completionTokens: Long = 0,
+    val totalTokens: Long = 0,
+    val callCount: Int = 0
 )
 
 object PluginData : AutoSavePluginData("data") {
@@ -74,11 +74,6 @@ object PluginData : AutoSavePluginData("data") {
      * Value: 好感度信息
      */
     val userFavorability by value(mutableMapOf<Long, FavorabilityInfo>())
-
-    /**
-     * Token使用记录
-     */
-    val tokenUsageRecords by value(mutableListOf<TokenUsageRecord>())
 
     /**
      * 添加对话记忆

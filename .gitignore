@@ -1,6 +1,7 @@
 # User-specific stuff
 .idea/
 .run/
+build-with-jdk17.bat
 
 *.iml
 *.ipr
