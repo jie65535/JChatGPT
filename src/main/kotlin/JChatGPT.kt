@@ -982,19 +982,22 @@ object JChatGPT : KotlinPlugin(
     private fun getNameCard(member: Member): String {
         val nameCard = StringBuilder()
         // 群活跃等级
-        nameCard.append("【lv").append(member.active.temperature).append(" ")
+        nameCard.append("【lv").append(member.active.temperature)
+        // 真实群身份：始终按实际权限显示，不会被专属头衔覆盖
+        nameCard.append(' ').append(
+            when (member.permission) {
+                OWNER -> "群主"
+                ADMINISTRATOR -> "管理员"
+                MEMBER -> "群员"
+            }
+        )
+        // 头衔：有专属头衔则显示专属头衔（群主可任意赋予，可能与真实身份不符，故标注"头衔"以区分），
+        // 否则回退到聊天窗口可见的活跃等级称号
         try {
-            // 群头衔
             if (member.specialTitle.isNotEmpty()) {
-                nameCard.append(member.specialTitle)
-            } else {
-                nameCard.append(
-                    when (member.permission) {
-                        OWNER -> "群主"
-                        ADMINISTRATOR -> "管理员"
-                        MEMBER -> member.temperatureTitle
-                    }
-                )
+                nameCard.append(" 头衔\"").append(member.specialTitle).append('"')
+            } else if (member.temperatureTitle.isNotEmpty()) {
+                nameCard.append(' ').append(member.temperatureTitle)
             }
         } catch (e: Throwable) {
             logger.warning("获取群头衔失败", e)
