@@ -21,7 +21,22 @@ object PluginCommands : CompositeCommand(
         PluginConfig.reload()
         PluginData.reload()
         LargeLanguageModels.reload()
+        SkillStore.reload()
         sendMessage("OK")
+    }
+
+    @SubCommand
+    suspend fun CommandSender.skills() {
+        val all = SkillStore.all
+        if (all.isEmpty()) {
+            sendMessage("暂无技能")
+            return
+        }
+        val response = buildString {
+            appendLine("当前技能（共 ${all.size} 个）：")
+            all.forEach { appendLine("- ${it.name}: ${it.description}") }
+        }
+        sendMessage(response.trim())
     }
 
     @SubCommand

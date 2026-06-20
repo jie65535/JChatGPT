@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "top.jie65535.mirai"
-version = "1.11.0"
+version = "1.12.0"
 
 mirai {
     jvmTarget = JavaVersion.VERSION_11

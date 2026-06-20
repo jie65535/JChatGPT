@@ -123,6 +123,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("是否启用记忆编辑功能，记忆存在data目录，提示词中需要加上{memory}来填充记忆，每个群都有独立记忆")
     val memoryEnabled by value(true)
 
+    @ValueDescription("是否启用技能系统，技能存在data/skills目录（全局跨群），提示词中需要加上{skills}来注入技能索引")
+    val skillsEnabled by value(true)
+
     @ValueDescription("是否启用好感度系统")
     val enableFavorabilitySystem by value(true)
 

@@ -52,7 +52,7 @@ object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.11.0",
+        version = "1.12.0",
     ) {
         author("jie65535")
 //        dependsOn("xyz.cssxsh.mirai.plugin.mirai-hibernate-plugin", true)
@@ -81,6 +81,9 @@ object JChatGPT : KotlinPlugin(
 
         // 初始化 token 使用日聚合存储（独立 JSON 文件，绕开 yamlkt 大数据 bug）
         TokenUsageStore.init(dataFolder)
+
+        // 初始化技能存储（data/skills/ 下的 markdown 文件，全局跨群）
+        SkillStore.init(dataFolder)
 
         // 设置Token
         LargeLanguageModels.reload()
@@ -267,6 +270,12 @@ object JChatGPT : KotlinPlugin(
             if (memoryText.isNullOrEmpty()) {
                 "暂无相关记忆"
             } else memoryText
+        }
+
+        replace("{skills}") {
+            if (PluginConfig.skillsEnabled) {
+                SkillStore.buildIndexPrompt()
+            } else "暂无技能"
         }
 
         replace("{meme}") {
@@ -927,6 +936,15 @@ object JChatGPT : KotlinPlugin(
 
         // 记忆修改
         MemoryReplace(),
+
+        // 技能：加载
+        LoadSkill(),
+
+        // 技能：沉淀/迭代
+        SaveSkill(),
+
+        // 技能：删除
+        DeleteSkill(),
 
         // 搜索聊天历史
         SearchChatHistory(),
