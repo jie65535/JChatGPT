@@ -116,8 +116,6 @@ object JChatGPT : KotlinPlugin(
         logger.info { "Plugin loaded" }
     }
 
-    private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
-        .withZone(ZoneOffset.systemDefault())
     private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy年MM月dd E HH:mm:ss")
 
     private val requestMap = ConcurrentSet<Long>()
@@ -141,12 +139,51 @@ object JChatGPT : KotlinPlugin(
      */
     private data class ConversationCache(
         val history: MutableList<ChatMessage>,
-        val lastActivityAt: Int
+        val lastActivityAt: Int,
+        val replyIndex: ReplyIndex
     ) {
         fun isExpired(ttlSeconds: Int): Boolean {
             return OffsetDateTime.now().toEpochSecond().toInt() - lastActivityAt > ttlSeconds
         }
     }
+
+    /**
+     * 回复索引：每个会话(subject)在一次对话期间维护一份「短编号 -> 消息记录」映射，
+     * 让 LLM 能用历史里每行行首的 [n] 来引用回复某条消息。
+     * 编号按消息出现顺序递增，跨「初始历史」与「新增消息」连续编号；同一条消息(ids 相同)复用既有编号。
+     */
+    class ReplyIndex {
+        private val byIndex = LinkedHashMap<Int, MessageRecord>()
+        private val indexByIds = HashMap<String, Int>()
+        private var counter = 0
+
+        fun add(record: MessageRecord): Int {
+            // ids 可能为 null（如发送失败的记录），此时无法去重/被引用匹配，但仍分配编号
+            val ids = record.ids
+            if (ids != null) {
+                indexByIds[ids]?.let { return it }
+            }
+            val i = ++counter
+            byIndex[i] = record
+            if (ids != null) {
+                indexByIds[ids] = i
+            }
+            return i
+        }
+
+        fun get(index: Int): MessageRecord? = byIndex[index]
+        fun indexOfIds(ids: String): Int? = indexByIds[ids]
+    }
+
+    /** 各会话的回复索引，startChat 开始时重建，结束时清理 */
+    private val replyIndexMap = ConcurrentMap<Long, ReplyIndex>()
+
+    /** 供发言工具按编号查找被引用的历史消息 */
+    internal fun lookupReplyTarget(subjectId: Long, index: Int): MessageRecord? =
+        replyIndexMap[subjectId]?.get(index)
+
+    private val shortTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+        .withZone(ZoneOffset.systemDefault())
 
     private suspend fun onMessage(event: MessageEvent) {
         // 检查Token是否设置
@@ -319,6 +356,8 @@ object JChatGPT : KotlinPlugin(
         // 构造历史消息
         val historyText = StringBuilder()
         var lastId = 0L
+        // 本轮回复索引，逐条登记消息编号供 [n] 引用
+        val replyIndex = replyIndexMap.getOrPut(event.subject.id) { ReplyIndex() }
         if (event is GroupMessageEvent) {
             if (PluginConfig.enableFavorabilitySystem) {
                 val knownUsers = history.asSequence()
@@ -345,10 +384,10 @@ object JChatGPT : KotlinPlugin(
                 }
             }
 
-            historyText.appendLine("## 近期群消息（更早已隐藏）")
+            historyText.appendLine("## 近期群消息（更早已隐藏，行首[n]为消息编号，可用于引用回复）")
             for (record in history) {
                 // 同一人发言不要反复出现这人的名字，减少上下文
-                appendGroupMessageRecord(historyText, record, event, lastId != record.fromId)
+                appendGroupMessageRecord(historyText, record, event, replyIndex, lastId != record.fromId)
                 lastId = record.fromId
             }
         } else {
@@ -366,10 +405,10 @@ object JChatGPT : KotlinPlugin(
                 }
             }
 
-            historyText.appendLine("## 近期对话（更早已隐藏）")
+            historyText.appendLine("## 近期对话（更早已隐藏，行首[n]为消息编号，可用于引用回复）")
             for (record in history) {
                 // 同一人发言不要反复出现这人的名字，减少上下文
-                appendMessageRecord(historyText, record, event, lastId != record.fromId)
+                appendMessageRecord(historyText, record, event, replyIndex, lastId != record.fromId)
                 lastId = record.fromId
             }
         }
@@ -387,44 +426,75 @@ object JChatGPT : KotlinPlugin(
         historyText: StringBuilder,
         record: MessageRecord,
         event: GroupMessageEvent,
+        replyIndex: ReplyIndex,
         showSender: Boolean,
     ) {
+        val index = replyIndex.add(record)
+        val recordMessage = record.toMessageChain()
+
+        historyText.append('[').append(index).append("] ")
         if (showSender) {
-            // 名字前空行
-            historyText.appendLine()
-            // 名称显示
+            // 新发言者：[n] 名称 时间
             if (event.bot.id == record.fromId) {
-                historyText.append("**你** " + getNameCard(event.subject.botAsMember))
+                historyText.append("**你** ").append(getNameCard(event.subject.botAsMember))
             } else {
                 historyText.append(getNameCard(event.subject, record.fromId))
             }
-            // 发言时间
             historyText.append(' ')
-                .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
+                .append(shortTimeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
+                .append(' ')
+        } else {
+            // 同一发言者续行
+            historyText.append(" └ ")
         }
 
-
-        val recordMessage = record.toMessageChain()
+        // 引用：用编号指针替代内联原文，避免被误认为是本人发言
         recordMessage[QuoteReply.Key]?.let {
-            historyText.append(" 引用 ${getNameCard(event.subject, it.source.fromId)} 说的\n > ")
-                .appendLine(it.source.originalMessage.content.replace("\n", "\n > "))
+            appendQuoteMarker(historyText, it, event.subject, replyIndex)
         }
 
-        if (showSender) {
-            // 消息内容
-            historyText.append(" 说：")
-        }
-
-        historyText.appendLine(record.toMessageChain().joinToString("") {
-            when (it) {
-                is At -> {
-                    it.getDisplay(event.subject)
-                }
-
-                else -> singleMessageToText(it)
-            }
-        })
+        historyText.appendLine(formatRecordContent(recordMessage, event.subject))
     }
+
+    /**
+     * 序列化「引用回复」标记：被引用消息在窗口内时用 ↩[编号]，否则内联简短原文并标注原作者。
+     */
+    private fun appendQuoteMarker(
+        sb: StringBuilder,
+        quote: QuoteReply,
+        contact: Contact,
+        replyIndex: ReplyIndex
+    ) {
+        val srcIds = quote.source.ids.joinToString(",")
+        val idx = replyIndex.indexOfIds(srcIds)
+        if (idx != null) {
+            sb.append("↩[").append(idx).append("] ")
+        } else {
+            val author = if (contact is Group) {
+                contact[quote.source.fromId]?.nameCardOrNick ?: "未知(${quote.source.fromId})"
+            } else {
+                quote.source.fromId.toString()
+            }
+            val snippet = quote.source.originalMessage
+                .joinToString("", transform = ::singleMessageToText)
+                .replace("\n", " ")
+                .let { if (it.length > 20) it.take(20) + "…" else it }
+            sb.append("↩(").append(author).append(":\"").append(snippet).append("\") ")
+        }
+    }
+
+    /**
+     * 序列化消息正文（剔除引用/源元数据，@显示为名称，转发折叠）。
+     */
+    private fun formatRecordContent(chain: MessageChain, contact: Contact): String =
+        chain.asSequence()
+            .filterNot { it is QuoteReply || it is MessageSource }
+            .joinToString("") {
+                when (it) {
+                    is At -> if (contact is Group) it.getDisplay(contact) else it.content
+                    else -> singleMessageToText(it)
+                }
+            }
 
     private fun getNameCard(group: Group, qq: Long): String {
         val member = group[qq]
@@ -445,41 +515,37 @@ object JChatGPT : KotlinPlugin(
         historyText: StringBuilder,
         record: MessageRecord,
         event: MessageEvent,
+        replyIndex: ReplyIndex,
         showSender: Boolean
     ) {
+        val index = replyIndex.add(record)
+        val recordMessage = record.toMessageChain()
+
+        historyText.append('[').append(index).append("] ")
         if (showSender) {
             if (event.bot.id == record.fromId) {
-                historyText.append("**你** " + event.bot.nameCardOrNick)
+                historyText.append("**你** ").append(event.bot.nameCardOrNick)
             } else {
                 historyText.append(event.senderName)
             }
-            historyText
-                .append(" ")
-                // 发言时间
-                .append(timeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
+            historyText.append(' ')
+                .append(shortTimeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
+                .append(' ')
+        } else {
+            historyText.append(" └ ")
         }
-        val recordMessage = record.toMessageChain()
+
         recordMessage[QuoteReply.Key]?.let {
-            historyText.append(" 引用\n > ")
-                .appendLine(
-                    it.source.originalMessage
-                        .joinToString("", transform = ::singleMessageToText)
-                        .replace("\n", "\n > ")
-                )
+            appendQuoteMarker(historyText, it, event.subject, replyIndex)
         }
-        if (showSender) {
-            historyText.append(" 说：")
-        }
-        // 消息内容
-        historyText.appendLine(
-            record.toMessageChain().joinToString("", transform = ::singleMessageToText)
-        )
+
+        historyText.appendLine(formatRecordContent(recordMessage, event.subject))
     }
 
     private fun singleMessageToText(it: SingleMessage): String {
         return when (it) {
             is ForwardMessage -> {
-                it.title + "\n  " + it.preview
+                "[转发消息·${it.nodeList.size}条:${it.title}]"
             }
 
             // 图片格式化
@@ -524,12 +590,16 @@ object JChatGPT : KotlinPlugin(
             // 尝试从缓存加载上下文
             val subjectId = event.subject.id
             val cache = contextCache[subjectId]
-            val history = if (PluginConfig.enableContextCache
+            val reuseCache = PluginConfig.enableContextCache
                 && cache != null
                 && !cache.isExpired(PluginConfig.contextCacheTimeoutMinutes * 60)
-            ) {
+            // 回复索引与对话上下文同寿命：复用缓存时沿用旧索引，保证 LLM 看到的 [n] 编号连续不串号；
+            // 否则新建（供 sendSingleMessage 的 replyTo 按编号引用历史消息）
+            val replyIndex = if (reuseCache) cache!!.replyIndex else ReplyIndex()
+            replyIndexMap[subjectId] = replyIndex
+            val history = if (reuseCache) {
                 // 缓存有效，复用历史
-                logger.info("使用缓存的对话上下文，包含 ${cache.history.size} 条互动消息")
+                logger.info("使用缓存的对话上下文，包含 ${cache!!.history.size} 条互动消息")
                 cache.history
             } else {
                 // 缓存无效或不存在，创建新上下文
@@ -720,7 +790,8 @@ object JChatGPT : KotlinPlugin(
                         if (PluginConfig.enableContextCache) {
                             contextCache[subjectId] = ConversationCache(
                                 history = history,
-                                lastActivityAt = startedAt
+                                lastActivityAt = startedAt,
+                                replyIndex = replyIndex
                             )
                             logger.debug("已保存对话上下文到缓存")
                         }
@@ -739,6 +810,8 @@ object JChatGPT : KotlinPlugin(
             logger.warning(ex)
             event.subject.sendMessage("很抱歉，发生异常，请稍后重试")
         } finally {
+            // 清理本轮回复索引
+            replyIndexMap.remove(event.subject.id)
             // 一段时间后才允许再次提问，防止高频对话
             launch {
                 delay(500.milliseconds)
