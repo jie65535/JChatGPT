@@ -544,9 +544,8 @@ object JChatGPT : KotlinPlugin(
 
     private fun singleMessageToText(it: SingleMessage): String {
         return when (it) {
-            is ForwardMessage -> {
-                "[转发消息·${it.nodeList.size}条:${it.title}]"
-            }
+            // 完整展开合并转发内容，便于 LLM 阅读分析转发的对话（依赖大上下文+缓存，不做截断）
+            is ForwardMessage -> formatForward(it, 1)
 
             // 图片格式化
             is Image -> {
@@ -562,6 +561,32 @@ object JChatGPT : KotlinPlugin(
             }
 
             else -> it.content
+        }
+    }
+
+    /**
+     * 递归展开合并转发消息，用 Markdown 引用块表示：每加深一层嵌套多一个 `>`（>、>>、>>>…）。
+     * @param depth 当前嵌套层级，从 1 开始
+     */
+    private fun formatForward(forward: ForwardMessage, depth: Int): String = buildString {
+        val quote = ">".repeat(depth) + " "
+        append("[转发消息·").append(forward.nodeList.size).append("条")
+        if (forward.title.isNotEmpty()) append(':').append(forward.title)
+        append(']')
+        for (node in forward.nodeList) {
+            append('\n').append(quote)
+                .append(node.senderName).append(' ')
+                .append(shortTimeFormatter.format(Instant.ofEpochSecond(node.time.toLong())))
+                .append(": ")
+            node.messageChain.forEach { sub ->
+                if (sub is ForwardMessage) {
+                    // 嵌套转发：层级加深，自带更深的 `>` 前缀，无需再次缩进
+                    append(formatForward(sub, depth + 1))
+                } else {
+                    // 其它内容：多行正文对齐到当前引用层级
+                    append(singleMessageToText(sub).replace("\n", "\n$quote"))
+                }
+            }
         }
     }
 
