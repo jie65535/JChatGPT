@@ -1023,11 +1023,16 @@ object JChatGPT : KotlinPlugin(
     }
 
     private fun getNameCard(member: Member): String {
-        val nameCard = StringBuilder()
-        // 群活跃等级
-        nameCard.append("【lv").append(member.active.temperature)
+        val nameCard = StringBuilder("【")
+        // 群活跃等级：active 依赖 OneBot 拉取群荣誉数据，繁忙/失败时会抛 "Error code: 2"，
+        // 必须兜底，否则整次回复都会因取名片失败而中断。
+        try {
+            nameCard.append("lv").append(member.active.temperature).append(' ')
+        } catch (e: Throwable) {
+            logger.warning("获取群活跃等级失败", e)
+        }
         // 真实群身份：始终按实际权限显示，不会被专属头衔覆盖
-        nameCard.append(' ').append(
+        nameCard.append(
             when (member.permission) {
                 OWNER -> "群主"
                 ADMINISTRATOR -> "管理员"
