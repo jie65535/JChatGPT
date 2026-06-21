@@ -188,6 +188,10 @@ object JChatGPT : KotlinPlugin(
     private val shortTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneOffset.systemDefault())
 
+    // 同一发言者连续消息默认省略时间以节省上下文；但间隔超过此阈值（秒）时仍补回时间，
+    // 避免模型把刚发的续行消息误判为很久以前发生。
+    private const val CONTINUATION_TIME_GAP_SECONDS = 60L
+
     private suspend fun onMessage(event: MessageEvent) {
         // 检查Token是否设置
         if (LargeLanguageModels.chat == null) return
@@ -365,6 +369,7 @@ object JChatGPT : KotlinPlugin(
         // 构造历史消息
         val historyText = StringBuilder()
         var lastId = 0L
+        var lastTime = 0L
         // 本轮回复索引，逐条登记消息编号供 [n] 引用
         val replyIndex = replyIndexMap.getOrPut(event.subject.id) { ReplyIndex() }
         if (event is GroupMessageEvent) {
@@ -396,8 +401,11 @@ object JChatGPT : KotlinPlugin(
             historyText.appendLine("## 近期群消息（更早已隐藏，行首[n]为消息编号，可用于引用回复）")
             for (record in history) {
                 // 同一人发言不要反复出现这人的名字，减少上下文
-                appendGroupMessageRecord(historyText, record, event, replyIndex, lastId != record.fromId)
+                val showSender = lastId != record.fromId
+                val showTime = showSender || record.time.toLong() - lastTime > CONTINUATION_TIME_GAP_SECONDS
+                appendGroupMessageRecord(historyText, record, event, replyIndex, showSender, showTime)
                 lastId = record.fromId
+                lastTime = record.time.toLong()
             }
         } else {
             if (PluginConfig.enableFavorabilitySystem) {
@@ -417,8 +425,11 @@ object JChatGPT : KotlinPlugin(
             historyText.appendLine("## 近期对话（更早已隐藏，行首[n]为消息编号，可用于引用回复）")
             for (record in history) {
                 // 同一人发言不要反复出现这人的名字，减少上下文
-                appendMessageRecord(historyText, record, event, replyIndex, lastId != record.fromId)
+                val showSender = lastId != record.fromId
+                val showTime = showSender || record.time.toLong() - lastTime > CONTINUATION_TIME_GAP_SECONDS
+                appendMessageRecord(historyText, record, event, replyIndex, showSender, showTime)
                 lastId = record.fromId
+                lastTime = record.time.toLong()
             }
         }
 
@@ -437,6 +448,7 @@ object JChatGPT : KotlinPlugin(
         event: GroupMessageEvent,
         replyIndex: ReplyIndex,
         showSender: Boolean,
+        showTime: Boolean,
     ) {
         val index = replyIndex.add(record)
         val recordMessage = record.toMessageChain()
@@ -453,8 +465,12 @@ object JChatGPT : KotlinPlugin(
                 .append(shortTimeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
                 .append(' ')
         } else {
-            // 同一发言者续行
+            // 同一发言者续行；间隔过久则补回时间，避免被误判为很久以前发生
             historyText.append(" └ ")
+            if (showTime) {
+                historyText.append(shortTimeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
+                    .append(' ')
+            }
         }
 
         // 引用：用编号指针替代内联原文，避免被误认为是本人发言
@@ -525,7 +541,8 @@ object JChatGPT : KotlinPlugin(
         record: MessageRecord,
         event: MessageEvent,
         replyIndex: ReplyIndex,
-        showSender: Boolean
+        showSender: Boolean,
+        showTime: Boolean,
     ) {
         val index = replyIndex.add(record)
         val recordMessage = record.toMessageChain()
@@ -541,7 +558,12 @@ object JChatGPT : KotlinPlugin(
                 .append(shortTimeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
                 .append(' ')
         } else {
+            // 同一发言者续行；间隔过久则补回时间，避免被误判为很久以前发生
             historyText.append(" └ ")
+            if (showTime) {
+                historyText.append(shortTimeFormatter.format(Instant.ofEpochSecond(record.time.toLong())))
+                    .append(' ')
+            }
         }
 
         recordMessage[QuoteReply.Key]?.let {
