@@ -101,217 +101,85 @@ object PluginCommands : CompositeCommand(
         val cutoff = calculateCutoffDate(days)
         val today = LocalDate.now().toString()
 
-        data class Statistics(
-            var totalTokens: Long = 0,
-            var todayTokens: Long = 0,
-            val userTotals: MutableMap<Long, Pair<String, Long>> = mutableMapOf(),
-            val groupTotals: MutableMap<Long, Long> = mutableMapOf(),
-            val users: MutableSet<Long> = mutableSetOf()
-        )
-
-        val stats = TokenUsageStore.all.fold(Statistics()) { acc, record ->
-            if (record.date >= cutoff) {
-                acc.totalTokens += record.totalTokens
-                acc.users.add(record.userId)
-
-                val existing = acc.userTotals[record.userId]
-                if (existing == null) {
-                    acc.userTotals[record.userId] = record.userNickname to record.totalTokens
-                } else {
-                    acc.userTotals[record.userId] = existing.first to (existing.second + record.totalTokens)
-                }
-
-                record.groupId?.let { groupId ->
-                    acc.groupTotals[groupId] = acc.groupTotals.getOrDefault(groupId, 0L) + record.totalTokens
-                }
-            }
-
-            if (record.date == today) {
-                acc.todayTokens += record.totalTokens
-            }
-
-            acc
+        val windowed = TokenUsageStore.all.filter { it.date >= cutoff }
+        if (windowed.isEmpty()) {
+            sendMessage("最近 $days 天无 Token 使用记录")
+            return
         }
 
-        val topUser = stats.userTotals.entries.maxByOrNull { it.value.second }
-        val topGroup = stats.groupTotals.entries.maxByOrNull { it.value }
-
-        val response = buildString {
-            appendLine("📊 Token 使用简报（最近 $days 天）")
-            appendLine()
-            appendLine("总计: ${formatNumber(stats.totalTokens)} tokens")
-            appendLine("今日: ${formatNumber(stats.todayTokens)} tokens")
-            appendLine("活跃用户: ${stats.users.size} 人")
-
-            topUser?.let {
-                appendLine()
-                appendLine("👤 最活跃用户:")
-                appendLine("  ${it.value.first} - ${formatNumber(it.value.second)} tokens")
-            }
-
-            topGroup?.let {
-                appendLine()
-                appendLine("👥 最活跃群组:")
-                appendLine("  ${it.key} - ${formatNumber(it.value)} tokens")
-            }
-
-            appendLine()
-            appendLine("📋 详细查询:")
-            appendLine("  /jgpt tokensDaily [days]  - 每日统计")
-            appendLine("  /jgpt tokensUsers [limit] - 用户排名")
-            appendLine("  /jgpt tokensGroups [limit] - 群组排名")
-            appendLine("  /jgpt tokensQuery [userId] [days] - 每日逐人记录")
-            appendLine("  /jgpt tokensUserDaily <userId> [days] - 用户日统计")
+        // 窗口汇总
+        var prompt = 0L; var completion = 0L; var total = 0L; var cached = 0L
+        var calls = 0; var todayTotal = 0L
+        val users = HashSet<Long>()
+        for (r in windowed) {
+            prompt += r.promptTokens
+            completion += r.completionTokens
+            total += r.totalTokens
+            cached += r.cachedTokens
+            calls += r.callCount
+            users.add(r.userId)
+            if (r.date == today) todayTotal += r.totalTokens
         }
+        val hitRate = if (prompt > 0) cached * 100.0 / prompt else 0.0
 
-        sendMessage(response)
-    }
-
-    @SubCommand
-    suspend fun CommandSender.tokensDaily(days: Int = 7) {
-        validateDays(days)
-
-        val cutoff = calculateCutoffDate(days)
-
-        val dailyStats = TokenUsageStore.all
-            .filter { it.date >= cutoff }
-            .groupBy { it.date }
-            .mapValues { (_, records) -> records.sumOf { it.totalTokens } }
+        // 每日趋势
+        val daily = windowed.groupBy { it.date }
+            .mapValues { (_, rs) -> rs.sumOf { it.totalTokens } }
             .toSortedMap()
 
-        if (dailyStats.isEmpty()) {
-            sendMessage("指定时间范围内无使用记录")
-            return
-        }
-
-        val response = buildString {
-            appendLine("最近 $days 天 Token 使用统计：")
-            appendLine()
-            dailyStats.forEach { (date, total) ->
-                appendLine("$date: ${formatNumber(total)} tokens")
+        // Top 用户
+        val topUsers = windowed.groupBy { it.userId }
+            .map { (_, rs) ->
+                val name = rs.maxByOrNull { it.date }!!.userNickname
+                name to rs.sumOf { it.totalTokens }
             }
-        }
-        sendMessage(response)
-    }
-
-    @SubCommand
-    suspend fun CommandSender.tokensUsers(limit: Int = 10) {
-        require(limit > 0) { "limit must be positive: $limit" }
-
-        val userStats = TokenUsageStore.all
-            .groupBy { it.userId }
-            .mapValues { (_, records) ->
-                val latest = records.maxByOrNull { it.date }!!
-                Pair(latest.userNickname, records.sumOf { it.totalTokens })
-            }
-            .toList()
-            .sortedByDescending { it.second.second }
-            .take(limit)
-
-        if (userStats.isEmpty()) {
-            sendMessage("暂无使用记录")
-            return
-        }
-
-        val response = buildString {
-            appendLine("Token 使用排名 Top $limit：")
-            appendLine()
-            userStats.forEach {
-                appendLine("- ${it.second.first}(${it.first}): ${formatNumber(it.second.second)} tokens")
-            }
-        }
-        sendMessage(response)
-    }
-
-    @SubCommand
-    suspend fun CommandSender.tokensGroups(limit: Int = 10) {
-        require(limit > 0) { "limit must be positive: $limit" }
-
-        val groupStats = TokenUsageStore.all
-            .filter { it.groupId != null }
-            .groupBy { it.groupId!! }
-            .mapValues { (_, records) -> records.sumOf { it.totalTokens } }
-            .toList()
             .sortedByDescending { it.second }
-            .take(limit)
+            .take(TOP_LIMIT)
 
-        if (groupStats.isEmpty()) {
-            sendMessage("暂无群组使用记录")
-            return
-        }
-
-        val response = buildString {
-            appendLine("群组 Token 使用排名 Top $limit：")
-            appendLine()
-            groupStats.forEach { (groupId, total) ->
-                appendLine("- $groupId: ${formatNumber(total)} tokens")
+        // Top 群组：只显示群名，绝不暴露群号（避免被误判宣群）
+        val topGroups = windowed.filter { it.groupId != null }
+            .groupBy { it.groupId!! }
+            .map { (gid, rs) ->
+                val name = rs.firstNotNullOfOrNull { r -> r.groupName?.takeIf { it.isNotBlank() } }
+                    ?: resolveGroupName(gid)
+                name to rs.sumOf { it.totalTokens }
             }
-        }
-        sendMessage(response)
-    }
-
-    @SubCommand
-    suspend fun CommandSender.tokensQuery(userId: Long?, days: Int = 7) {
-        validateDays(days)
-
-        val cutoff = calculateCutoffDate(days)
-
-        val filtered = TokenUsageStore.all
-            .filter { it.date >= cutoff }
-            .filter { userId == null || it.userId == userId }
-            .sortedWith(compareByDescending<TokenUsageDailyRecord> { it.date }.thenByDescending { it.totalTokens })
-            .take(DEFAULT_QUERY_LIMIT)
-
-        if (filtered.isEmpty()) {
-            sendMessage("指定时间范围内无使用记录")
-            return
-        }
+            .sortedByDescending { it.second }
+            .take(TOP_LIMIT)
 
         val response = buildString {
-            appendLine("最近 $days 天使用记录（最多显示${DEFAULT_QUERY_LIMIT}条，按日聚合）：")
+            appendLine("📊 Token 简报 · 最近 $days 天")
             appendLine()
-            filtered.forEach { record ->
-                val location = if (record.groupId != null) "群${record.groupId}" else "私聊"
-                appendLine("[${record.date}] $location - ${record.userNickname}")
-                appendLine("  调用 ${record.callCount} 次, Tokens: ${formatNumber(record.totalTokens)} " +
-                          "(输入: ${formatNumber(record.promptTokens)}, 输出: ${formatNumber(record.completionTokens)})")
+            appendLine("输入 ${formatCompact(prompt)}（缓存命中 ${"%.1f".format(hitRate)}%，省 ${formatCompact(cached)}）")
+            appendLine("输出 ${formatCompact(completion)}")
+            appendLine("总计 ${formatCompact(total)} ｜ 调用 ${formatNumber(calls)} 次 ｜ 活跃 ${users.size} 人")
+            appendLine("今日 ${formatCompact(todayTotal)}")
+
+            if (daily.size > 1) {
                 appendLine()
+                appendLine("📈 每日趋势")
+                daily.forEach { (date, t) ->
+                    appendLine("  ${date.substring(5)}  ${formatCompact(t)}")
+                }
+            }
+
+            if (topUsers.isNotEmpty()) {
+                appendLine()
+                appendLine("👤 Top 用户")
+                topUsers.forEachIndexed { i, (name, t) ->
+                    appendLine("  ${i + 1}. $name  ${formatCompact(t)}")
+                }
+            }
+
+            if (topGroups.isNotEmpty()) {
+                appendLine()
+                appendLine("👥 Top 群组")
+                topGroups.forEachIndexed { i, (name, t) ->
+                    appendLine("  ${i + 1}. $name  ${formatCompact(t)}")
+                }
             }
         }
-        sendMessage(response)
-    }
-
-    @SubCommand
-    suspend fun CommandSender.tokensUserDaily(userId: Long, days: Int = 7) {
-        validateDays(days)
-
-        val cutoff = calculateCutoffDate(days)
-
-        val userRecords = TokenUsageStore.all
-            .filter { it.date >= cutoff && it.userId == userId }
-
-        if (userRecords.isEmpty()) {
-            sendMessage("用户 $userId 在指定时间范围内无使用记录")
-            return
-        }
-
-        val userNickname = userRecords.maxByOrNull { it.date }!!.userNickname
-
-        val userDailyStats = userRecords
-            .groupBy { it.date }
-            .mapValues { (_, records) -> records.sumOf { it.totalTokens } }
-            .toSortedMap()
-
-        val response = buildString {
-            appendLine("用户 $userNickname 最近 $days 天 Token 使用统计：")
-            appendLine()
-            userDailyStats.forEach { (date, total) ->
-                appendLine("$date: ${formatNumber(total)} tokens")
-            }
-            appendLine()
-            appendLine("总计: ${formatNumber(userDailyStats.values.sum())} tokens")
-        }
-        sendMessage(response)
+        sendMessage(response.trim())
     }
 
     // ==================== 辅助函数 ====================
@@ -331,6 +199,25 @@ object PluginCommands : CompositeCommand(
     }
 
     /**
+     * 大数压缩为 K/M，简报用，避免一屏全是逗号长串。
+     */
+    private fun formatCompact(n: Long): String = when {
+        n >= 1_000_000 -> "%.2fM".format(n / 1_000_000.0)
+        n >= 1_000 -> "%.1fK".format(n / 1_000.0)
+        else -> n.toString()
+    }
+
+    /**
+     * 解析群名：记录里没存到群名时（旧数据）才回退到在线 Bot 查询，
+     * 仍查不到则用占位文案，绝不直接展示群号。
+     */
+    private fun resolveGroupName(groupId: Long): String {
+        return net.mamoe.mirai.Bot.instances
+            .firstNotNullOfOrNull { it.getGroup(groupId)?.name }
+            ?: "未知群聊"
+    }
+
+    /**
      * 验证天数参数
      */
     private fun validateDays(days: Int) {
@@ -339,4 +226,4 @@ object PluginCommands : CompositeCommand(
 }
 
 // 常量定义
-private const val DEFAULT_QUERY_LIMIT = 20
+private const val TOP_LIMIT = 5

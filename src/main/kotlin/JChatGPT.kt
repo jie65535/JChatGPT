@@ -689,7 +689,8 @@ object JChatGPT : KotlinPlugin(
             do {
                 try {
                     val startedAt = OffsetDateTime.now().toEpochSecond().toInt()
-                    val responseFlow = chatCompletions(history)
+                    var lastCacheUsage: ModelService.CacheUsage? = null
+                    val responseFlow = chatCompletions(history) { lastCacheUsage = it }
                     var responseMessageBuilder: StringBuilder? = null
                     var reasoningContentBuilder: StringBuilder? = null
                     val responseToolCalls = mutableListOf<ToolCall.Function>()
@@ -789,15 +790,17 @@ object JChatGPT : KotlinPlugin(
                     // 记录token使用量（按日聚合，独立JSON文件）
                     lastTokenUsage?.let { usage ->
                         val now = OffsetDateTime.now().toEpochSecond()
-                        val groupId = if (event is GroupMessageEvent) event.subject.id else null
+                        val group = if (event is GroupMessageEvent) event.group else null
                         TokenUsageStore.record(
                             timestamp = now,
                             userId = event.sender.id,
                             userNickname = event.senderName,
-                            groupId = groupId,
+                            groupId = group?.id,
+                            groupName = group?.name,
                             promptTokens = usage.promptTokens ?: 0,
                             completionTokens = usage.completionTokens ?: 0,
-                            totalTokens = usage.totalTokens ?: 0
+                            totalTokens = usage.totalTokens ?: 0,
+                            cachedTokens = lastCacheUsage?.hitTokens ?: 0
                         )
                     }
 
@@ -1028,7 +1031,8 @@ object JChatGPT : KotlinPlugin(
 
     private fun chatCompletions(
         chatMessages: List<ChatMessage>,
-        hasTools: Boolean = true
+        hasTools: Boolean = true,
+        onCacheUsage: ((ModelService.CacheUsage) -> Unit)? = null
     ): Flow<ChatCompletionChunk> {
         val llm = LargeLanguageModels.chat ?: throw NullPointerException("OpenAI Token 未设置，无法开始")
         val availableTools = if (hasTools) {
@@ -1041,7 +1045,7 @@ object JChatGPT : KotlinPlugin(
             tools = availableTools,
         )
         logger.info("API Requesting... Model=${PluginConfig.chatModel}")
-        return llm.chatCompletions(request)
+        return llm.chatCompletions(request, onCacheUsage)
     }
 
     private fun getNameCard(member: Member): String {

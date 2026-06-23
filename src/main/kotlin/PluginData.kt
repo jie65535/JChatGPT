@@ -56,9 +56,13 @@ data class TokenUsageDailyRecord(
     val userId: Long,
     val userNickname: String,
     val groupId: Long?,
+    /** 群名称，记录时捕获。展示时优先用它，避免暴露群号（被误判宣群）。私聊为 null。 */
+    val groupName: String? = null,
     val promptTokens: Long = 0,
     val completionTokens: Long = 0,
     val totalTokens: Long = 0,
+    /** 命中缓存的输入 token 数（DeepSeek: prompt_cache_hit_tokens）。缓存命中率 = cachedTokens / promptTokens */
+    val cachedTokens: Long = 0,
     val callCount: Int = 0
 )
 

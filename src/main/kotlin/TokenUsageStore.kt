@@ -52,13 +52,16 @@ object TokenUsageStore {
         userId: Long,
         userNickname: String,
         groupId: Long?,
+        groupName: String?,
         promptTokens: Int,
         completionTokens: Int,
-        totalTokens: Int
+        totalTokens: Int,
+        cachedTokens: Int
     ) {
         val date = LocalDate.ofInstant(Instant.ofEpochSecond(timestamp), ZoneId.systemDefault())
             .format(dateFmt)
         val nickname = sanitizeNickname(userNickname)
+        val groupNameClean = groupName?.let { sanitizeNickname(it) }
         val idx = records.indexOfFirst {
             it.date == date && it.userId == userId && it.groupId == groupId
         }
@@ -66,9 +69,11 @@ object TokenUsageStore {
             val r = records[idx]
             records[idx] = r.copy(
                 userNickname = nickname.ifEmpty { r.userNickname },
+                groupName = groupNameClean?.ifEmpty { null } ?: r.groupName,
                 promptTokens = r.promptTokens + promptTokens,
                 completionTokens = r.completionTokens + completionTokens,
                 totalTokens = r.totalTokens + totalTokens,
+                cachedTokens = r.cachedTokens + cachedTokens,
                 callCount = r.callCount + 1
             )
         } else {
@@ -78,9 +83,11 @@ object TokenUsageStore {
                     userId = userId,
                     userNickname = nickname,
                     groupId = groupId,
+                    groupName = groupNameClean?.ifEmpty { null },
                     promptTokens = promptTokens.toLong(),
                     completionTokens = completionTokens.toLong(),
                     totalTokens = totalTokens.toLong(),
+                    cachedTokens = cachedTokens.toLong(),
                     callCount = 1
                 )
             )

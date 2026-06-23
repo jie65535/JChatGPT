@@ -48,7 +48,28 @@ class ModelService(
         explicitNulls = false
     }
 
-    fun chatCompletions(request: ChatCompletionRequest): Flow<ChatCompletionChunk> {
+    /**
+     * 一次响应的缓存命中用量。DeepSeek 在 usage 顶层返回的非标准字段，
+     * openai-kotlin 的 Usage 类不含这些字段，必须从原始 JSON 抠出来。
+     */
+    data class CacheUsage(val hitTokens: Int, val missTokens: Int)
+
+    /** 从原始 data 行（已去掉 "data: " 前缀）解析缓存命中用量；无相关字段返回 null。 */
+    private fun extractCacheUsage(rawJson: String): CacheUsage? {
+        return try {
+            val usage = json.parseToJsonElement(rawJson).jsonObject["usage"]?.jsonObject ?: return null
+            val hit = usage["prompt_cache_hit_tokens"]?.jsonPrimitive?.intOrNull
+            val miss = usage["prompt_cache_miss_tokens"]?.jsonPrimitive?.intOrNull
+            if (hit == null && miss == null) null else CacheUsage(hit ?: 0, miss ?: 0)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun chatCompletions(
+        request: ChatCompletionRequest,
+        onCacheUsage: ((CacheUsage) -> Unit)? = null
+    ): Flow<ChatCompletionChunk> {
         val requestJson = json.encodeToJsonElement(ChatCompletionRequest.serializer(), request)
             .jsonObject.toMutableMap()
         requestJson["stream"] = JsonPrimitive(true)
@@ -91,7 +112,9 @@ class ModelService(
                 }
 
                 if (firstDataLine != null && !firstDataLine.startsWith("data: [DONE]")) {
-                    emit(json.decodeFromString(firstDataLine.removePrefix("data: ")))
+                    val firstRaw = firstDataLine.removePrefix("data: ")
+                    emit(json.decodeFromString(firstRaw))
+                    onCacheUsage?.let { cb -> extractCacheUsage(firstRaw)?.let(cb) }
 
                     val ch = channel!!
                     while (currentCoroutineContext().isActive && !ch.isClosedForRead) {
@@ -101,7 +124,9 @@ class ModelService(
                         when {
                             line.startsWith("data: [DONE]") -> break
                             line.startsWith("data: ") -> {
-                                emit(json.decodeFromString(line.removePrefix("data: ")))
+                                val raw = line.removePrefix("data: ")
+                                emit(json.decodeFromString(raw))
+                                onCacheUsage?.let { cb -> extractCacheUsage(raw)?.let(cb) }
                             }
                             else -> continue
                         }
