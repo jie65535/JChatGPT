@@ -1,8 +1,21 @@
 package top.jie65535.mirai
 
+import kotlinx.serialization.Serializable
 import net.mamoe.mirai.console.data.AutoSavePluginConfig
 import net.mamoe.mirai.console.data.ValueDescription
 import net.mamoe.mirai.console.data.value
+
+/**
+ * 聊天模型备用接入点。用于主接入点（openAiApi/openAiToken/chatModel）连续失败时容灾切换。
+ * 任一字段留空则继承主接入点对应配置，因此可只换 API KEY、只换模型、或整体换一个服务商。
+ */
+@Serializable
+data class ChatFallbackEndpoint(
+    val api: String = "",
+    val token: String = "",
+    val model: String = "",
+    val extraBody: String = "",
+)
 
 object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("主人QQ，AI可以通过工具向主人发起请求，会等待一段时间")
@@ -40,6 +53,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("聊天模型额外请求体JSON，会合并到请求体中。例如DeepSeek关闭思维: {\"thinking\": {\"type\": \"disabled\"}}")
     val chatModelExtraBody: String by value("")
+
+    @ValueDescription("聊天模型备用接入点列表（容灾）。主接入点连续失败时按顺序切换；每项留空的字段会继承主接入点，例如只换API KEY就只填token，只换模型就只填model")
+    val chatFallbacks: List<ChatFallbackEndpoint> by value()
+
+    @ValueDescription("备用接入点冷却时间（分钟）。某接入点失败后在此时间内会被排到重试队尾，避免每条消息都先卡在故障接入点上。设为0禁用，默认5分钟")
+    val fallbackCooldownMinutes: Long by value(5L)
 
     @ValueDescription("推理模型额外请求体JSON，会合并到请求体中。例如DeepSeek启用思维: {\"thinking\": {\"type\": \"enabled\"}}")
     val reasoningModelExtraBody: String by value("")

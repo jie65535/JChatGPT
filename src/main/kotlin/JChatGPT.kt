@@ -42,6 +42,7 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import kotlin.collections.*
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sign
 import kotlin.time.Duration.Companion.seconds
@@ -683,14 +684,23 @@ object JChatGPT : KotlinPlugin(
                 )
             }
 
+            // 聊天接入点容灾：按健康度排序，主接入点故障冷却时备用接入点会自动排到前面
+            val endpoints = LargeLanguageModels.orderedChatEndpoints()
+            if (endpoints.isEmpty()) throw NullPointerException("OpenAI Token 未设置，无法开始")
+            var endpointIndex = 0
+
             var done: Boolean
             // 至少循环3次
             var retry = max(PluginConfig.retryMax, 3)
             do {
+                // 当前使用的接入点：失败重试时会前移到下一个备用接入点
+                val endpoint = endpoints[min(endpointIndex, endpoints.lastIndex)]
+                // 标记本轮 LLM 流式调用是否成功完成，用于精确区分「LLM失败」与「后续工具失败」
+                var streamingOk = false
                 try {
                     val startedAt = OffsetDateTime.now().toEpochSecond().toInt()
                     var lastCacheUsage: ModelService.CacheUsage? = null
-                    val responseFlow = chatCompletions(history) { lastCacheUsage = it }
+                    val responseFlow = chatCompletions(history, endpoint) { lastCacheUsage = it }
                     var responseMessageBuilder: StringBuilder? = null
                     var reasoningContentBuilder: StringBuilder? = null
                     val responseToolCalls = mutableListOf<ToolCall.Function>()
@@ -770,6 +780,9 @@ object JChatGPT : KotlinPlugin(
                         // 捕获token使用量
                         chunk.usage?.let { lastTokenUsage = it }
                     }
+                    // LLM 流式调用成功完成，上报接入点健康（清除冷却）
+                    streamingOk = true
+                    LargeLanguageModels.reportSuccess(endpoint)
 
                     // 移除思考内容
                     val responseContent = responseMessageBuilder?.replace(thinkRegex, "")?.trim()
@@ -856,11 +869,23 @@ object JChatGPT : KotlinPlugin(
                         }
                     }
                 } catch (e: Exception) {
+                    // 仅当 LLM 流式调用本身失败时才上报接入点故障并切换；
+                    // 若流式已成功、异常来自后续工具执行，则保持当前接入点不变
+                    if (!streamingOk) {
+                        LargeLanguageModels.reportFailure(endpoint)
+                        if (endpointIndex < endpoints.lastIndex) {
+                            endpointIndex++
+                            logger.warning("接入点[${endpoint.label}]调用失败，切换备用接入点[${endpoints[endpointIndex].label}]重试", e)
+                        } else {
+                            logger.warning("接入点[${endpoint.label}]调用失败，无更多备用接入点，重试中", e)
+                        }
+                    } else {
+                        logger.warning("调用llm后处理时发生异常，重试中", e)
+                    }
                     if (retry <= 1) {
                         throw e
                     } else {
                         done = false
-                        logger.warning("调用llm时发生异常，重试中", e)
                         // event.subject.sendMessage("出错了...正在重试...")
                     }
                 }
@@ -1031,21 +1056,21 @@ object JChatGPT : KotlinPlugin(
 
     private fun chatCompletions(
         chatMessages: List<ChatMessage>,
+        endpoint: LargeLanguageModels.ChatEndpoint,
         hasTools: Boolean = true,
         onCacheUsage: ((ModelService.CacheUsage) -> Unit)? = null
     ): Flow<ChatCompletionChunk> {
-        val llm = LargeLanguageModels.chat ?: throw NullPointerException("OpenAI Token 未设置，无法开始")
         val availableTools = if (hasTools) {
             myTools.filter { it.isEnabled }.map { it.tool }
         } else null
         val request = ChatCompletionRequest(
-            model = ModelId(PluginConfig.chatModel),
-            temperature = PluginConfig.chatTemperature,
+            model = ModelId(endpoint.model),
+            temperature = endpoint.temperature,
             messages = chatMessages,
             tools = availableTools,
         )
-        logger.info("API Requesting... Model=${PluginConfig.chatModel}")
-        return llm.chatCompletions(request, onCacheUsage)
+        logger.info("API Requesting... Model=${endpoint.model} [${endpoint.label}]")
+        return endpoint.service.chatCompletions(request, onCacheUsage)
     }
 
     private fun getNameCard(member: Member): String {
