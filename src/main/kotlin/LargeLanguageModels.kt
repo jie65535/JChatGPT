@@ -146,22 +146,28 @@ object LargeLanguageModels {
 
         // 初始化推理模型
         if (PluginConfig.reasoningModelApi.isNotBlank() && PluginConfig.reasoningModelToken.isNotBlank()) {
+            // 推理模型出首块前常有思考预热，比对话慢，使用单独放宽的首块超时；
+            // socket 超时（两次读间隔，等首块时也归它管）不能小于首块预算，否则首块超时形同虚设
+            val reasoningFirstChunk = PluginConfig.reasoningFirstChunkTimeout.milliseconds
             reasoning = ModelService(
                 baseUrl = PluginConfig.reasoningModelApi,
                 token = PluginConfig.reasoningModelToken,
-                timeout = timeout,
-                firstChunkTimeout = firstChunkTimeout,
+                timeout = maxOf(timeout, reasoningFirstChunk),
+                firstChunkTimeout = reasoningFirstChunk,
                 extraBody = parseExtraBody(PluginConfig.reasoningModelExtraBody)
             )
         }
 
         // 初始化视觉模型
         if (PluginConfig.visualModelApi.isNotBlank() && PluginConfig.visualModelToken.isNotBlank()) {
+            // 视觉模型需服务端先下载图片再出首块，比对话天然慢，使用单独放宽的首块超时；
+            // socket 超时（两次读间隔，等首块时也归它管）不能小于首块预算，否则首块超时形同虚设
+            val visualFirstChunk = PluginConfig.visualFirstChunkTimeout.milliseconds
             visual = ModelService(
                 baseUrl = PluginConfig.visualModelApi,
                 token = PluginConfig.visualModelToken,
-                timeout = timeout,
-                firstChunkTimeout = firstChunkTimeout,
+                timeout = maxOf(timeout, visualFirstChunk),
+                firstChunkTimeout = visualFirstChunk,
                 extraBody = parseExtraBody(PluginConfig.visualModelExtraBody)
             )
         }

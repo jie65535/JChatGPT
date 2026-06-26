@@ -105,6 +105,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("首块响应超时时间，单位毫秒，默认10秒。若连接建立后在此时间内没收到首块data:则中断走重试")
     val firstChunkTimeout: Long by value(10000L)
 
+    @ValueDescription("视觉模型首块响应超时时间，单位毫秒，默认120秒。视觉模型需先下载图片再出首块，比对话天然慢，故单独放宽")
+    val visualFirstChunkTimeout: Long by value(120000L)
+
+    @ValueDescription("推理模型首块响应超时时间，单位毫秒，默认90秒。推理模型出首块前常有思考预热，比对话慢，故单独放宽")
+    val reasoningFirstChunkTimeout: Long by value(90000L)
+
     @Deprecated("使用外部文件而不是在配置文件内保存提示词")
     @ValueDescription("系统提示词，该字段已弃用，使用提示词文件而不是在这里修改")
     var prompt: String by value("你是一个乐于助人的助手")
