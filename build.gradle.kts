@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "top.jie65535.mirai"
-version = "1.12.0"
+version = "1.13.0"
 
 mirai {
     jvmTarget = JavaVersion.VERSION_11
@@ -31,10 +31,12 @@ val jLatexMathVersion = "1.0.7"
 val commonTextVersion = "1.13.0"
 val hibernateVersion = "2.9.0"
 val overflowVersion = "1.0.7"
+val eddsaVersion = "0.3.0"
 
 dependencies {
     implementation("com.aallam.openai:openai-client:$openaiClientVersion")
     implementation("io.ktor:ktor-client-okhttp:$ktorVersion")
+    implementation("net.i2p.crypto:eddsa:$eddsaVersion")
     implementation("org.scilab.forge:jlatexmath:$jLatexMathVersion")
     implementation("org.apache.commons:commons-text:$commonTextVersion")
 

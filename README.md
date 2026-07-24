@@ -116,6 +116,14 @@ jinaApiKey: ''
 searXngUrl: ''
 # 在线运行代码 glot.io 的 api token，在官网注册账号即可获取。
 glotToken: ''
+# 和风天气专属 API Host，可在和风天气控制台的设置页面查看
+qWeatherApiHost: ''
+# 和风天气项目 ID
+qWeatherProjectId: ''
+# 和风天气 JWT 凭据 ID
+qWeatherCredentialId: ''
+# Ed25519 私钥路径，相对于插件配置目录，也可以填写绝对路径
+qWeatherPrivateKeyPath: 'qweather-ed25519-private.pem'
 # 群管理是否自动拥有对话权限，默认是
 groupOpHasChatPermission: true
 # 好友是否自动拥有对话权限，默认是
@@ -159,6 +167,25 @@ searchHistoryMaxDays: 30
 # 聊天记录搜索最大查询条数，防止内存溢出
 searchHistoryMaxRecords: 5000
 ```
+
+### 和风天气
+
+天气工具使用[和风天气开发服务](https://dev.qweather.com/docs/start/)和 JWT 凭据，简单配置流程如下：
+
+1. 注册和风天气开发者帐号，在控制台创建项目，并在“设置”中查看专属 API Host。
+2. 使用 OpenSSL 在本地生成 Ed25519 密钥：
+
+   ```bash
+   openssl genpkey -algorithm ED25519 -out qweather-ed25519-private.pem
+   openssl pkey -pubout -in qweather-ed25519-private.pem -out qweather-ed25519-public.pem
+   ```
+
+3. 在项目中添加凭据，认证方式选择 `JSON Web Token`，上传公钥并勾选需要使用的天气、GeoAPI 和预警接口。
+4. 将私钥放到插件配置目录，例如 `config/top.jie65535.mirai.JChatGPT/qweather-ed25519-private.pem`，然后在 `Config.yml` 填写 API Host、项目 ID、凭据 ID 和私钥路径。
+
+私钥只保存在部署机器上，请勿上传或提交到 Git。配置不完整时天气工具不会启用，修改后执行 `/jgpt reload`。
+
+天气工具支持实时天气、每日预报、逐小时预报、分钟级降水和官方天气预警。
 
 ## 系统提示词
 

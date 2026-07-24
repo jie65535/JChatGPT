@@ -87,6 +87,18 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("在线运行代码 glot.io 的 api token，在官网注册账号即可获取。")
     val glotToken: String by value("")
 
+    @ValueDescription("和风天气专属 API Host，例如 abc1234xyz.def.qweatherapi.com")
+    val qWeatherApiHost: String by value("")
+
+    @ValueDescription("和风天气项目 ID，用于 JWT 的 sub")
+    val qWeatherProjectId: String by value("")
+
+    @ValueDescription("和风天气凭据 ID，用于 JWT 的 kid")
+    val qWeatherCredentialId: String by value("")
+
+    @ValueDescription("和风天气 Ed25519 私钥文件路径，相对于插件配置目录，也可以填写绝对路径")
+    val qWeatherPrivateKeyPath: String by value("qweather-ed25519-private.pem")
+
     @ValueDescription("群管理是否自动拥有对话权限，默认是")
     val groupOpHasChatPermission: Boolean by value(true)
 
