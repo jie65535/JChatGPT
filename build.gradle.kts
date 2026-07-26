@@ -43,5 +43,11 @@ dependencies {
     // 聊天记录插件
     compileOnly("xyz.cssxsh.mirai:mirai-hibernate-plugin:$hibernateVersion")
 
+    testImplementation(kotlin("test-junit5"))
+
     testConsoleRuntime("top.mrxiaom.mirai:overflow-core:$overflowVersion")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }

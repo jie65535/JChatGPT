@@ -102,6 +102,10 @@ fallbackCooldownMinutes: 5
 reasoningModelExtraBody: ''
 # 视觉模型额外请求体JSON，会合并到请求体中。
 visualModelExtraBody: ''
+# 是否先由机器人下载视觉图片并以Base64上传；建议保持开启，避免百炼下载QQ临时链接失败
+visualImageBase64Enabled: true
+# 视觉模型最大尝试次数，取值1~3；重试时复用已下载的图片
+visualRetryMax: 2
 # 百炼平台API KEY
 dashScopeApiKey: ''
 # 百炼平台图像模型（文生图 + 图像编辑）
@@ -312,6 +316,10 @@ JChatGPT 默认配置为使用阿里云百炼平台的通义千问系列模型�
 - 视觉模型：`qwen-vl-plus`
 
 当然，也可以配置为使用其他兼容 OpenAI API 的模型，如 GPT 系列模型。
+
+### 视觉图片传输
+
+视觉工具支持单图和多图，默认由机器人下载后以 Base64 上传，长图会按顺序切片，避免百炼无法下载 QQ 临时图片链接。如兼容服务不支持 Base64，可将 `visualImageBase64Enabled` 设为 `false`。
 
 ## 接入点容灾
 

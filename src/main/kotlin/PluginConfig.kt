@@ -66,6 +66,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("视觉模型额外请求体JSON，会合并到请求体中。")
     val visualModelExtraBody: String by value("")
 
+    @ValueDescription("视觉模型是否先由机器人下载图片并以Base64上传。建议开启，可避免百炼下载QQ临时图片链接失败")
+    val visualImageBase64Enabled: Boolean by value(true)
+
+    @ValueDescription("视觉模型单次工具调用的最大尝试次数，取值1~3，默认2次。图片只下载和编码一次，重试仅重新请求模型")
+    val visualRetryMax: Int by value(2)
+
     @ValueDescription("百炼平台API KEY")
     val dashScopeApiKey: String by value("")
 
