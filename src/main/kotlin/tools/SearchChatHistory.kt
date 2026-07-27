@@ -172,19 +172,21 @@ class SearchChatHistory : BaseAgent(
                     .append("：")
             }
             for (msg in record.toMessageChain()) {
-                sb.append(singleMessageToText(msg))
+                sb.append(singleMessageToText(msg, event.subject.id))
             }
             sb.appendLine()
             lastFromId = record.fromId
         }
     }
 
-    private suspend fun singleMessageToText(msg: SingleMessage): String {
+    private suspend fun singleMessageToText(msg: SingleMessage, subjectId: Long): String {
         return when (msg) {
             is Image -> {
                 try {
-                    val url = msg.queryUrl()
-                    "![${if (msg.isEmoji) "表情包" else "图片"}]($url)"
+                    val imageUrl = msg.queryUrl()
+                    val index = JChatGPT.registerImage(subjectId, msg.imageId, imageUrl)
+                        ?: return msg.content
+                    "[${if (msg.isEmoji) "表情包" else "图片"}$index]"
                 } catch (_: Throwable) {
                     msg.content
                 }

@@ -11,6 +11,7 @@ import com.aallam.openai.api.model.ModelId
 import io.ktor.client.plugins.ClientRequestException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -20,6 +21,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.LargeLanguageModels
 import top.jie65535.mirai.PluginConfig
@@ -32,13 +34,14 @@ class VisualAgent : BaseAgent(
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
-                putJsonObject("image_urls") {
+                putJsonObject("image_indices") {
                     put("type", "array")
-                    put("description", "图片地址数组，按用户消息中的出现顺序传入")
+                    put("description", "用户消息中[图片n]或[表情包n]标记的图片编号数组，按需要理解的顺序传入")
                     put("minItems", 1)
                     put("maxItems", MAX_SOURCE_IMAGES)
                     putJsonObject("items") {
-                        put("type", "string")
+                        put("type", "integer")
+                        put("minimum", 1)
                     }
                 }
                 putJsonObject("prompt") {
@@ -47,7 +50,7 @@ class VisualAgent : BaseAgent(
                 }
             }
             putJsonArray("required") {
-                add("image_urls")
+                add("image_indices")
                 add("prompt")
             }
         }
@@ -62,25 +65,35 @@ class VisualAgent : BaseAgent(
     override val isEnabled: Boolean
         get() = LargeLanguageModels.visual != null
 
-    override suspend fun execute(args: JsonObject?): String {
+    override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         requireNotNull(args)
         val llm = LargeLanguageModels.visual ?: return "未配置llm，无法进行识别。"
-        val imageUrls = args["image_urls"]?.jsonArray
-            ?.map { it.jsonPrimitive.content }
-            ?.filter { it.isNotBlank() }
+        val imageIndices = args["image_indices"]?.jsonArray
+            ?.map { it.jsonPrimitive.int }
             ?.ifEmpty { null }
             ?: throw IllegalArgumentException("至少需要提供一张图片")
-        require(imageUrls.size <= MAX_SOURCE_IMAGES) { "单次最多处理 $MAX_SOURCE_IMAGES 张用户图片" }
+        require(imageIndices.size <= MAX_SOURCE_IMAGES) { "单次最多处理 $MAX_SOURCE_IMAGES 张用户图片" }
+        val imageUrls = imageIndices.map { imageIndex ->
+            JChatGPT.lookupImageUrl(event.subject.id, imageIndex)
+                ?: throw IllegalArgumentException("图片编号[$imageIndex]不存在或已失效")
+        }
         val prompt = args.getValue("prompt").jsonPrimitive.content
 
         return concurrencyLimiter.withPermit {
             val imageGroups = imageUrls.mapIndexed { index, imageUrl ->
                 if (PluginConfig.visualImageBase64Enabled) {
-                    val resolved = imageResolver.resolve(imageUrl)
                     val host = runCatching { URI(imageUrl).host }.getOrNull() ?: "unknown"
+                    val resolved = try {
+                        imageResolver.resolve(imageUrl)
+                    } catch (e: Throwable) {
+                        JChatGPT.logger.error(
+                            "视觉图片下载失败: image=${imageIndices[index]}, url=$imageUrl"
+                        )
+                        throw e
+                    }
                     val mimeTypes = resolved.images.map { it.mimeType }.distinct().joinToString()
                     JChatGPT.logger.info(
-                        "视觉图片已本地化: source=${index + 1}/${imageUrls.size}, host=$host, " +
+                        "视觉图片已本地化: image=${imageIndices[index]}, source=${index + 1}/${imageUrls.size}, host=$host, " +
                                 "parts=${resolved.images.size}, mime=$mimeTypes, " +
                                 "sourceBytes=${resolved.sourceSize}, payloadChars=${resolved.payloadSize}, " +
                                 "transcoded=${resolved.transcoded}"

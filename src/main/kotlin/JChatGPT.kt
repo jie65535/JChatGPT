@@ -144,7 +144,8 @@ object JChatGPT : KotlinPlugin(
     private data class ConversationCache(
         val history: MutableList<ChatMessage>,
         val lastActivityAt: Int,
-        val replyIndex: ReplyIndex
+        val replyIndex: ReplyIndex,
+        val imageIndex: ImageIndex,
     ) {
         fun isExpired(ttlSeconds: Int): Boolean {
             return OffsetDateTime.now().toEpochSecond().toInt() - lastActivityAt > ttlSeconds
@@ -182,9 +183,20 @@ object JChatGPT : KotlinPlugin(
     /** 各会话的回复索引，startChat 开始时重建，结束时清理 */
     private val replyIndexMap = ConcurrentMap<Long, ReplyIndex>()
 
+    /** 各会话的图片索引，生命周期与回复索引、对话缓存一致。 */
+    private val imageIndexMap = ConcurrentMap<Long, ImageIndex>()
+
     /** 供发言工具按编号查找被引用的历史消息 */
     internal fun lookupReplyTarget(subjectId: Long, index: Int): MessageRecord? =
         replyIndexMap[subjectId]?.get(index)
+
+    /** 将从原消息图片取得的精确 URL 登记为短编号，供历史搜索等工具追加图片引用。 */
+    internal fun registerImage(subjectId: Long, imageId: String, imageUrl: String): Int? =
+        imageIndexMap[subjectId]?.add(imageId, imageUrl)
+
+    /** 按会话内短编号获取原消息解析出的 URL，避免根据 imageId 二次构造和查询。 */
+    internal fun lookupImageUrl(subjectId: Long, index: Int): String? =
+        imageIndexMap[subjectId]?.getUrl(index)
 
     private val shortTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneOffset.systemDefault())
@@ -339,8 +351,9 @@ object JChatGPT : KotlinPlugin(
      * @return 如果未获取到则返回空字符串
      */
     private fun getHistory(event: MessageEvent): String {
+        val imageIndex = imageIndexMap.getOrPut(event.subject.id) { ImageIndex() }
         if (!includeHistory) {
-            return event.message.content
+            return formatRecordContent(event.message, event.subject, imageIndex)
         }
         val now = OffsetDateTime.now()
         // 一段时间内的消息
@@ -378,6 +391,7 @@ object JChatGPT : KotlinPlugin(
         var lastTime = 0L
         // 本轮回复索引，逐条登记消息编号供 [n] 引用
         val replyIndex = replyIndexMap.getOrPut(event.subject.id) { ReplyIndex() }
+        val imageIndex = imageIndexMap.getOrPut(event.subject.id) { ImageIndex() }
         if (event is GroupMessageEvent) {
             if (PluginConfig.enableFavorabilitySystem) {
                 val knownUsers = history.asSequence()
@@ -404,12 +418,12 @@ object JChatGPT : KotlinPlugin(
                 }
             }
 
-            historyText.appendLine("## 近期群消息（更早已隐藏，行首[n]为消息编号，可用于引用回复）")
+            historyText.appendLine("## 近期群消息（更早已隐藏，行首[n]为消息编号；正文[图片n]/[表情包n]中的n为识图或图片编辑编号）")
             for (record in history) {
                 // 同一人发言不要反复出现这人的名字，减少上下文
                 val showSender = lastId != record.fromId
                 val showTime = showSender || record.time.toLong() - lastTime > CONTINUATION_TIME_GAP_SECONDS
-                appendGroupMessageRecord(historyText, record, event, replyIndex, showSender, showTime)
+                appendGroupMessageRecord(historyText, record, event, replyIndex, imageIndex, showSender, showTime)
                 lastId = record.fromId
                 lastTime = record.time.toLong()
             }
@@ -428,12 +442,12 @@ object JChatGPT : KotlinPlugin(
                 }
             }
 
-            historyText.appendLine("## 近期对话（更早已隐藏，行首[n]为消息编号，可用于引用回复）")
+            historyText.appendLine("## 近期对话（更早已隐藏，行首[n]为消息编号；正文[图片n]/[表情包n]中的n为识图或图片编辑编号）")
             for (record in history) {
                 // 同一人发言不要反复出现这人的名字，减少上下文
                 val showSender = lastId != record.fromId
                 val showTime = showSender || record.time.toLong() - lastTime > CONTINUATION_TIME_GAP_SECONDS
-                appendMessageRecord(historyText, record, event, replyIndex, showSender, showTime)
+                appendMessageRecord(historyText, record, event, replyIndex, imageIndex, showSender, showTime)
                 lastId = record.fromId
                 lastTime = record.time.toLong()
             }
@@ -448,11 +462,12 @@ object JChatGPT : KotlinPlugin(
      * @param record 群消息记录
      * @param event 群消息事件
      */
-    fun appendGroupMessageRecord(
+    private fun appendGroupMessageRecord(
         historyText: StringBuilder,
         record: MessageRecord,
         event: GroupMessageEvent,
         replyIndex: ReplyIndex,
+        imageIndex: ImageIndex,
         showSender: Boolean,
         showTime: Boolean,
     ) {
@@ -481,10 +496,10 @@ object JChatGPT : KotlinPlugin(
 
         // 引用：用编号指针替代内联原文，避免被误认为是本人发言
         recordMessage[QuoteReply.Key]?.let {
-            appendQuoteMarker(historyText, it, event.subject, replyIndex)
+            appendQuoteMarker(historyText, it, event.subject, replyIndex, imageIndex)
         }
 
-        historyText.appendLine(formatRecordContent(recordMessage, event.subject))
+        historyText.appendLine(formatRecordContent(recordMessage, event.subject, imageIndex))
     }
 
     /**
@@ -494,7 +509,8 @@ object JChatGPT : KotlinPlugin(
         sb: StringBuilder,
         quote: QuoteReply,
         contact: Contact,
-        replyIndex: ReplyIndex
+        replyIndex: ReplyIndex,
+        imageIndex: ImageIndex,
     ) {
         val srcIds = quote.source.ids.joinToString(",")
         val idx = replyIndex.indexOfIds(srcIds)
@@ -507,7 +523,7 @@ object JChatGPT : KotlinPlugin(
                 quote.source.fromId.toString()
             }
             val snippet = quote.source.originalMessage
-                .joinToString("", transform = ::singleMessageToText)
+                .joinToString("") { singleMessageToText(it, imageIndex) }
                 .replace("\n", " ")
                 .let { if (it.length > 20) it.take(20) + "…" else it }
             sb.append("↩(").append(author).append(":\"").append(snippet).append("\") ")
@@ -517,13 +533,13 @@ object JChatGPT : KotlinPlugin(
     /**
      * 序列化消息正文（剔除引用/源元数据，@显示为名称，转发折叠）。
      */
-    private fun formatRecordContent(chain: MessageChain, contact: Contact): String =
+    private fun formatRecordContent(chain: MessageChain, contact: Contact, imageIndex: ImageIndex): String =
         chain.asSequence()
             .filterNot { it is QuoteReply || it is MessageSource }
             .joinToString("") {
                 when (it) {
                     is At -> if (contact is Group) it.getDisplay(contact) else it.content
-                    else -> singleMessageToText(it)
+                    else -> singleMessageToText(it, imageIndex)
                 }
             }
 
@@ -542,11 +558,12 @@ object JChatGPT : KotlinPlugin(
      * @param record 消息记录
      * @param event 消息事件
      */
-    fun appendMessageRecord(
+    private fun appendMessageRecord(
         historyText: StringBuilder,
         record: MessageRecord,
         event: MessageEvent,
         replyIndex: ReplyIndex,
+        imageIndex: ImageIndex,
         showSender: Boolean,
         showTime: Boolean,
     ) {
@@ -573,24 +590,23 @@ object JChatGPT : KotlinPlugin(
         }
 
         recordMessage[QuoteReply.Key]?.let {
-            appendQuoteMarker(historyText, it, event.subject, replyIndex)
+            appendQuoteMarker(historyText, it, event.subject, replyIndex, imageIndex)
         }
 
-        historyText.appendLine(formatRecordContent(recordMessage, event.subject))
+        historyText.appendLine(formatRecordContent(recordMessage, event.subject, imageIndex))
     }
 
-    private fun singleMessageToText(it: SingleMessage): String {
+    private fun singleMessageToText(it: SingleMessage, imageIndex: ImageIndex): String {
         return when (it) {
             // 完整展开合并转发内容，便于 LLM 阅读分析转发的对话（依赖大上下文+缓存，不做截断）
-            is ForwardMessage -> formatForward(it, 1)
+            is ForwardMessage -> formatForward(it, 1, imageIndex)
 
             // 图片格式化
             is Image -> {
                 try {
-                    val imageUrl = runBlocking {
-                        it.queryUrl()
-                    }
-                    "![${if (it.isEmoji) "表情包" else "图片"}]($imageUrl)"
+                    val imageUrl = runBlocking { it.queryUrl() }
+                    val index = imageIndex.add(it.imageId, imageUrl)
+                    "[${if (it.isEmoji) "表情包" else "图片"}$index]"
                 } catch (e: Throwable) {
                     logger.warning("图片地址获取失败", e)
                     it.content
@@ -605,7 +621,7 @@ object JChatGPT : KotlinPlugin(
      * 递归展开合并转发消息，用 Markdown 引用块表示：每加深一层嵌套多一个 `>`（>、>>、>>>…）。
      * @param depth 当前嵌套层级，从 1 开始
      */
-    private fun formatForward(forward: ForwardMessage, depth: Int): String = buildString {
+    private fun formatForward(forward: ForwardMessage, depth: Int, imageIndex: ImageIndex): String = buildString {
         val quote = ">".repeat(depth) + " "
         append("[转发消息·").append(forward.nodeList.size).append("条")
         if (forward.title.isNotEmpty()) append(':').append(forward.title)
@@ -618,10 +634,10 @@ object JChatGPT : KotlinPlugin(
             node.messageChain.forEach { sub ->
                 if (sub is ForwardMessage) {
                     // 嵌套转发：层级加深，自带更深的 `>` 前缀，无需再次缩进
-                    append(formatForward(sub, depth + 1))
+                    append(formatForward(sub, depth + 1, imageIndex))
                 } else {
                     // 其它内容：多行正文对齐到当前引用层级
-                    append(singleMessageToText(sub).replace("\n", "\n$quote"))
+                    append(singleMessageToText(sub, imageIndex).replace("\n", "\n$quote"))
                 }
             }
         }
@@ -658,7 +674,9 @@ object JChatGPT : KotlinPlugin(
             // 回复索引与对话上下文同寿命：复用缓存时沿用旧索引，保证 LLM 看到的 [n] 编号连续不串号；
             // 否则新建（供 sendSingleMessage 的 replyTo 按编号引用历史消息）
             val replyIndex = if (reuseCache) cache!!.replyIndex else ReplyIndex()
+            val imageIndex = if (reuseCache) cache!!.imageIndex else ImageIndex()
             replyIndexMap[subjectId] = replyIndex
+            imageIndexMap[subjectId] = imageIndex
             val history = if (reuseCache) {
                 // 缓存有效，复用历史
                 logger.info("使用缓存的对话上下文，包含 ${cache!!.history.size} 条互动消息")
@@ -868,7 +886,8 @@ object JChatGPT : KotlinPlugin(
                             contextCache[subjectId] = ConversationCache(
                                 history = history,
                                 lastActivityAt = startedAt,
-                                replyIndex = replyIndex
+                                replyIndex = replyIndex,
+                                imageIndex = imageIndex,
                             )
                             logger.debug("已保存对话上下文到缓存")
                         }
@@ -901,6 +920,7 @@ object JChatGPT : KotlinPlugin(
         } finally {
             // 清理本轮回复索引
             replyIndexMap.remove(event.subject.id)
+            imageIndexMap.remove(event.subject.id)
             // 一段时间后才允许再次提问，防止高频对话
             launch {
                 delay(500.milliseconds)

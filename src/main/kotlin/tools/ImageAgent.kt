@@ -13,31 +13,34 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.PluginConfig
 
 class ImageAgent : BaseAgent(
     tool = Tool.function(
         name = "imageAgent",
-        description = "调用千问图像模型生成或编辑图片。不传 image_urls 即纯文生图；" +
+        description = "调用千问图像模型生成或编辑图片。不传 image_indices 即纯文生图；" +
                 "传 1~3 张图片可进行编辑、修改或多图融合。" +
                 "备注：该方法成本较高，非必要尽量不要调用。" +
                 "编辑图片前无需识别图片内容，模型自己会理解图片内容。",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
-                putJsonObject("image_urls") {
+                putJsonObject("image_indices") {
                     put("type", "array")
                     putJsonObject("items") {
-                        put("type", "string")
+                        put("type", "integer")
+                        put("minimum", 1)
                     }
-                    put("description", "参考图片地址列表，可传 0~3 张。" +
+                    put("description", "用户消息中[图片n]或[表情包n]标记的参考图片编号，可传 0~3 张。" +
                             "不传或为空即纯文生图；传 1 张为编辑；多张为融合，输出比例与最后一张对齐。")
                 }
                 putJsonObject("prompt") {
@@ -61,12 +64,17 @@ class ImageAgent : BaseAgent(
     override val loadingMessage: String
         get() = "作图中..."
 
-    override suspend fun execute(args: JsonObject?): String {
+    override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         requireNotNull(args)
         val prompt = args.getValue("prompt").jsonPrimitive.content
-        val imageUrls = args["image_urls"]?.jsonArray
-            ?.map { it.jsonPrimitive.content }
+        val imageIndices = args["image_indices"]?.jsonArray
+            ?.map { it.jsonPrimitive.int }
             ?: emptyList()
+        require(imageIndices.size <= 3) { "参考图片最多只能传3张" }
+        val imageUrls = imageIndices.map { imageIndex ->
+            JChatGPT.lookupImageUrl(event.subject.id, imageIndex)
+                ?: throw IllegalArgumentException("图片编号[$imageIndex]不存在或已失效")
+        }
 
         val response = httpClient.post(API_URL) {
             contentType(ContentType("application", "json"))

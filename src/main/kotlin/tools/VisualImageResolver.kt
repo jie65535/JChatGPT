@@ -108,8 +108,15 @@ internal class VisualImageResolver {
             }
 
             if (!response.status.isSuccess()) {
-                response.bodyAsChannel().cancel()
-                throw IllegalArgumentException("图片下载失败：HTTP ${response.status.value}")
+                val errorBody = readErrorBody(response.bodyAsChannel())
+                val errorNumber = response.headers["X-ErrNo"]
+                throw IllegalArgumentException(
+                    buildString {
+                        append("图片下载失败：HTTP ").append(response.status.value)
+                        if (!errorNumber.isNullOrBlank()) append("，X-ErrNo=").append(errorNumber)
+                        if (errorBody.isNotBlank()) append("，响应=").append(errorBody)
+                    }
+                )
             }
 
             val declaredLength = response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
@@ -188,6 +195,31 @@ internal class VisualImageResolver {
         } finally {
             channel.cancel()
         }
+    }
+
+    private suspend fun readErrorBody(channel: io.ktor.utils.io.ByteReadChannel): String {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
+        var total = 0
+        try {
+            while (total < MAX_ERROR_RESPONSE_BYTES) {
+                val count = channel.readAvailable(
+                    buffer,
+                    0,
+                    min(buffer.size, MAX_ERROR_RESPONSE_BYTES - total)
+                )
+                if (count < 0) break
+                if (count == 0) continue
+                output.write(buffer, 0, count)
+                total += count
+            }
+        } finally {
+            channel.cancel()
+        }
+        return output.toByteArray()
+            .toString(Charsets.UTF_8)
+            .replace(Regex("[\\r\\n]+"), " ")
+            .trim()
     }
 
     private fun buildPayload(bytes: ByteArray, mimeType: String): ImagePayload {
@@ -612,6 +644,7 @@ internal class VisualImageResolver {
         private const val LONG_IMAGE_MAX_OVERLAP = 256
         private const val MAX_LONG_IMAGE_PARTS = 16
         private const val MAX_COMPRESSION_ROUNDS = 6
+        private const val MAX_ERROR_RESPONSE_BYTES = 4096
         private const val DOWNSCALE_FACTOR = 0.82
         private const val USER_AGENT = "JChatGPT/1.13 image-fetcher"
         private val JPEG_QUALITIES = floatArrayOf(0.90f, 0.82f, 0.74f, 0.66f)
