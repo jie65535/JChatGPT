@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "top.jie65535.mirai"
-version = "1.13.0"
+version = "1.14.0"
 
 mirai {
     jvmTarget = JavaVersion.VERSION_11
@@ -29,7 +29,7 @@ val openaiClientVersion = "4.1.0"
 val ktorVersion = "3.0.3"
 val jLatexMathVersion = "1.0.7"
 val commonTextVersion = "1.13.0"
-val hibernateVersion = "2.9.0"
+val sqliteVersion = "3.46.1.0"
 val overflowVersion = "1.0.7"
 val eddsaVersion = "0.3.0"
 
@@ -39,9 +39,7 @@ dependencies {
     implementation("net.i2p.crypto:eddsa:$eddsaVersion")
     implementation("org.scilab.forge:jlatexmath:$jLatexMathVersion")
     implementation("org.apache.commons:commons-text:$commonTextVersion")
-
-    // 聊天记录插件
-    compileOnly("xyz.cssxsh.mirai:mirai-hibernate-plugin:$hibernateVersion")
+    implementation("org.xerial:sqlite-jdbc:$sqliteVersion")
 
     testImplementation(kotlin("test-junit5"))
 

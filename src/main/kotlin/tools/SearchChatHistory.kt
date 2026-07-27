@@ -13,8 +13,8 @@ import net.mamoe.mirai.message.data.SingleMessage
 import net.mamoe.mirai.message.data.content
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.PluginConfig
-import xyz.cssxsh.mirai.hibernate.MiraiHibernateRecorder
-import xyz.cssxsh.mirai.hibernate.entry.MessageRecord
+import top.jie65535.mirai.ChatHistoryStore
+import top.jie65535.mirai.ChatMessageRecord
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
@@ -92,17 +92,13 @@ class SearchChatHistory : BaseAgent(
         val maxRecords = PluginConfig.searchHistoryMaxRecords
 
         val records = try {
-            // 有 sender 时用 Member 重载，在数据库层过滤 fromId；否则用 Contact 重载
-            if (senderQq != null && event is GroupMessageEvent) {
-                val member = event.group[senderQq]
-                if (member != null) {
-                    MiraiHibernateRecorder[member, startEpoch, endEpoch]
-                } else {
-                    MiraiHibernateRecorder[event.subject, startEpoch, endEpoch]
-                }
-            } else {
-                MiraiHibernateRecorder[event.subject, startEpoch, endEpoch]
-            }.take(maxRecords).sortedBy { it.time }
+            ChatHistoryStore.query(
+                contact = event.subject,
+                start = startEpoch,
+                end = endEpoch,
+                limit = maxRecords,
+                fromId = senderQq,
+            ).sortedBy { it.time }
         } catch (e: Throwable) {
             JChatGPT.logger.warning("查询消息历史失败", e)
             return "查询消息历史失败: ${e.message}"
@@ -148,7 +144,7 @@ class SearchChatHistory : BaseAgent(
 
     private suspend fun appendHistory(
         sb: StringBuilder,
-        records: List<MessageRecord>,
+        records: List<ChatMessageRecord>,
         event: MessageEvent
     ) {
         val timeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")

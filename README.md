@@ -14,7 +14,7 @@ JChatGPT 是一个基于 Kotlin 的 Mirai Console 插件，它将大型语言模
 - **LaTeX 渲染**：自动将数学表达式渲染为图片
 - **灵活的触发方式**：@机器人、关键字触发、回复消息等
 - **权限控制**：细粒度的权限管理系统
-- **历史消息集成**：可选的历史消息上下文（需配合 mirai-hibernate-plugin）
+- **内置历史消息**：使用插件自维护的 SQLite 保存、检索群聊和私聊消息
 
 ## 用法
 
@@ -171,6 +171,9 @@ searchHistoryMaxDays: 30
 # 聊天记录搜索最大查询条数，防止内存溢出
 searchHistoryMaxRecords: 5000
 ```
+
+聊天记录保存在插件数据目录的 `chat-history.sqlite` 中，并使用 SQLite WAL 模式支持记录与查询并行进行。
+数据库由插件在首次启动时自动创建和维护，无需安装额外的聊天记录插件。
 
 ### 和风天气
 
@@ -367,7 +370,7 @@ fallbackCooldownMinutes: 5
 9. **SendVoiceMessage** - 发送语音消息
 10. **ImageAgent** - 图像生成与编辑（文生图、单图编辑、多图融合）
 11. **WeatherService** - 天气查询
-12. **SearchChatHistory** - 按关键词、发送者、时间范围搜索群聊消息历史（依赖 mirai-hibernate-plugin）
+12. **SearchChatHistory** - 按关键词、发送者、时间范围搜索插件内置 SQLite 聊天历史
 
 ## 用户画像系统
 
@@ -593,7 +596,6 @@ JChatGPT 按 (日期, userId, groupId) 三元组聚合每次对话的 Token 消�
 
 - Java 11 或更高版本
 - Mirai Console 2.16.0 或更高版本
-- 可选：mirai-hibernate-plugin（用于历史消息上下文）
 - 相关 API Tokens（根据需要启用的功能配置）
 
 ## 备注

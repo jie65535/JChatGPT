@@ -24,17 +24,18 @@ import net.mamoe.mirai.console.plugin.jvm.JvmPluginDescription
 import net.mamoe.mirai.console.plugin.jvm.KotlinPlugin
 import net.mamoe.mirai.contact.*
 import net.mamoe.mirai.contact.MemberPermission.*
+import net.mamoe.mirai.event.EventPriority
 import net.mamoe.mirai.event.GlobalEventChannel
 import net.mamoe.mirai.event.events.FriendMessageEvent
 import net.mamoe.mirai.event.events.GroupMessageEvent
 import net.mamoe.mirai.event.events.MessageEvent
+import net.mamoe.mirai.event.events.MessagePostSendEvent
+import net.mamoe.mirai.event.events.MessageRecallEvent
 import net.mamoe.mirai.message.data.*
 import net.mamoe.mirai.message.data.Image.Key.queryUrl
 import net.mamoe.mirai.utils.info
 import top.jie65535.mirai.tools.*
 import util.LunarDateUtil
-import xyz.cssxsh.mirai.hibernate.MiraiHibernateRecorder
-import xyz.cssxsh.mirai.hibernate.entry.MessageRecord
 import java.io.File
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -53,10 +54,9 @@ object JChatGPT : KotlinPlugin(
     JvmPluginDescription(
         id = "top.jie65535.mirai.JChatGPT",
         name = "J ChatGPT",
-        version = "1.13.0",
+        version = "1.14.0",
     ) {
         author("jie65535")
-//        dependsOn("xyz.cssxsh.mirai.plugin.mirai-hibernate-plugin", true)
     }
 ) {
     /**
@@ -86,26 +86,39 @@ object JChatGPT : KotlinPlugin(
         // 初始化技能存储（data/skills/ 下的 markdown 文件，全局跨群）
         SkillStore.init(dataFolder)
 
+        // 初始化插件自维护的 SQLite 聊天记录
+        includeHistory = try {
+            ChatHistoryStore.init(dataFolder)
+            true
+        } catch (e: Throwable) {
+            logger.error("初始化 SQLite 聊天记录失败，历史上下文与搜索将暂时禁用", e)
+            false
+        }
+
         // 设置Token
         LargeLanguageModels.reload()
 
         // 注册插件命令
         PluginCommands.register()
 
-        // 检查消息记录插件是否存在
-        includeHistory = try {
-            MiraiHibernateRecorder
-            true
-        } catch (_: Throwable) {
-            false
-        }
-
         if (PluginConfig.callKeyword.isNotEmpty()) {
             keyword = Regex(PluginConfig.callKeyword)
         }
 
-        GlobalEventChannel.parentScope(this)
-            .subscribeAlways<MessageEvent> { event -> onMessage(event) }
+        val eventChannel = GlobalEventChannel.parentScope(this)
+        eventChannel.subscribeAlways<MessageEvent>(priority = EventPriority.HIGHEST) { event ->
+            runCatching { ChatHistoryStore.record(event) }
+                .onFailure { logger.warning("保存接收消息到 SQLite 失败", it) }
+        }
+        eventChannel.subscribeAlways<MessagePostSendEvent<*>>(priority = EventPriority.HIGHEST) { event ->
+            runCatching { ChatHistoryStore.record(event) }
+                .onFailure { logger.warning("保存发送消息到 SQLite 失败", it) }
+        }
+        eventChannel.subscribeAlways<MessageRecallEvent>(priority = EventPriority.HIGHEST) { event ->
+            runCatching { ChatHistoryStore.markRecalled(event) }
+                .onFailure { logger.warning("更新 SQLite 消息撤回状态失败", it) }
+        }
+        eventChannel.subscribeAlways<MessageEvent> { event -> onMessage(event) }
 
         // 启动定时任务处理好感度时间偏移
         if (PluginConfig.enableFavorabilitySystem) {
@@ -118,6 +131,10 @@ object JChatGPT : KotlinPlugin(
         }
 
         logger.info { "Plugin loaded" }
+    }
+
+    override fun onDisable() {
+        ChatHistoryStore.close()
     }
 
     private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy年MM月dd E HH:mm:ss")
@@ -158,11 +175,11 @@ object JChatGPT : KotlinPlugin(
      * 编号按消息出现顺序递增，跨「初始历史」与「新增消息」连续编号；同一条消息(ids 相同)复用既有编号。
      */
     class ReplyIndex {
-        private val byIndex = LinkedHashMap<Int, MessageRecord>()
+        private val byIndex = LinkedHashMap<Int, ChatMessageRecord>()
         private val indexByIds = HashMap<String, Int>()
         private var counter = 0
 
-        fun add(record: MessageRecord): Int {
+        fun add(record: ChatMessageRecord): Int {
             // ids 可能为 null（如发送失败的记录），此时无法去重/被引用匹配，但仍分配编号
             val ids = record.ids
             if (ids != null) {
@@ -176,7 +193,7 @@ object JChatGPT : KotlinPlugin(
             return i
         }
 
-        fun get(index: Int): MessageRecord? = byIndex[index]
+        fun get(index: Int): ChatMessageRecord? = byIndex[index]
         fun indexOfIds(ids: String): Int? = indexByIds[ids]
     }
 
@@ -187,7 +204,7 @@ object JChatGPT : KotlinPlugin(
     private val imageIndexMap = ConcurrentMap<Long, ImageIndex>()
 
     /** 供发言工具按编号查找被引用的历史消息 */
-    internal fun lookupReplyTarget(subjectId: Long, index: Int): MessageRecord? =
+    internal fun lookupReplyTarget(subjectId: Long, index: Int): ChatMessageRecord? =
         replyIndexMap[subjectId]?.get(index)
 
     /** 将从原消息图片取得的精确 URL 登记为短编号，供历史搜索等工具追加图片引用。 */
@@ -374,15 +391,22 @@ object JChatGPT : KotlinPlugin(
         // 现在时间
         val nowTimestamp = OffsetDateTime.now().toEpochSecond().toInt()
         // 最近这段时间的历史对话
-        val history = MiraiHibernateRecorder[event.subject, time, nowTimestamp]
-            .take(PluginConfig.historyMessageLimit) // 只取最近的部分消息，避免上下文过长
-            .sortedBy { it.time } // 按时间排序
-            .toMutableList()
+        val history = try {
+            ChatHistoryStore.query(
+                contact = event.subject,
+                start = time,
+                end = nowTimestamp,
+                limit = PluginConfig.historyMessageLimit,
+            ).sortedBy { it.time }.toMutableList()
+        } catch (e: Throwable) {
+            logger.warning("查询 SQLite 消息历史失败", e)
+            mutableListOf()
+        }
 
         // 有一定概率最后一条消息没加入，这里检查然后补充一下
         val msgIds = event.message.ids.joinToString(",")
         if (!history.any { it.ids == msgIds }) {
-            history.add(MessageRecord.fromSuccess(event.message.source, event.message))
+            history.add(ChatMessageRecord.fromSuccess(event.message.source, event.message))
         }
 
         // 构造历史消息
@@ -464,7 +488,7 @@ object JChatGPT : KotlinPlugin(
      */
     private fun appendGroupMessageRecord(
         historyText: StringBuilder,
-        record: MessageRecord,
+        record: ChatMessageRecord,
         event: GroupMessageEvent,
         replyIndex: ReplyIndex,
         imageIndex: ImageIndex,
@@ -560,7 +584,7 @@ object JChatGPT : KotlinPlugin(
      */
     private fun appendMessageRecord(
         historyText: StringBuilder,
-        record: MessageRecord,
+        record: ChatMessageRecord,
         event: MessageEvent,
         replyIndex: ReplyIndex,
         imageIndex: ImageIndex,
