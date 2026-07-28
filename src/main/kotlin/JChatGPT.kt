@@ -225,11 +225,6 @@ object JChatGPT : KotlinPlugin(
     private suspend fun onMessage(event: MessageEvent) {
         // 检查Token是否设置
         if (LargeLanguageModels.chat == null) return
-        // 如果bot在群里被禁言，则无法发言，直接结束，避免浪费token
-        if (event is GroupMessageEvent && event.group.botMuteRemaining > 0) {
-            logger.info("bot 在群 ${event.group.name}(${event.group.id}) 被禁言，剩余 ${event.group.botMuteRemaining} 秒，忽略消息")
-            return
-        }
         // 发送者是否有权限
         if (!event.toCommandSender().hasPermission(chatPermission)) {
             if (event is GroupMessageEvent) {
@@ -254,8 +249,13 @@ object JChatGPT : KotlinPlugin(
         if (!event.message.contains(At(event.bot))
             && keyword?.let { event.message.content.contains(it) } != true
             && event.message[QuoteReply]?.source?.fromId != event.bot.id
-        )
+        ) return
+
+        // 如果bot在群里被禁言，则无法发言，直接结束，避免浪费token
+        if (event is GroupMessageEvent && event.group.botMuteRemaining > 0) {
+            logger.info("bot 在群 ${event.group.name}(${event.group.id}) 被禁言，剩余 ${event.group.botMuteRemaining} 秒，忽略消息")
             return
+        }
 
         // 好感度系统检查
         if (PluginConfig.enableFavorabilitySystem) {
