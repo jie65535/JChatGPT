@@ -55,12 +55,7 @@ AI 可以自动调用多种工具来完成复杂任务：
 - `/jgpt clearFavor` - 重置所有用户的好感度
 
 ### Token统计
-- `/jgpt tokens [days]` - 查看Token使用简报（默认7天）
-- `/jgpt tokensDaily [days]` - 查看指定天数的每日Token消耗统计（默认7天）
-- `/jgpt tokensUsers [limit]` - 查看Token消耗最多的用户排名（默认Top 10）
-- `/jgpt tokensGroups [limit]` - 查看Token消耗最多的群组排名（默认Top 10）
-- `/jgpt tokensQuery [userId] [days]` - 查询日聚合记录（每行一天一人，可按用户和时间过滤）
-- `/jgpt tokensUserDaily <userId> [days]` - 查询指定用户每天的消费统计（默认7天）
+- `/jgpt tokens [days]` - 查看最近指定天数的Token使用简报（默认7天）
 
 ## 配置文件
 
@@ -437,139 +432,59 @@ description: KubeJS 基础语法、常见报错与排查方法
 
 ## Token消耗统计
 
-JChatGPT 按 (日期, userId, groupId) 三元组聚合每次对话的 Token 消耗，提供多维度统计查询。
+JChatGPT 按 (日期, userId, groupId) 三元组聚合每次对话的 Token 消耗，并通过一条命令提供汇总、趋势和排名信息。
 
 > 历史版本曾按每次请求逐条记录，但增长不受控（数千条后会触发 mamoe-yamlkt 的编/解码 bug 导致整个 data.yml 无法加载）。现已改为按天聚合并搬到独立的 `token_usage.json`，data.yml 只保留小规模的 memory / favorability 数据。
 
 ### 功能特性
 - **自动记录**：每次对话累加到当日聚合行
 - **聚合维度**：日期 × 用户 × 群（同一人同一天在同一群只占一行）
-- **多维统计**：支持按日期、用户、群组进行统计
-- **灵活查询**：支持详细记录查询和过滤
+- **一屏简报**：同时展示用量汇总、缓存命中率、每日趋势及用户/群组排名
+- **隐私保护**：群组排名仅显示群名，不显示群号
 
 ### 记录内容
 每条聚合记录包含：
 - 日期（yyyy-MM-dd，本地时区）
 - 用户QQ号和最近一次记录到的昵称
-- 群组ID（群聊）或null（私聊）
+- 群组ID和群名（群聊），私聊时为null
 - 当日累计输入Token数（promptTokens）
 - 当日累计输出Token数（completionTokens）
 - 当日累计总Token数（totalTokens）
+- 当日累计缓存命中Token数（cachedTokens）
 - 当日调用次数（callCount）
 
 ### 统计命令
 
-#### 使用简报
 ```
 /jgpt tokens [days]
 ```
-- 快速查看指定时间范围内的Token使用概况
-- 默认显示最近7天
-- 包含总计、今日、最活跃用户/群组
+- `days` 必须为正整数，默认为7，时间范围包含当天
+- 汇总输入、输出、总Token数、调用次数、活跃用户数和当日Token数
+- 输入统计包含缓存命中率及命中Token数
+- 有多个日期的数据时显示每日趋势
+- 显示时间范围内Token消耗最高的5名用户和5个群组；群组仅显示名称，不显示群号
+- 大于等于1,000的Token数会使用 `K` 或 `M` 缩写
 - 输出示例：
   ```
-  📊 Token 使用简报（最近 7 天）
+  📊 Token 简报 · 最近 7 天
 
-  总计: 1,452,279 tokens
-  今日: 215,432 tokens
-  活跃用户: 15 人
+  输入 923.4K（缓存命中 38.2%，省 352.8K）
+  输出 528.9K
+  总计 1.45M ｜ 调用 186 次 ｜ 活跃 15 人
+  今日 215.4K
 
-  👤 最活跃用户:
-    张三 - 523,456 tokens
+  📈 每日趋势
+    03-16  391.2K
+    03-17  526.7K
+    03-18  534.4K
 
-  👥 最活跃群组:
-    987654321 - 876,543 tokens
+  👤 Top 用户
+    1. 张三  523.5K
+    2. 李四  318.2K
 
-  📋 详细查询:
-    /jgpt tokensDaily [days]  - 每日统计
-    /jgpt tokensUsers [limit] - 用户排名
-    /jgpt tokensGroups [limit] - 群组排名
-    /jgpt tokensQuery [userId] [days] - 详细记录
-    /jgpt tokensUserDaily <userId> [days] - 用户日统计
-  ```
-
-#### 每日统计
-```
-/jgpt tokensDaily [days]
-```
-- 显示指定天数内的每日Token消耗统计
-- 默认显示最近7天
-- 输出示例：
-  ```
-  最近 7 天 Token 使用统计：
-
-  2026-03-18: 15,342 tokens
-  2026-03-17: 12,890 tokens
-  2026-03-16: 9,567 tokens
-  ```
-
-#### 用户排名
-```
-/jgpt tokensUsers [limit]
-```
-- 显示Token消耗最多的用户排名
-- 默认显示Top 10
-- 输出示例：
-  ```
-  Token 使用排名 Top 10：
-
-  张三(QQ:123456): 25,430 tokens
-  李四(QQ:234567): 18,920 tokens
-  王五(QQ:345678): 12,450 tokens
-  ```
-
-#### 群组排名
-```
-/jgpt tokensGroups [limit]
-```
-- 显示Token消耗最多的群组排名
-- 默认显示Top 10
-- 仅统计群聊对话，不包括私聊
-- 输出示例：
-  ```
-  群组 Token 使用排名 Top 10：
-
-  群 987654321: 45,670 tokens
-  群 876543210: 32,100 tokens
-  群 765432109: 28,930 tokens
-  ```
-
-#### 详细查询
-```
-/jgpt tokensQuery [userId] [days]
-```
-- 查询日聚合记录（每行 = 某天某人某群的当日合计）
-- 可按用户ID过滤（可选）
-- 可指定时间范围（默认7天）
-- 最多显示20条记录，按日期倒序
-- 输出示例：
-  ```
-  最近 7 天使用记录（最多显示20条，按日聚合）：
-
-  [2026-03-18] 群987654321 - 张三
-    调用 12 次, Tokens: 23,450 (输入: 12,340, 输出: 11,110)
-
-  [2026-03-18] 私聊 - 李四
-    调用 5 次, Tokens: 8,760 (输入: 4,800, 输出: 3,960)
-  ```
-
-#### 用户日统计
-```
-/jgpt tokensUserDaily <userId> [days]
-```
-- 查询指定用户每天的消费统计
-- 按天汇总显示，不会刷屏
-- 必须提供用户ID（QQ号）
-- 可指定时间范围（默认7天）
-- 输出示例：
-  ```
-  用户 张三 最近 7 天 Token 使用统计：
-
-  2026-03-18: 12,450 tokens
-  2026-03-17: 8,320 tokens
-  2026-03-16: 15,670 tokens
-
-  总计: 36,440 tokens
+  👥 Top 群组
+    1. 技术交流群  876.5K
+    2. 闲聊群  295.3K
   ```
 
 ### 数据存储
@@ -591,6 +506,7 @@ JChatGPT 按 (日期, userId, groupId) 三元组聚合每次对话的 Token 消�
 - 推理模型和视觉模型的消耗不在统计范围内
 - 同一用户同一天在同一群的多次调用合并为一行（callCount 自增）
 - 统计数据基于实际API返回的Token数
+- 缓存命中统计取自兼容接口返回的 `prompt_cache_hit_tokens`；接口未返回时按0计算
 
 ## 部署要求
 
