@@ -1,4 +1,4 @@
-package top.jie65535.mirai
+package top.jie65535.mirai.llm
 
 import com.aallam.openai.api.chat.ChatCompletionChunk
 import com.aallam.openai.api.chat.ChatCompletionRequest
@@ -48,18 +48,19 @@ class ModelService(
         explicitNulls = false
     }
 
-    /**
-     * 一次响应的缓存命中用量。DeepSeek 在 usage 顶层返回的非标准字段，
-     * openai-kotlin 的 Usage 类不含这些字段，必须从原始 JSON 抠出来。
-     */
+    /** openai-kotlin 的 Usage 尚未暴露缓存明细，因此从原始 JSON 读取。 */
     data class CacheUsage(val hitTokens: Int, val missTokens: Int)
 
     /** 从原始 data 行（已去掉 "data: " 前缀）解析缓存命中用量；无相关字段返回 null。 */
-    private fun extractCacheUsage(rawJson: String): CacheUsage? {
+    internal fun extractCacheUsage(rawJson: String): CacheUsage? {
         return try {
             val usage = json.parseToJsonElement(rawJson).jsonObject["usage"]?.jsonObject ?: return null
+            val promptTokens = usage["prompt_tokens"]?.jsonPrimitive?.intOrNull
+            val promptDetails = usage["prompt_tokens_details"]?.jsonObject
             val hit = usage["prompt_cache_hit_tokens"]?.jsonPrimitive?.intOrNull
+                ?: promptDetails?.get("cached_tokens")?.jsonPrimitive?.intOrNull
             val miss = usage["prompt_cache_miss_tokens"]?.jsonPrimitive?.intOrNull
+                ?: if (hit != null && promptTokens != null) (promptTokens - hit).coerceAtLeast(0) else null
             if (hit == null && miss == null) null else CacheUsage(hit ?: 0, miss ?: 0)
         } catch (_: Exception) {
             null

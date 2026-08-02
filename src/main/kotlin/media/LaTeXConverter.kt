@@ -1,4 +1,4 @@
-package top.jie65535.mirai
+package top.jie65535.mirai.media
 
 import org.scilab.forge.jlatexmath.TeXConstants
 import org.scilab.forge.jlatexmath.TeXFormula

@@ -131,3 +131,9 @@ src/test/kotlin/RunTerminal.kt
 
 # Local Test Launch Point working directory
 /debug-sandbox
+
+# Local experiment/runtime artifacts
+__pycache__/
+*.py[cod]
+/nul
+/.playwright-cli/

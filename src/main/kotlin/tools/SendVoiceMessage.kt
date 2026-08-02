@@ -10,7 +10,7 @@ import net.mamoe.mirai.contact.AudioSupported
 import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.PluginConfig
+import top.jie65535.mirai.config.PluginConfig
 import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlin.time.measureTime

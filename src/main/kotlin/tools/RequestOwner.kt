@@ -16,7 +16,7 @@ import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.event.nextEvent
 import net.mamoe.mirai.message.data.content
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.PluginConfig
+import top.jie65535.mirai.config.PluginConfig
 import kotlin.collections.getValue
 
 class RequestOwner : BaseAgent(

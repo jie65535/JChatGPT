@@ -12,9 +12,9 @@ import net.mamoe.mirai.message.data.Image.Key.queryUrl
 import net.mamoe.mirai.message.data.SingleMessage
 import net.mamoe.mirai.message.data.content
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.PluginConfig
-import top.jie65535.mirai.ChatHistoryStore
-import top.jie65535.mirai.ChatMessageRecord
+import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.data.ChatHistoryStore
+import top.jie65535.mirai.data.ChatMessageRecord
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.OffsetDateTime

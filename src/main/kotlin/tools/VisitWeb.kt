@@ -7,7 +7,7 @@ import io.ktor.client.statement.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.serialization.json.*
-import top.jie65535.mirai.PluginConfig
+import top.jie65535.mirai.config.PluginConfig
 
 class VisitWeb : BaseAgent(
     tool = Tool.function(

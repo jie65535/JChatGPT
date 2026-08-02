@@ -23,8 +23,8 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.LargeLanguageModels
-import top.jie65535.mirai.PluginConfig
+import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.llm.LargeLanguageModels
 import java.net.URI
 
 class VisualAgent : BaseAgent(

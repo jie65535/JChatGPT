@@ -10,8 +10,8 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.PluginConfig
-import top.jie65535.mirai.SkillStore
+import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.data.SkillStore
 
 /**
  * 按需加载某个技能的正文进上下文。技能索引（name+简介）常驻系统提示词，

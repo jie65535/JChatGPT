@@ -15,8 +15,8 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.PluginData
-import top.jie65535.mirai.FavorabilityInfo
+import top.jie65535.mirai.data.PluginData
+import top.jie65535.mirai.data.FavorabilityInfo
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 

@@ -10,8 +10,8 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.PluginConfig
-import top.jie65535.mirai.SkillStore
+import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.data.SkillStore
 
 /**
  * 新增或整篇覆盖一个技能（全局，跨群共享）。

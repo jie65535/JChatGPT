@@ -1,4 +1,4 @@
-package top.jie65535.mirai
+package top.jie65535.mirai.data
 
 import net.mamoe.mirai.Bot
 import net.mamoe.mirai.contact.Contact
@@ -34,14 +34,22 @@ object ChatHistoryStore {
     private var initialized = false
     private lateinit var databaseFile: File
     private var writeConnection: Connection? = null
+    private var warningLogger: ((String, Throwable?) -> Unit)? = null
 
     val isAvailable: Boolean
         get() = initialized
 
-    fun init(dataFolder: File) {
+    val databaseFileOrNull: File?
+        get() = if (initialized) databaseFile else null
+
+    fun init(
+        dataFolder: File,
+        onWarning: (String, Throwable?) -> Unit = { _, _ -> },
+    ) {
         synchronized(lifecycleLock) {
             if (initialized) return
 
+            warningLogger = onWarning
             Class.forName("org.sqlite.JDBC")
             dataFolder.mkdirs()
             databaseFile = dataFolder.resolve("chat-history.sqlite")
@@ -68,11 +76,12 @@ object ChatHistoryStore {
                         connection.createStatement().use { statement ->
                             statement.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                         }
-                    }.onFailure { JChatGPT.logger.warning("SQLite WAL checkpoint 失败", it) }
+                    }.onFailure { warn("SQLite WAL checkpoint 失败", it) }
                     connection.close()
                 }
                 writeConnection = null
                 initialized = false
+                warningLogger = null
             }
         }
     }
@@ -139,7 +148,7 @@ object ChatHistoryStore {
                 statement.setInt(8, event.messageTime)
                 val updated = statement.executeUpdate()
                 if (updated == 0) {
-                    JChatGPT.logger.warning(
+                    warn(
                         "未在 SQLite 中找到撤回消息: bot=${event.bot.id}, " +
                                 "author=${event.authorId}, target=$targetId, ids=$messageIds, " +
                                 "internalIds=$messageInternalIds, " +
@@ -364,5 +373,9 @@ object ChatHistoryStore {
             code = getString("code"),
             recalled = getInt("recalled"),
         )
+    }
+
+    private fun warn(message: String, cause: Throwable? = null) {
+        runCatching { warningLogger?.invoke(message, cause) }
     }
 }

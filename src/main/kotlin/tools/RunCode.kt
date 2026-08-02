@@ -6,7 +6,7 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.serialization.json.*
-import top.jie65535.mirai.PluginConfig
+import top.jie65535.mirai.config.PluginConfig
 
 class RunCode : BaseAgent(
     tool = Tool.function(

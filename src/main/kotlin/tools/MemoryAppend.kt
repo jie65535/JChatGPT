@@ -10,8 +10,8 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.PluginConfig
-import top.jie65535.mirai.PluginData
+import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.data.PluginData
 
 class MemoryAppend : BaseAgent(
     tool = Tool.function(

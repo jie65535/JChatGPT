@@ -4,7 +4,7 @@ import com.aallam.openai.api.chat.Tool
 import com.aallam.openai.api.core.Parameters
 import kotlinx.serialization.json.*
 import net.mamoe.mirai.event.events.MessageEvent
-import top.jie65535.mirai.LaTeXConverter
+import top.jie65535.mirai.media.LaTeXConverter
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 
 class SendLaTeXExpression : BaseAgent(

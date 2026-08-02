@@ -1,4 +1,4 @@
-package top.jie65535.mirai
+package top.jie65535.mirai.media
 
 /**
  * 会话内图片短索引：向 LLM 暴露递增整数，内部保留从原消息图片取得的精确 URL。

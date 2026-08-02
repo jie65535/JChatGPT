@@ -10,7 +10,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.serialization.json.*
 import org.apache.commons.text.StringEscapeUtils
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.PluginConfig
+import top.jie65535.mirai.config.PluginConfig
 
 class WebSearch : BaseAgent(
     tool = Tool.function(

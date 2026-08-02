@@ -11,7 +11,7 @@ import kotlinx.serialization.json.putJsonObject
 import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.message.data.buildForwardMessage
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.PluginConfig
+import top.jie65535.mirai.config.PluginConfig
 import kotlin.collections.getValue
 
 class SendCompositeMessage : BaseAgent(

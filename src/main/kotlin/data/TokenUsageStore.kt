@@ -1,4 +1,4 @@
-package top.jie65535.mirai
+package top.jie65535.mirai.data
 
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json

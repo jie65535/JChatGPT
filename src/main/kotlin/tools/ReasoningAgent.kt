@@ -6,8 +6,8 @@ import com.aallam.openai.api.chat.Tool
 import com.aallam.openai.api.core.Parameters
 import com.aallam.openai.api.model.ModelId
 import kotlinx.serialization.json.*
-import top.jie65535.mirai.LargeLanguageModels
-import top.jie65535.mirai.PluginConfig
+import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.llm.LargeLanguageModels
 
 class ReasoningAgent : BaseAgent(
     tool = Tool.function(

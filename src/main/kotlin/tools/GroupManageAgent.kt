@@ -13,7 +13,7 @@ import kotlinx.serialization.json.putJsonObject
 import net.mamoe.mirai.contact.MemberPermission
 import net.mamoe.mirai.event.events.GroupMessageEvent
 import net.mamoe.mirai.event.events.MessageEvent
-import top.jie65535.mirai.PluginConfig
+import top.jie65535.mirai.config.PluginConfig
 import kotlin.time.Duration.Companion.seconds
 
 class GroupManageAgent : BaseAgent(

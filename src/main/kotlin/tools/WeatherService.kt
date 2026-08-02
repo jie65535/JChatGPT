@@ -14,7 +14,7 @@ import net.i2p.crypto.eddsa.EdDSAEngine
 import net.i2p.crypto.eddsa.EdDSAPrivateKey
 import net.i2p.crypto.eddsa.spec.EdDSANamedCurveTable
 import top.jie65535.mirai.JChatGPT
-import top.jie65535.mirai.PluginConfig
+import top.jie65535.mirai.config.PluginConfig
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.spec.PKCS8EncodedKeySpec

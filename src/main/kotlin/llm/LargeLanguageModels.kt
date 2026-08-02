@@ -1,8 +1,10 @@
-package top.jie65535.mirai
+package top.jie65535.mirai.llm
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
+import top.jie65535.mirai.JChatGPT
+import top.jie65535.mirai.config.PluginConfig
 import kotlin.time.Duration.Companion.milliseconds
 
 object LargeLanguageModels {
@@ -23,6 +25,12 @@ object LargeLanguageModels {
         val temperature: Double?,
         /** 唯一标识，用于健康状态跟踪与日志 */
         val label: String,
+    )
+
+    data class ProfileEndpoint(
+        val service: ModelService,
+        val model: String,
+        val temperature: Double?,
     )
 
     /**
@@ -46,6 +54,10 @@ object LargeLanguageModels {
      * 视觉模型
      */
     var visual: ModelService? = null
+
+    /** 历史用户画像分析模型。 */
+    var profile: ProfileEndpoint? = null
+        private set
 
     /**
      * 接入点健康状态：记录各接入点的冷却截止时间戳（毫秒）。
@@ -143,6 +155,28 @@ object LargeLanguageModels {
             }
         }
         chatEndpoints = endpoints
+
+        profile = null
+        if (PluginConfig.profileEnabled) {
+            val api = PluginConfig.profileModelApi.ifBlank { PluginConfig.openAiApi }
+            val token = PluginConfig.profileModelToken.ifBlank { PluginConfig.openAiToken }
+            val model = PluginConfig.profileModel.ifBlank { PluginConfig.chatModel }
+            val extraBody = PluginConfig.profileModelExtraBody.ifBlank { PluginConfig.chatModelExtraBody }
+            if (api.isNotBlank() && token.isNotBlank() && model.isNotBlank()) {
+                val profileFirstChunk = PluginConfig.profileFirstChunkTimeout.milliseconds
+                profile = ProfileEndpoint(
+                    service = ModelService(
+                        baseUrl = api,
+                        token = token,
+                        timeout = maxOf(timeout, profileFirstChunk),
+                        firstChunkTimeout = profileFirstChunk,
+                        extraBody = parseExtraBody(extraBody),
+                    ),
+                    model = model,
+                    temperature = PluginConfig.profileModelTemperature ?: PluginConfig.chatTemperature,
+                )
+            }
+        }
 
         // 初始化推理模型
         if (PluginConfig.reasoningModelApi.isNotBlank() && PluginConfig.reasoningModelToken.isNotBlank()) {

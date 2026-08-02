@@ -1,4 +1,4 @@
-package top.jie65535.mirai
+package top.jie65535.mirai.data
 
 import java.nio.file.Files
 import java.sql.DriverManager

@@ -1,4 +1,4 @@
-package top.jie65535.mirai
+package top.jie65535.mirai.media
 
 import kotlin.test.Test
 import kotlin.test.assertEquals

@@ -10,6 +10,7 @@ JChatGPT 是一个基于 Kotlin 的 Mirai Console 插件，它将大型语言模
 - **上下文记忆**：支持持久化记忆存储
 - **技能系统**：Bot 可在群聊中自我沉淀可复用知识，全局跨群、按需加载、低上下文污染
 - **用户画像系统**：好感度、印象、标签、Bot 自定义代号
+- **渐进式历史画像**：群聊缓存闭合后，从原始上下文一次归纳所有有效参与者并持续修正长期画像
 - **Token消耗统计**：按天 × 用户 × 群聚合记录，支持多维度统计查询
 - **LaTeX 渲染**：自动将数学表达式渲染为图片
 - **灵活的触发方式**：@机器人、关键字触发、回复消息等
@@ -50,12 +51,13 @@ AI 可以自动调用多种工具来完成复杂任务：
 - `/jgpt clearContextCache` - 清空所有对话上下文缓存
 - `/jgpt skills` - 列出当前所有技能（名称 + 简介）
 
-### 好感度管理
-- `/jgpt setFavor <user> <value>` - 设置指定用户的好感度值（-100~100）
-- `/jgpt clearFavor` - 重置所有用户的好感度
-
 ### Token统计
 - `/jgpt tokens [days]` - 查看最近指定天数的Token使用简报（默认7天）
+
+### 渐进式历史画像（实验）
+- 日常使用无需画像命令：群聊缓存会话闭合后，一次模型调用会静默归纳其中所有有实质发言的参与者
+- `/jgpt profileAnalyze <userId> [batches]` - 诊断或验收时手动推进指定用户画像，默认1批、最多50批
+- `/jgpt profileShow <userId>` - 诊断或验收时查看已经提交的完整画像和覆盖时间
 
 ## 配置文件
 
@@ -91,6 +93,40 @@ chatFallbacks: []
 #     token: 'sk-xxxx'
 #     model: 'deepseek-chat'
 #     extraBody: ''
+# 是否启用实验性的历史用户画像分析
+profileEnabled: true
+# 画像模型接入点；以下字段留空时分别继承聊天模型配置
+profileModelApi: ''
+profileModelToken: ''
+profileModel: ''
+profileModelTemperature: null
+profileModelExtraBody: ''
+# 定向历史画像和闭合会话多人画像的提示词文件，相对于插件配置目录
+profilePromptFile: 'ProfilePrompt.md'
+profileConversationPromptFile: 'ProfileConversationPrompt.md'
+# 留空使用插件自己的聊天库；本地实验可填写外部SQLite历史库的绝对路径
+profileHistoryDatabasePath: ''
+# 每批目标用户消息数、片段软间隔及上下文限制
+profileBatchTargetMessages: 120
+profileBatchMaxEpisodes: 16
+profileEpisodeGapMinutes: 60
+profileContextBeforeMessages: 30
+profileContextAfterMessages: 30
+profileContextCoreMessages: 300
+profileMaxMessageChars: 1000
+# 模型结构化响应失败后的重试次数（0~3）和短摘要上限
+profileRetryMax: 2
+profileSummaryMaxLength: 500
+# 缓存会话闭合后自动维护画像；整段会话只调用一次模型
+profileAutoUpdateEnabled: true
+# 一次自动归纳最多读取最近150条会话消息
+profileAutoConversationMessageLimit: 150
+# 本人有效文本少于此字符数时不调用画像模型
+profileAutoMinAuthoredTextChars: 20
+# 普通群聊自动携带相关群友的好感度状态和短画像
+profileAutoInjectEnabled: true
+profileAutoInjectMaxUsers: 4
+profileAutoInjectSummaryMaxChars: 300
 # 备用接入点冷却时间（分钟）。某接入点失败后在此时间内会被排到重试队尾，避免每条消息都先卡在故障接入点上。0为禁用
 fallbackCooldownMinutes: 5
 # 推理模型额外请求体JSON，会合并到请求体中。例如DeepSeek启用思维: {"thinking": {"type": "enabled"}}
@@ -135,6 +171,8 @@ temperaturePermission: 50
 timeout: 60000
 # 首块响应超时时间，单位毫秒，默认10秒。若连接建立后在此时间内没收到首块data:则中断走重试
 firstChunkTimeout: 10000
+# 画像模型首块响应超时时间
+profileFirstChunkTimeout: 180000
 # 系统提示词，该字段已弃用，使用提示词文件而不是在这里修改
 prompt: '你是一个乐于助人的助手'
 # 系统提示词文件路径，相对于插件配置目录
@@ -159,8 +197,6 @@ memoryEnabled: true
 skillsEnabled: true
 # 是否启用好感度系统
 enableFavorabilitySystem: true
-# 好感度每日基础偏移速度（点/天）
-favorabilityBaseShiftSpeed: 2.0
 # 聊天记录搜索最大天数
 searchHistoryMaxDays: 30
 # 聊天记录搜索最大查询条数，防止内存溢出
@@ -169,6 +205,34 @@ searchHistoryMaxRecords: 5000
 
 聊天记录保存在插件数据目录的 `chat-history.sqlite` 中，并使用 SQLite WAL 模式支持记录与查询并行进行。
 数据库由插件在首次启动时自动创建和维护，无需安装额外的聊天记录插件。
+
+### 渐进式历史画像
+
+画像维护不需要群友执行命令。Bot 成功完成一轮群聊后，系统沿用上下文缓存的超时时间进行防抖；期间再次
+触发会合并为同一会话，缓存真正闭合时还会纳入 Bot 回复后的群聊消息。后台读取最近至多 150 条消息，只把
+本人有效文本达到门槛的账号列为候选，然后用一次模型调用同时比较所有候选人的当前画像并返回按用户分组的
+`ADD / UPDATE / CONFIRM / DELETE` 操作。没有可靠变化的参与者仍会被标记为已检查，但不会生成空洞画像。
+
+程序逐条验证每项操作至少引用了对应用户本人的发言；任何用户别名、条目 ID、证据归因或摘要长度非法，整段
+会话都不会部分提交。全部候选人的画像和本次覆盖记录在一个 SQLite 事务中落库，失败不会阻塞 Bot 回复。
+这一阶段不自动扫描未触发群聊，也不自动回填旧历史；`profileAnalyze` 只保留给离线验收和诊断。
+
+下一次正常群聊会自动携带触发者和最近发言者的认识。现有好感度、Bot 代号、标签和主观印象会与证据驱动的
+长期画像按同一个人合并渲染，但两套数据仍独立保存，自动画像不会修改好感度。
+
+画像结果保存在插件数据目录的 `user-profile.sqlite`，不会覆盖现有好感度或旧印象数据。实验时可把历史
+备份配置为只读来源，例如：
+
+```yaml
+profileHistoryDatabasePath: 'D:\backups\chat-history.sqlite'
+profileModelApi: 'https://example.com/v1/'
+profileModelToken: '在部署环境中填写，不要提交到Git'
+profileModel: '兼容chat/completions的模型名'
+```
+
+执行 `/jgpt reload` 后即可自动运行。`ProfileConversationPrompt.md` 会在首次启用时生成，可直接迭代多人归纳
+规则。`profileAnalyze` 和 `profileShow` 仍可用于人工验收，但不承担日常维护职责。外部历史库始终以只读
+方式打开，程序不会为了画像实验修改备份或创建索引。
 
 ### 和风天气
 
@@ -380,21 +444,16 @@ JChatGPT 维护对每位用户的画像，由好感度、Bot 自定义代号、�
 
 ### 好感度机制
 - 负好感度用户有一定概率不会收到回复，概率 = |好感度| / 100
-- 好感度会随时间向 0 偏移：偏移量 = sign(好感度) × (1 - (|好感度| / 100)²) × 基础偏移速度
-- 极端值变化缓慢，-100 需要好几天才能回升，100 也不会快速衰减
+- 好感度不会随时间自动偏移，只会由模型工具显式调整
+- 好感度为 0 时仍会保留该用户的代号、标签、印象和调整原因
 
 ### 注入到上下文
 - 群聊：列出会话历史中"认识的群友"（name/tags/impression 任一非空）
 - 私聊：仅当对方有 name/tags/impression 时注入对方画像
 - 仅有好感度数值、其它字段全空的用户不会被列出，避免提示词噪声
 
-### 管理命令
-- `/jgpt setFavor <user> <value>` - 设置指定用户的好感度值（-100~100），不改其他字段
-- `/jgpt clearFavor` - 清空所有用户画像
-
 ### 配置选项
 - `enableFavorabilitySystem` - 是否启用画像系统（默认：true）
-- `favorabilityBaseShiftSpeed` - 好感度每日基础偏移速度（点/天，默认：2.0）
 
 ## 技能系统
 

@@ -1,4 +1,4 @@
-package top.jie65535.mirai
+package top.jie65535.mirai.config
 
 import kotlinx.serialization.Serializable
 import net.mamoe.mirai.console.data.AutoSavePluginConfig
@@ -56,6 +56,78 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("聊天模型备用接入点列表（容灾）。主接入点连续失败时按顺序切换；每项留空的字段会继承主接入点，例如只换API KEY就只填token，只换模型就只填model")
     val chatFallbacks: List<ChatFallbackEndpoint> by value()
+
+    @ValueDescription("是否启用实验性的历史用户画像分析")
+    val profileEnabled: Boolean by value(true)
+
+    @ValueDescription("画像分析模型API。留空时继承聊天模型API")
+    val profileModelApi: String by value("")
+
+    @ValueDescription("画像分析模型Token。留空时继承聊天模型Token")
+    val profileModelToken: String by value("")
+
+    @ValueDescription("画像分析模型。留空时继承聊天模型")
+    val profileModel: String by value("")
+
+    @ValueDescription("画像分析模型温度。留空时继承聊天模型温度")
+    val profileModelTemperature: Double? by value(null)
+
+    @ValueDescription("画像分析模型额外请求体JSON。留空时继承聊天模型额外请求体")
+    val profileModelExtraBody: String by value("")
+
+    @ValueDescription("画像分析提示词文件路径，相对于插件配置目录")
+    val profilePromptFile: String by value("ProfilePrompt.md")
+
+    @ValueDescription("闭合群聊多人画像提示词文件路径，相对于插件配置目录")
+    val profileConversationPromptFile: String by value("ProfileConversationPrompt.md")
+
+    @ValueDescription("画像分析使用的聊天记录SQLite路径。留空时使用插件自己的chat-history.sqlite；本地实验可填写历史库绝对路径")
+    val profileHistoryDatabasePath: String by value("")
+
+    @ValueDescription("每个画像分析批次最多读取目标用户多少条消息")
+    val profileBatchTargetMessages: Int by value(120)
+
+    @ValueDescription("每个画像分析批次最多包含多少个离散对话片段；同一秒的消息仍会一起处理")
+    val profileBatchMaxEpisodes: Int by value(16)
+
+    @ValueDescription("目标用户相邻发言超过多少分钟时划分为新的对话片段")
+    val profileEpisodeGapMinutes: Int by value(60)
+
+    @ValueDescription("每个对话片段最多附带多少条前置上下文")
+    val profileContextBeforeMessages: Int by value(30)
+
+    @ValueDescription("每个对话片段最多附带多少条后续上下文")
+    val profileContextAfterMessages: Int by value(30)
+
+    @ValueDescription("画像分析单批次最多保留多少条非目标用户上下文消息")
+    val profileContextCoreMessages: Int by value(300)
+
+    @ValueDescription("画像分析中单条消息最多保留的字符数")
+    val profileMaxMessageChars: Int by value(1000)
+
+    @ValueDescription("画像模型响应无效时的最大重试次数，取值0~3")
+    val profileRetryMax: Int by value(2)
+
+    @ValueDescription("单条画像结论的最大字符数")
+    val profileSummaryMaxLength: Int by value(500)
+
+    @ValueDescription("是否在群聊会话结束后静默自动维护相关用户画像")
+    val profileAutoUpdateEnabled: Boolean by value(true)
+
+    @ValueDescription("自动画像分析一次闭合会话最多读取多少条最近消息")
+    val profileAutoConversationMessageLimit: Int by value(150)
+
+    @ValueDescription("用户在会话中至少包含多少个本人文本字符才调用画像模型")
+    val profileAutoMinAuthoredTextChars: Int by value(20)
+
+    @ValueDescription("是否在普通群聊上下文中自动注入相关用户的画像摘要")
+    val profileAutoInjectEnabled: Boolean by value(true)
+
+    @ValueDescription("一次普通对话最多自动注入多少名相关用户的画像摘要")
+    val profileAutoInjectMaxUsers: Int by value(4)
+
+    @ValueDescription("普通对话中每名用户的画像摘要最多注入多少字符")
+    val profileAutoInjectSummaryMaxChars: Int by value(300)
 
     @ValueDescription("备用接入点冷却时间（分钟）。某接入点失败后在此时间内会被排到重试队尾，避免每条消息都先卡在故障接入点上。设为0禁用，默认5分钟")
     val fallbackCooldownMinutes: Long by value(5L)
@@ -129,6 +201,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("推理模型首块响应超时时间，单位毫秒，默认90秒。推理模型出首块前常有思考预热，比对话慢，故单独放宽")
     val reasoningFirstChunkTimeout: Long by value(90000L)
 
+    @ValueDescription("画像分析模型首块响应超时时间，单位毫秒，默认180秒")
+    val profileFirstChunkTimeout: Long by value(180000L)
+
     @Deprecated("使用外部文件而不是在配置文件内保存提示词")
     @ValueDescription("系统提示词，该字段已弃用，使用提示词文件而不是在这里修改")
     var prompt: String by value("你是一个乐于助人的助手")
@@ -171,9 +246,6 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("是否启用好感度系统")
     val enableFavorabilitySystem by value(true)
-
-    @ValueDescription("好感度每日基础偏移速度（点/天）")
-    val favorabilityBaseShiftSpeed by value(2.0)
 
     @ValueDescription("表情包路径，配置后会加载目录下的文件名，提示词中需要用{meme}来插入上下文")
     val memeDir: String by value("")
