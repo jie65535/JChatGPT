@@ -136,6 +136,14 @@ class UserProfileStoreTest {
                     }
                 }
                 assertTrue("source" in columns)
+                val tables = connection.createStatement().use { statement ->
+                    statement.executeQuery("SELECT name FROM sqlite_master WHERE type = 'table'").use { results ->
+                        buildSet {
+                            while (results.next()) add(results.getString("name"))
+                        }
+                    }
+                }
+                assertTrue("profile_group_cursor" in tables)
                 val version = connection.createStatement().use { statement ->
                     statement.executeQuery(
                         "SELECT value FROM user_profile_meta WHERE key = 'schema_version'"
@@ -144,8 +152,33 @@ class UserProfileStoreTest {
                         results.getString(1)
                     }
                 }
-                assertEquals("2", version)
+                assertEquals("3", version)
             }
+        } finally {
+            UserProfileStore.close()
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun persistsGroupAnalysisCursor() {
+        val directory = Files.createTempDirectory("jchatgpt-profile-group-cursor-test-")
+        try {
+            UserProfileStore.init(directory.toFile())
+            val cursor = GroupProfileCursor(
+                botId = 1,
+                groupId = 300,
+                cursorTime = 200,
+                snapshotEndTime = 1_000,
+                updatedAt = 123,
+            )
+
+            UserProfileStore.saveGroupCursor(cursor)
+            assertEquals(cursor, UserProfileStore.loadGroupCursor(1, 300))
+
+            val advanced = cursor.copy(cursorTime = 400, updatedAt = 456)
+            UserProfileStore.saveGroupCursor(advanced)
+            assertEquals(advanced, UserProfileStore.loadGroupCursor(1, 300))
         } finally {
             UserProfileStore.close()
             directory.toFile().deleteRecursively()
@@ -198,6 +231,81 @@ class UserProfileStoreTest {
         }
     }
 
+    @Test
+    fun commitsCompactionWithoutNewEvidenceAndReassignsExistingSupport() {
+        val directory = Files.createTempDirectory("jchatgpt-profile-compaction-commit-test-")
+        try {
+            UserProfileStore.init(directory.toFile())
+            val batch = batchFor(100, "initial-hash")
+            val first = itemFor("item-1")
+            val second = itemFor("item-2").copy(content = "关注 Kotlin 生态")
+            val initialProfile = UserProfileSnapshot(
+                userId = 100,
+                summary = "关注 Kotlin。",
+                version = 1,
+                cursorTime = 200,
+                snapshotEndTime = 1_000,
+                reliable = true,
+                model = "test-model",
+                promptVersion = "test-prompt",
+                items = listOf(first, second),
+            )
+            UserProfileStore.commit(
+                reduction = ProfileReduction(
+                    profile = initialProfile,
+                    operations = listOf(
+                        applied(first, ProfileOperationAction.ADD, listOf(1)),
+                        applied(second, ProfileOperationAction.ADD, listOf(1)),
+                    ),
+                ),
+                batch = batch,
+                usage = ProfileTokenUsage(),
+            )
+
+            val merged = first.copy(content = "关注 Kotlin 及其生态")
+            val compactedProfile = initialProfile.copy(
+                summary = "关注 Kotlin 及其生态。",
+                version = 2,
+                items = listOf(merged),
+            )
+            val plan = ProfileCompactionPlan(
+                reduction = ProfileReduction(
+                    profile = compactedProfile,
+                    operations = listOf(
+                        applied(merged, ProfileOperationAction.UPDATE, emptyList()),
+                        applied(second, ProfileOperationAction.DELETE, emptyList()),
+                    ),
+                ),
+                supportReassignments = mapOf(second.id to first.id),
+                mergedGroups = 1,
+                rewrittenItems = 0,
+                deletedItems = 0,
+            )
+            UserProfileStore.commitCompaction(
+                plan = plan,
+                batch = ProfileHistoryBatch(
+                    userId = 100,
+                    startTime = 150,
+                    endTime = 151,
+                    messages = emptyList(),
+                    aliases = mapOf(100L to "TARGET"),
+                    inputHash = "compact-hash",
+                ),
+                usage = ProfileTokenUsage(50, 10, 0),
+            )
+
+            val loaded = assertNotNull(UserProfileStore.load(100))
+            assertEquals(200, loaded.cursorTime)
+            assertEquals(listOf(merged), loaded.items)
+            assertEquals(2, UserProfileStore.loadSupportStats(100).getValue(first.id).count)
+            assertTrue(second.id !in UserProfileStore.loadSupportStats(100))
+            assertNotNull(UserProfileStore.lastRevisionAt(100, ProfileRevisionSource.COMPACTION))
+        } finally {
+            UserProfileStore.close()
+            directory.toFile().deleteRecursively()
+        }
+    }
+
     private fun batchFor(userId: Long, inputHash: String) = ProfileHistoryBatch(
         userId = userId,
         startTime = 100,
@@ -230,5 +338,19 @@ class UserProfileStoreTest {
         confidence = ProfileConfidence.MEDIUM,
         firstSeenAt = 150,
         lastConfirmedAt = 150,
+    )
+
+    private fun applied(
+        item: UserProfileItem,
+        action: ProfileOperationAction,
+        evidenceRefs: List<Int>,
+    ) = AppliedProfileOperation(
+        action = action,
+        itemId = item.id,
+        category = item.category,
+        content = item.content,
+        confidence = item.confidence,
+        relatedUserId = item.relatedUserId,
+        evidenceRefs = evidenceRefs,
     )
 }

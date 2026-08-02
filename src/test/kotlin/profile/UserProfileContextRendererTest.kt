@@ -15,7 +15,7 @@ class UserProfileContextRendererTest {
             snapshotEndTime = 2,
             reliable = true,
             items = listOf(
-                relationship("visible", 200, "经常互相讨论技术方案"),
+                relationship("visible", 200, "经常与 U12 讨论技术方案"),
                 relationship("hidden", 300, "曾共同讨论游戏"),
             ),
         )
@@ -38,8 +38,9 @@ class UserProfileContextRendererTest {
 
         assertContains(rendered, "小明代号(100)")
         assertContains(rendered, "好感度+12")
-        assertContains(rendered, "长期认识：长期关注 Kotlin 开发")
-        assertContains(rendered, "与小王：经常互相讨论技术方案")
+        assertContains(rendered, "画像认识：长期关注 Kotlin 开发")
+        assertContains(rendered, "与小王：经常与对方讨论技术方案")
+        assertFalse(rendered.contains("U12"))
         assertFalse(rendered.contains("小李"))
         assertFalse(rendered.contains("曾共同讨论游戏"))
     }
@@ -59,7 +60,7 @@ class UserProfileContextRendererTest {
         assertContains(rendered, "小明(100)")
         assertContains(rendered, "好感度-8")
         assertContains(rendered, "主观印象：偶尔喜欢抬杠")
-        assertFalse(rendered.contains("长期认识："))
+        assertFalse(rendered.contains("画像认识："))
     }
 
     @Test
@@ -88,4 +89,5 @@ class UserProfileContextRendererTest {
         firstSeenAt = 1,
         lastConfirmedAt = 1,
     )
+
 }

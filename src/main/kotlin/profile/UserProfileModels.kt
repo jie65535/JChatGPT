@@ -54,6 +54,7 @@ enum class ProfileOperationAction {
 enum class ProfileRevisionSource {
     BACKFILL,
     CONVERSATION,
+    COMPACTION,
 }
 
 data class UserProfileItem(
@@ -82,14 +83,15 @@ data class UserProfileSnapshot(
 @Serializable
 data class ProfileModelOperation(
     val action: ProfileOperationAction,
-    @SerialName("item_id")
-    val itemId: String? = null,
+    @SerialName("item_ref")
+    val itemRef: String? = null,
     val category: ProfileCategory? = null,
     val content: String? = null,
     val confidence: ProfileConfidence? = null,
     @SerialName("related_user_alias")
     val relatedUserAlias: String? = null,
     @SerialName("evidence_refs")
+    @Serializable(with = EvidenceReferenceListSerializer::class)
     val evidenceRefs: List<Int> = emptyList(),
 )
 
@@ -202,6 +204,7 @@ data class AppliedProfileOperation(
 data class ProfileReduction(
     val profile: UserProfileSnapshot,
     val operations: List<AppliedProfileOperation>,
+    val skippedOperations: List<String> = emptyList(),
 )
 
 data class ProfileAnalysisProgress(
@@ -210,6 +213,7 @@ data class ProfileAnalysisProgress(
     val endTime: Int,
     val messageCount: Int,
     val operationCount: Int,
+    val skippedOperationCount: Int,
     val usage: ProfileTokenUsage,
 )
 
@@ -217,7 +221,42 @@ data class ConversationProfileAnalysisReport(
     val analyzedUsers: Int,
     val processedMessages: Int,
     val appliedOperations: Int,
+    val skippedOperations: Int,
     val usage: ProfileTokenUsage,
+)
+
+data class GroupProfileCursor(
+    val botId: Long,
+    val groupId: Long,
+    val cursorTime: Int,
+    val snapshotEndTime: Int,
+    val updatedAt: Long = 0,
+)
+
+data class GroupProfileAnalysisProgress(
+    val batchIndex: Int,
+    val startTime: Int,
+    val endTime: Int,
+    val messageCount: Int,
+    val analyzedUsers: Int,
+    val appliedOperations: Int,
+    val skippedOperations: Int,
+    val usage: ProfileTokenUsage,
+)
+
+data class GroupProfileAnalysisReport(
+    val botId: Long?,
+    val groupId: Long,
+    val processedBatches: Int,
+    val processedMessages: Int,
+    val analyzedUsers: Int,
+    val appliedOperations: Int,
+    val skippedOperations: Int,
+    val usage: ProfileTokenUsage,
+    val cursorTime: Int,
+    val snapshotEndTime: Int,
+    val caughtUp: Boolean,
+    val alreadyRunning: Boolean = false,
 )
 
 data class ProfileAnalysisReport(
@@ -225,6 +264,7 @@ data class ProfileAnalysisReport(
     val processedBatches: Int,
     val processedMessages: Int,
     val appliedOperations: Int,
+    val skippedOperations: Int,
     val usage: ProfileTokenUsage,
     val profile: UserProfileSnapshot?,
     val caughtUp: Boolean,

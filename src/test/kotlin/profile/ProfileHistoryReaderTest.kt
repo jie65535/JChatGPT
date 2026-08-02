@@ -49,6 +49,7 @@ class ProfileHistoryReaderTest {
                     }
                     insert(TARGET, 10, 100, "目标发言一")
                     insert(OTHER, 10, 110, "用于理解语境的回复")
+                    insert(OTHER, 10, 110, "同一秒的补充回复")
                     insert(TARGET, 10, 130, "目标发言二")
                     insert(TARGET, 20, 130, "同一秒的另一群发言")
                     insert(OTHER, 20, 140, "后续上下文")
@@ -110,6 +111,35 @@ class ProfileHistoryReaderTest {
             assertTrue(conversation.authoredTextCharsByUser.getValue(TARGET) > 0)
             assertTrue(conversation.messages.all { it.record.targetId == 10L })
             assertTrue(conversation.messages.all { it.record.time in 90 until 150 })
+
+            val groupBounds = assertNotNull(reader.findGroupTimeBounds(10))
+            assertEquals(1, groupBounds.botId)
+            assertEquals(100, groupBounds.startTime)
+            assertEquals(201, groupBounds.endTime)
+            val firstGroupBatch = assertNotNull(
+                reader.loadNextConversationBatch(
+                    botId = groupBounds.botId,
+                    groupId = 10,
+                    startTime = groupBounds.startTime,
+                    snapshotEndTime = groupBounds.endTime,
+                    messageLimit = 2,
+                    maxMessageChars = 200,
+                )
+            )
+            assertEquals(111, firstGroupBatch.endTime)
+            assertEquals(listOf(100, 110, 110), firstGroupBatch.messages.map { it.record.time })
+            val secondGroupBatch = assertNotNull(
+                reader.loadNextConversationBatch(
+                    botId = groupBounds.botId,
+                    groupId = 10,
+                    startTime = firstGroupBatch.endTime,
+                    snapshotEndTime = groupBounds.endTime,
+                    messageLimit = 2,
+                    maxMessageChars = 200,
+                )
+            )
+            assertEquals(201, secondGroupBatch.endTime)
+            assertEquals(listOf(130, 200), secondGroupBatch.messages.map { it.record.time })
         } finally {
             directory.toFile().deleteRecursively()
         }

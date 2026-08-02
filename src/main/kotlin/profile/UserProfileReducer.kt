@@ -3,8 +3,6 @@ package top.jie65535.mirai.profile
 import java.util.UUID
 
 object UserProfileReducer {
-    private val overclaimPattern = Regex("深厚|扎实|精通|专家|导师|领袖|天才|极强|全栈|核心成员|公认")
-
     fun reduce(
         current: UserProfileSnapshot,
         batch: ProfileHistoryBatch,
@@ -14,108 +12,34 @@ object UserProfileReducer {
         summaryMaxLength: Int,
         advanceBackfillCursor: Boolean = true,
     ): ProfileReduction {
-        require(response.summary.length <= summaryMaxLength) {
-            "画像摘要超过 ${summaryMaxLength} 字符"
-        }
-
         val items = current.items.associateBy { it.id }.toMutableMap()
         val applied = mutableListOf<AppliedProfileOperation>()
+        val skipped = mutableListOf<String>()
 
         response.operations.forEachIndexed { index, operation ->
-            val evidence = operation.evidenceRefs.distinct().map { ref ->
-                batch.evidenceByRef[ref]
-                    ?: throw IllegalArgumentException("operations[$index] 引用了不存在的证据 e:$ref")
-            }
-            require(evidence.isNotEmpty()) { "operations[$index] 缺少证据" }
-            require(evidence.any { it.record.fromId == batch.userId }) {
-                "operations[$index] 没有目标用户自己的发言证据"
-            }
-
-            val evidenceTime = evidence
-                .asSequence()
-                .filter { it.record.fromId == batch.userId }
-                .maxOf { it.record.time }
-            val firstEvidenceTime = evidence
-                .asSequence()
-                .filter { it.record.fromId == batch.userId }
-                .minOf { it.record.time }
-
-            when (operation.action) {
-                ProfileOperationAction.ADD -> {
-                    require(operation.itemId.isNullOrBlank()) {
-                        "operations[$index] ADD 不能指定 item_id"
-                    }
-                    val category = requireNotNull(operation.category) {
-                        "operations[$index] ADD 缺少 category"
-                    }
-                    val content = validateContent(index, operation.content)
-                    val confidence = requireNotNull(operation.confidence) {
-                        "operations[$index] ADD 缺少 confidence"
-                    }
-                    val relatedUserId = resolveRelatedUser(index, category, operation.relatedUserAlias, batch)
-                    val duplicate = items.values.any {
-                        it.category == category && normalize(it.content) == normalize(content)
-                    }
-                    if (duplicate) return@forEachIndexed
-
-                    val item = UserProfileItem(
-                        id = UUID.randomUUID().toString(),
-                        category = category,
-                        content = content,
-                        confidence = confidence,
-                        relatedUserId = relatedUserId,
-                        firstSeenAt = firstEvidenceTime,
-                        lastConfirmedAt = evidenceTime,
-                    )
-                    items[item.id] = item
-                    applied += item.toApplied(operation.action, operation.evidenceRefs)
-                }
-
-                ProfileOperationAction.UPDATE -> {
-                    val old = requireExistingItem(index, operation, items)
-                    val category = operation.category ?: old.category
-                    val content = validateContent(index, operation.content)
-                    val confidence = operation.confidence ?: old.confidence
-                    val relatedUserId = resolveRelatedUser(
-                        index,
-                        category,
-                        operation.relatedUserAlias,
-                        batch,
-                        fallback = old.relatedUserId,
-                    )
-                    val updated = old.copy(
-                        category = category,
-                        content = content,
-                        confidence = confidence,
-                        relatedUserId = relatedUserId,
-                        lastConfirmedAt = evidenceTime,
-                    )
-                    items[old.id] = updated
-                    applied += updated.toApplied(operation.action, operation.evidenceRefs)
-                }
-
-                ProfileOperationAction.CONFIRM -> {
-                    val old = requireExistingItem(index, operation, items)
-                    val updated = old.copy(
-                        confidence = operation.confidence ?: old.confidence,
-                        lastConfirmedAt = evidenceTime,
-                    )
-                    items[old.id] = updated
-                    applied += updated.toApplied(operation.action, operation.evidenceRefs)
-                }
-
-                ProfileOperationAction.DELETE -> {
-                    val old = requireExistingItem(index, operation, items)
-                    items.remove(old.id)
-                    applied += old.toApplied(operation.action, operation.evidenceRefs)
-                }
+            try {
+                applyOperation(index, operation, current, batch, items)?.let(applied::add)
+            } catch (cause: IllegalArgumentException) {
+                skipped += cause.message ?: "operations[$index] 不符合画像协议"
             }
         }
 
-        val summary = if (applied.isEmpty()) {
+        val hasSummaryRelevantChange = applied.any { it.action != ProfileOperationAction.CONFIRM }
+        val summary = if (
+            applied.isEmpty() || skipped.isNotEmpty() ||
+            (!hasSummaryRelevantChange && current.summary.isNotBlank())
+        ) {
             current.summary
         } else {
-            response.summary.trim().ifEmpty { current.summary }
+            try {
+                ProfileContentRules.validateSummary(
+                    ProfilePersistentText.normalizeSummary(response.summary, batch),
+                    summaryMaxLength,
+                ).ifEmpty { current.summary }
+            } catch (cause: IllegalArgumentException) {
+                skipped += "summary: ${cause.message}"
+                current.summary
+            }
         }
         val changed = applied.isNotEmpty() || summary != current.summary
         val profile = current.copy(
@@ -130,28 +54,129 @@ object UserProfileReducer {
                 compareBy<UserProfileItem>({ it.category.ordinal }, { it.firstSeenAt }, { it.id })
             ),
         )
-        return ProfileReduction(profile, applied)
+        return ProfileReduction(profile, applied, skipped)
     }
 
-    private fun validateContent(index: Int, raw: String?): String {
-        val content = raw?.trim().orEmpty()
-        require(content.isNotEmpty()) { "operations[$index] 缺少 content" }
-        require(content.length <= 120) { "operations[$index].content 超过 120 字符" }
-        require(!overclaimPattern.containsMatchIn(content)) {
-            "operations[$index].content 包含夸张身份或能力判断"
+    private fun applyOperation(
+        index: Int,
+        operation: ProfileModelOperation,
+        current: UserProfileSnapshot,
+        batch: ProfileHistoryBatch,
+        items: MutableMap<String, UserProfileItem>,
+    ): AppliedProfileOperation? {
+        val evidence = operation.evidenceRefs.distinct().map { ref ->
+            batch.evidenceByRef[ref]
+                ?: throw IllegalArgumentException("operations[$index] 引用了不存在的证据 e:$ref")
         }
-        return content
+        require(evidence.isNotEmpty()) { "operations[$index] 缺少证据" }
+        require(evidence.any { it.record.fromId == batch.userId }) {
+            "operations[$index] 没有目标用户自己的发言证据"
+        }
+
+        val targetEvidence = evidence.filter { it.record.fromId == batch.userId }
+        val evidenceTime = targetEvidence.maxOf { it.record.time }
+        val firstEvidenceTime = targetEvidence.minOf { it.record.time }
+
+        return when (operation.action) {
+            ProfileOperationAction.ADD -> {
+                require(operation.itemRef.isNullOrBlank()) {
+                    "operations[$index] ADD 不能指定 item_ref"
+                }
+                val category = requireNotNull(operation.category) {
+                    "operations[$index] ADD 缺少 category"
+                }
+                val confidence = requireNotNull(operation.confidence) {
+                    "operations[$index] ADD 缺少 confidence"
+                }
+                val relatedUserId = resolveRelatedUser(index, category, operation.relatedUserAlias, batch)
+                val content = validateContent(index, operation.content, batch, relatedUserId)
+                val duplicate = items.values.any {
+                    it.category == category &&
+                            ProfileContentRules.normalizedKey(it.content) == ProfileContentRules.normalizedKey(content)
+                }
+                if (duplicate) return null
+
+                val item = UserProfileItem(
+                    id = UUID.randomUUID().toString(),
+                    category = category,
+                    content = content,
+                    confidence = confidence,
+                    relatedUserId = relatedUserId,
+                    firstSeenAt = firstEvidenceTime,
+                    lastConfirmedAt = evidenceTime,
+                )
+                items[item.id] = item
+                item.toApplied(operation.action, operation.evidenceRefs)
+            }
+
+            ProfileOperationAction.UPDATE -> {
+                val old = requireExistingItem(index, operation, current, items)
+                val category = operation.category ?: old.category
+                val confidence = operation.confidence ?: old.confidence
+                val relatedUserId = resolveRelatedUser(
+                    index,
+                    category,
+                    operation.relatedUserAlias,
+                    batch,
+                    fallback = old.relatedUserId,
+                )
+                val content = validateContent(index, operation.content, batch, relatedUserId)
+                val updated = old.copy(
+                    category = category,
+                    content = content,
+                    confidence = confidence,
+                    relatedUserId = relatedUserId,
+                    lastConfirmedAt = evidenceTime,
+                )
+                items[old.id] = updated
+                updated.toApplied(operation.action, operation.evidenceRefs)
+            }
+
+            ProfileOperationAction.CONFIRM -> {
+                val old = requireExistingItem(index, operation, current, items)
+                val updated = old.copy(
+                    confidence = operation.confidence ?: old.confidence,
+                    lastConfirmedAt = evidenceTime,
+                )
+                items[old.id] = updated
+                updated.toApplied(operation.action, operation.evidenceRefs)
+            }
+
+            ProfileOperationAction.DELETE -> {
+                val old = requireExistingItem(index, operation, current, items)
+                items.remove(old.id)
+                old.toApplied(operation.action, operation.evidenceRefs)
+            }
+        }
+    }
+
+    private fun validateContent(
+        index: Int,
+        raw: String?,
+        batch: ProfileHistoryBatch,
+        relatedUserId: Long?,
+    ): String {
+        return ProfileContentRules.validate(
+            ProfilePersistentText.normalizeItemContent(raw.orEmpty(), batch, relatedUserId),
+            "operations[$index]",
+        )
     }
 
     private fun requireExistingItem(
         index: Int,
         operation: ProfileModelOperation,
+        referenceProfile: UserProfileSnapshot,
         items: Map<String, UserProfileItem>,
     ): UserProfileItem {
-        val itemId = operation.itemId?.takeIf { it.isNotBlank() }
-            ?: throw IllegalArgumentException("operations[$index] ${operation.action} 缺少 item_id")
-        return items[itemId]
-            ?: throw IllegalArgumentException("operations[$index] 指向不存在的画像条目 $itemId")
+        val itemRef = operation.itemRef?.takeIf { it.isNotBlank() }
+        val referencedItem = ProfileItemReferences.resolve(referenceProfile, itemRef)
+            ?: throw IllegalArgumentException(
+                "operations[$index] ${operation.action} 指向不存在的画像条目 ${itemRef ?: "（缺少 item_ref）"}"
+            )
+        return items[referencedItem.id]
+            ?: throw IllegalArgumentException(
+                "operations[$index] ${operation.action} 重复操作了画像条目 $itemRef"
+            )
     }
 
     private fun resolveRelatedUser(
@@ -186,7 +211,4 @@ object UserProfileReducer {
         evidenceRefs = evidenceRefs.distinct(),
     )
 
-    private fun normalize(value: String): String = value
-        .lowercase()
-        .replace(Regex("[\\s\\p{Punct}，。；、！？（）【】‘’“”]+"), "")
 }

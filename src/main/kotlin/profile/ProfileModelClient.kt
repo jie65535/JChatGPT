@@ -11,6 +11,11 @@ import kotlinx.serialization.json.Json
 import top.jie65535.mirai.llm.LargeLanguageModels
 import top.jie65535.mirai.llm.ModelService
 
+internal val profileResponseJson = Json {
+    ignoreUnknownKeys = true
+    explicitNulls = false
+}
+
 interface ProfileModel {
     val modelName: String
 
@@ -30,13 +35,19 @@ interface ConversationProfileModel {
     ): ConversationProfileModelResult
 }
 
+interface ProfileCompactionModel {
+    val modelName: String
+
+    suspend fun compact(
+        profile: UserProfileSnapshot,
+        supportStats: Map<String, ProfileItemSupportStats>,
+    ): ProfileCompactionModelResult
+}
+
 class ProfileModelClient(
     private val endpoint: LargeLanguageModels.ProfileEndpoint,
-) : ProfileModel, ConversationProfileModel {
-    private val json = Json {
-        ignoreUnknownKeys = false
-        explicitNulls = false
-    }
+) : ProfileModel, ConversationProfileModel, ProfileCompactionModel {
+    private val json = profileResponseJson
 
     override val modelName: String
         get() = endpoint.model
@@ -115,15 +126,54 @@ class ProfileModelClient(
         )
     }
 
+    override suspend fun compact(
+        profile: UserProfileSnapshot,
+        supportStats: Map<String, ProfileItemSupportStats>,
+    ): ProfileCompactionModelResult {
+        val content = StringBuilder()
+        var lastUsage: Usage? = null
+        var cacheUsage: ModelService.CacheUsage? = null
+        endpoint.service.chatCompletions(
+            ChatCompletionRequest(
+                model = ModelId(endpoint.model),
+                temperature = endpoint.temperature,
+                responseFormat = ChatResponseFormat.JsonObject,
+                streamOptions = StreamOptions(includeUsage = true),
+                messages = listOf(
+                    ChatMessage.System(ProfilePromptStore.compactionSystemPrompt),
+                    ChatMessage.User(ProfilePromptStore.buildCompactionUserPrompt(profile, supportStats)),
+                ),
+            )
+        ) { cacheUsage = it }.collect { chunk ->
+            chunk.choices.firstOrNull()?.delta?.content?.let(content::append)
+            chunk.usage?.let { lastUsage = it }
+        }
+
+        val raw = content.toString().replace(THINK_REGEX, "").trim()
+        return ProfileCompactionModelResult(
+            response = json.decodeFromString(extractObject(raw)),
+            rawResponse = raw,
+            usage = ProfileTokenUsage(
+                promptTokens = lastUsage?.promptTokens ?: 0,
+                completionTokens = lastUsage?.completionTokens ?: 0,
+                cachedTokens = cacheUsage?.hitTokens ?: 0,
+            ),
+        )
+    }
+
     private fun parseResponse(raw: String): ProfileModelResponse {
         return parseObject(raw)
     }
 
     private inline fun <reified T> parseObject(raw: String): T {
+        return json.decodeFromString(extractObject(raw))
+    }
+
+    private fun extractObject(raw: String): String {
         val unfenced = raw
             .removePrefix("```json").removePrefix("```")
             .removeSuffix("```").trim()
-        val objectText = if (unfenced.startsWith('{') && unfenced.endsWith('}')) {
+        return if (unfenced.startsWith('{') && unfenced.endsWith('}')) {
             unfenced
         } else {
             val start = unfenced.indexOf('{')
@@ -131,7 +181,6 @@ class ProfileModelClient(
             if (start < 0 || end <= start) throw SerializationException("模型响应中没有完整 JSON object")
             unfenced.substring(start, end + 1)
         }
-        return json.decodeFromString(objectText)
     }
 
     companion object {

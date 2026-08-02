@@ -11,6 +11,7 @@ import java.sql.ResultSet
 
 class ProfileHistoryReader(private val databaseFile: File) {
     data class TimeBounds(val startTime: Int, val endTime: Int)
+    data class GroupTimeBounds(val botId: Long, val startTime: Int, val endTime: Int)
 
     private data class Episode(
         val index: Int,
@@ -39,6 +40,30 @@ class ProfileHistoryReader(private val databaseFile: File) {
                 if (results.wasNull()) return@use null
                 val max = results.getInt("max_time")
                 TimeBounds(start, max.safeNextSecond())
+            }
+        }
+    }
+
+    fun findGroupTimeBounds(groupId: Long): GroupTimeBounds? = openReadConnection().use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT bot_id, MIN(time) AS min_time, MAX(time) AS max_time
+            FROM message_record
+            WHERE kind = ? AND recalled = 0 AND target_id = ?
+            GROUP BY bot_id
+            ORDER BY max_time DESC, bot_id ASC
+            LIMIT 1
+            """.trimIndent()
+        ).use { statement ->
+            statement.setInt(1, MessageSourceKind.GROUP.ordinal)
+            statement.setLong(2, groupId)
+            statement.executeQuery().use { results ->
+                if (!results.next()) return@use null
+                GroupTimeBounds(
+                    botId = results.getLong("bot_id"),
+                    startTime = results.getInt("min_time"),
+                    endTime = results.getInt("max_time").safeNextSecond(),
+                )
             }
         }
     }
@@ -159,6 +184,40 @@ class ProfileHistoryReader(private val databaseFile: File) {
         }
     }
 
+    fun loadNextConversationBatch(
+        botId: Long,
+        groupId: Long,
+        startTime: Int,
+        snapshotEndTime: Int,
+        messageLimit: Int,
+        maxMessageChars: Int,
+    ): ConversationProfileBatch? {
+        require(startTime <= snapshotEndTime) { "startTime must not be after snapshotEndTime" }
+        if (startTime == snapshotEndTime) return null
+        return openReadConnection().use { connection ->
+            val firstPage = queryOldestConversationMessages(
+                connection = connection,
+                botId = botId,
+                groupId = groupId,
+                startTime = startTime,
+                endTime = snapshotEndTime,
+                limit = messageLimit.coerceAtLeast(1),
+            )
+            if (firstPage.isEmpty()) return@use null
+
+            val endTime = firstPage.last().time.safeNextSecond()
+            val records = queryOldestConversationMessages(
+                connection = connection,
+                botId = botId,
+                groupId = groupId,
+                startTime = startTime,
+                endTime = endTime,
+                limit = Int.MAX_VALUE,
+            )
+            createConversationBatch(botId, groupId, startTime, endTime, records, maxMessageChars)
+        }
+    }
+
     private fun queryTargetMessages(
         connection: Connection,
         userId: Long,
@@ -215,6 +274,35 @@ class ProfileHistoryReader(private val databaseFile: File) {
             statement.setInt(5, endTime)
             statement.setInt(6, limit)
             statement.executeQuery().use(::readRecords).asReversed()
+        }
+    }
+
+    private fun queryOldestConversationMessages(
+        connection: Connection,
+        botId: Long,
+        groupId: Long,
+        startTime: Int,
+        endTime: Int,
+        limit: Int,
+    ): List<ChatMessageRecord> {
+        return connection.prepareStatement(
+            """
+            SELECT id, bot_id, from_id, target_id, ids, internal_ids,
+                   time, kind, code, recalled
+            FROM message_record
+            WHERE bot_id = ? AND target_id = ? AND kind = ? AND recalled = 0
+              AND time >= ? AND time < ?
+            ORDER BY time ASC, id ASC
+            LIMIT ?
+            """.trimIndent()
+        ).use { statement ->
+            statement.setLong(1, botId)
+            statement.setLong(2, groupId)
+            statement.setInt(3, MessageSourceKind.GROUP.ordinal)
+            statement.setInt(4, startTime)
+            statement.setInt(5, endTime)
+            statement.setInt(6, limit)
+            statement.executeQuery().use(::readRecords)
         }
     }
 

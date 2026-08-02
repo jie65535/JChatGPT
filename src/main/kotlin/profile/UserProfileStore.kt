@@ -8,7 +8,7 @@ import java.sql.DriverManager
 import java.sql.ResultSet
 
 object UserProfileStore {
-    private const val SCHEMA_VERSION = 2
+    private const val SCHEMA_VERSION = 3
     private const val BUSY_TIMEOUT_MS = 30_000
 
     private val lifecycleLock = Any()
@@ -98,6 +98,38 @@ object UserProfileStore {
         }
     }
 
+    fun loadSupportStats(userId: Long): Map<String, ProfileItemSupportStats> {
+        check(initialized) { "用户画像数据库尚未初始化" }
+        return openReadConnection().use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT item_id, COUNT(*) AS support_count,
+                       MIN(start_time) AS first_supported_at,
+                       MAX(end_time) AS last_supported_at
+                FROM profile_support
+                WHERE user_id = ?
+                GROUP BY item_id
+                """.trimIndent()
+            ).use { statement ->
+                statement.setLong(1, userId)
+                statement.executeQuery().use { results ->
+                    buildMap {
+                        while (results.next()) {
+                            put(
+                                results.getString("item_id"),
+                                ProfileItemSupportStats(
+                                    count = results.getInt("support_count"),
+                                    firstSupportedAt = results.getInt("first_supported_at"),
+                                    lastSupportedAt = results.getInt("last_supported_at"),
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fun commit(
         reduction: ProfileReduction,
         batch: ProfileHistoryBatch,
@@ -109,6 +141,17 @@ object UserProfileStore {
         reductions: List<Pair<ProfileReduction, ProfileHistoryBatch>>,
         usage: ProfileTokenUsage,
     ) = commitAll(reductions, usage, ProfileRevisionSource.CONVERSATION)
+
+    fun commitCompaction(
+        plan: ProfileCompactionPlan,
+        batch: ProfileHistoryBatch,
+        usage: ProfileTokenUsage,
+    ) = commitAll(
+        entries = listOf(plan.reduction to batch),
+        usage = usage,
+        source = ProfileRevisionSource.COMPACTION,
+        supportReassignments = plan.supportReassignments,
+    )
 
     fun isConversationProcessed(inputHash: String): Boolean {
         check(initialized) { "用户画像数据库尚未初始化" }
@@ -122,10 +165,61 @@ object UserProfileStore {
         }
     }
 
+    fun loadGroupCursor(botId: Long, groupId: Long): GroupProfileCursor? {
+        check(initialized) { "用户画像数据库尚未初始化" }
+        return openReadConnection().use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT bot_id, group_id, cursor_time, snapshot_end_time, updated_at
+                FROM profile_group_cursor
+                WHERE bot_id = ? AND group_id = ?
+                """.trimIndent()
+            ).use { statement ->
+                statement.setLong(1, botId)
+                statement.setLong(2, groupId)
+                statement.executeQuery().use { results ->
+                    if (!results.next()) return@use null
+                    GroupProfileCursor(
+                        botId = results.getLong("bot_id"),
+                        groupId = results.getLong("group_id"),
+                        cursorTime = results.getInt("cursor_time"),
+                        snapshotEndTime = results.getInt("snapshot_end_time"),
+                        updatedAt = results.getLong("updated_at"),
+                    )
+                }
+            }
+        }
+    }
+
+    fun saveGroupCursor(cursor: GroupProfileCursor) {
+        check(initialized) { "用户画像数据库尚未初始化" }
+        withWriteConnection { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO profile_group_cursor(
+                    bot_id, group_id, cursor_time, snapshot_end_time, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(bot_id, group_id) DO UPDATE SET
+                    cursor_time = excluded.cursor_time,
+                    snapshot_end_time = excluded.snapshot_end_time,
+                    updated_at = excluded.updated_at
+                """.trimIndent()
+            ).use { statement ->
+                statement.setLong(1, cursor.botId)
+                statement.setLong(2, cursor.groupId)
+                statement.setInt(3, cursor.cursorTime)
+                statement.setInt(4, cursor.snapshotEndTime)
+                statement.setLong(5, cursor.updatedAt)
+                statement.executeUpdate()
+            }
+        }
+    }
+
     private fun commitAll(
         entries: List<Pair<ProfileReduction, ProfileHistoryBatch>>,
         usage: ProfileTokenUsage,
         source: ProfileRevisionSource,
+        supportReassignments: Map<String, String> = emptyMap(),
     ) {
         check(initialized) { "用户画像数据库尚未初始化" }
         if (entries.isEmpty()) return
@@ -141,6 +235,20 @@ object UserProfileStore {
                         usage = if (index == 0) usage else ProfileTokenUsage(),
                         source = source,
                     )
+                }
+                if (supportReassignments.isNotEmpty()) {
+                    val userId = entries.single().first.profile.userId
+                    connection.prepareStatement(
+                        "UPDATE profile_support SET item_id = ? WHERE user_id = ? AND item_id = ?"
+                    ).use { statement ->
+                        supportReassignments.forEach { (sourceItemId, targetItemId) ->
+                            statement.setString(1, targetItemId)
+                            statement.setLong(2, userId)
+                            statement.setString(3, sourceItemId)
+                            statement.addBatch()
+                        }
+                        statement.executeBatch()
+                    }
                 }
                 connection.commit()
             } catch (cause: Throwable) {
@@ -216,30 +324,32 @@ object UserProfileStore {
             statement.executeBatch()
         }
 
-        connection.prepareStatement(
-            """
-            INSERT INTO profile_support(
-                item_id, user_id, group_ids, start_time, end_time,
-                input_hash, action, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent()
-        ).use { statement ->
-            reduction.operations.forEach { operation ->
-                val evidence = operation.evidenceRefs.mapNotNull(batch.evidenceByRef::get)
-                val startTime = evidence.minOf { it.record.time }
-                val endTime = evidence.maxOf { it.record.time }.safeNextSecond()
-                val groupIds = evidence.map { it.record.targetId }.distinct().sorted().joinToString(",")
-                statement.setString(1, operation.itemId)
-                statement.setLong(2, profile.userId)
-                statement.setString(3, groupIds)
-                statement.setInt(4, startTime)
-                statement.setInt(5, endTime)
-                statement.setString(6, batch.inputHash)
-                statement.setString(7, operation.action.name)
-                statement.setLong(8, System.currentTimeMillis())
-                statement.addBatch()
+        if (source != ProfileRevisionSource.COMPACTION) {
+            connection.prepareStatement(
+                """
+                INSERT INTO profile_support(
+                    item_id, user_id, group_ids, start_time, end_time,
+                    input_hash, action, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent()
+            ).use { statement ->
+                reduction.operations.forEach { operation ->
+                    val evidence = operation.evidenceRefs.mapNotNull(batch.evidenceByRef::get)
+                    val startTime = evidence.minOf { it.record.time }
+                    val endTime = evidence.maxOf { it.record.time }.safeNextSecond()
+                    val groupIds = evidence.map { it.record.targetId }.distinct().sorted().joinToString(",")
+                    statement.setString(1, operation.itemId)
+                    statement.setLong(2, profile.userId)
+                    statement.setString(3, groupIds)
+                    statement.setInt(4, startTime)
+                    statement.setInt(5, endTime)
+                    statement.setString(6, batch.inputHash)
+                    statement.setString(7, operation.action.name)
+                    statement.setLong(8, System.currentTimeMillis())
+                    statement.addBatch()
+                }
+                statement.executeBatch()
             }
-            statement.executeBatch()
         }
 
         connection.prepareStatement(
@@ -373,6 +483,18 @@ object UserProfileStore {
                     CREATE TABLE IF NOT EXISTS user_profile_meta(
                         key TEXT PRIMARY KEY,
                         value TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                statement.executeUpdate(
+                    """
+                    CREATE TABLE IF NOT EXISTS profile_group_cursor(
+                        bot_id INTEGER NOT NULL,
+                        group_id INTEGER NOT NULL,
+                        cursor_time INTEGER NOT NULL,
+                        snapshot_end_time INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        PRIMARY KEY(bot_id, group_id)
                     )
                     """.trimIndent()
                 )

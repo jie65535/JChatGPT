@@ -78,6 +78,7 @@ object ProfileAutoMaintenance {
             JChatGPT.logger.info(
                 "PROFILE_AUTO group=${conversation.groupId} users=${report.analyzedUsers} " +
                         "messages=${report.processedMessages} operations=${report.appliedOperations} " +
+                        "skipped=${report.skippedOperations} " +
                         "tokens=${report.usage.promptTokens}/${report.usage.completionTokens}"
             )
         } catch (cause: CancellationException) {

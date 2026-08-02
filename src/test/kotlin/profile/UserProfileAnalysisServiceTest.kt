@@ -11,6 +11,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class UserProfileAnalysisServiceTest {
     @Test
@@ -22,13 +23,14 @@ class UserProfileAnalysisServiceTest {
         assertEquals(1, model.calls)
         assertEquals(2, report.analyzedUsers)
         assertEquals(2, report.appliedOperations)
+        assertEquals(0, report.skippedOperations)
         assertEquals("日常使用 Kotlin 开发", UserProfileStore.load(USER_A)?.items?.single()?.content)
         assertEquals("持续关注本地大模型", UserProfileStore.load(USER_B)?.items?.single()?.content)
         assertEquals(true, UserProfileStore.isConversationProcessed(INPUT_HASH))
     }
 
     @Test
-    fun rejectsWronglyAttributedEvidenceWithoutPartialCommit() = withProfileStore {
+    fun skipsWronglyAttributedEvidenceAndMarksConversationProcessed() = withProfileStore {
         val model = FakeConversationProfileModel {
             result(
                 responseFor(
@@ -39,14 +41,14 @@ class UserProfileAnalysisServiceTest {
             )
         }
 
-        assertFailsWith<IllegalStateException> {
-            analyze(batch(), model, retryMax = 1)
-        }
+        val report = assertNotNull(analyze(batch(), model, retryMax = 1))
 
-        assertEquals(2, model.calls)
-        assertNull(UserProfileStore.load(USER_A))
-        assertNull(UserProfileStore.load(USER_B))
-        assertFalse(UserProfileStore.isConversationProcessed(INPUT_HASH))
+        assertEquals(1, model.calls)
+        assertEquals(0, report.appliedOperations)
+        assertEquals(1, report.skippedOperations)
+        assertNotNull(UserProfileStore.load(USER_A))
+        assertNotNull(UserProfileStore.load(USER_B))
+        assertTrue(UserProfileStore.isConversationProcessed(INPUT_HASH))
     }
 
     @Test

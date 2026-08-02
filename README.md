@@ -56,8 +56,10 @@ AI 可以自动调用多种工具来完成复杂任务：
 
 ### 渐进式历史画像（实验）
 - 日常使用无需画像命令：群聊缓存会话闭合后，一次模型调用会静默归纳其中所有有实质发言的参与者
-- `/jgpt profileAnalyze <userId> [batches]` - 诊断或验收时手动推进指定用户画像，默认1批、最多50批
+- `/jgpt profileAnalyze <userId> [batches]` - 手动推进指定用户画像，默认1批
+- `/jgpt profileAnalyzeGroup <groupId> [batches]` - 按群历史批量推进参与者画像，默认1批
 - `/jgpt profileShow <userId>` - 诊断或验收时查看已经提交的完整画像和覆盖时间
+- `/jgpt profileCompact <userId>` - 独立反思并压缩指定用户的重复、过细或低价值画像条目
 
 ## 配置文件
 
@@ -101,9 +103,6 @@ profileModelToken: ''
 profileModel: ''
 profileModelTemperature: null
 profileModelExtraBody: ''
-# 定向历史画像和闭合会话多人画像的提示词文件，相对于插件配置目录
-profilePromptFile: 'ProfilePrompt.md'
-profileConversationPromptFile: 'ProfileConversationPrompt.md'
 # 留空使用插件自己的聊天库；本地实验可填写外部SQLite历史库的绝对路径
 profileHistoryDatabasePath: ''
 # 每批目标用户消息数、片段软间隔及上下文限制
@@ -213,9 +212,9 @@ searchHistoryMaxRecords: 5000
 本人有效文本达到门槛的账号列为候选，然后用一次模型调用同时比较所有候选人的当前画像并返回按用户分组的
 `ADD / UPDATE / CONFIRM / DELETE` 操作。没有可靠变化的参与者仍会被标记为已检查，但不会生成空洞画像。
 
-程序逐条验证每项操作至少引用了对应用户本人的发言；任何用户别名、条目 ID、证据归因或摘要长度非法，整段
-会话都不会部分提交。全部候选人的画像和本次覆盖记录在一个 SQLite 事务中落库，失败不会阻塞 Bot 回复。
-这一阶段不自动扫描未触发群聊，也不自动回填旧历史；`profileAnalyze` 只保留给离线验收和诊断。
+模型只使用单次请求内有效的临时编号，不接触画像条目的内部 UUID；不合规建议会被跳过，不阻断其他有效更新。
+临时用户别名不会写入最终画像。`profileCompact` 可独立清理重复或低价值条目，且不推进历史水位线。
+旧历史可通过 `profileAnalyze` 或 `profileAnalyzeGroup` 手动分批推进。
 
 下一次正常群聊会自动携带触发者和最近发言者的认识。现有好感度、Bot 代号、标签和主观印象会与证据驱动的
 长期画像按同一个人合并渲染，但两套数据仍独立保存，自动画像不会修改好感度。
@@ -230,9 +229,7 @@ profileModelToken: '在部署环境中填写，不要提交到Git'
 profileModel: '兼容chat/completions的模型名'
 ```
 
-执行 `/jgpt reload` 后即可自动运行。`ProfileConversationPrompt.md` 会在首次启用时生成，可直接迭代多人归纳
-规则。`profileAnalyze` 和 `profileShow` 仍可用于人工验收，但不承担日常维护职责。外部历史库始终以只读
-方式打开，程序不会为了画像实验修改备份或创建索引。
+执行 `/jgpt reload` 后即可自动运行。画像提示词由插件内置；相关命令仅用于人工验收。外部历史库始终只读。
 
 ### 和风天气
 

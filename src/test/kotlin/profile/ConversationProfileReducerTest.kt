@@ -4,7 +4,7 @@ import net.mamoe.mirai.message.data.MessageSourceKind
 import top.jie65535.mirai.data.ChatMessageRecord
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ConversationProfileReducerTest {
@@ -59,36 +59,36 @@ class ConversationProfileReducerTest {
     }
 
     @Test
-    fun rejectsEvidenceAuthoredByAnotherUser() {
-        val failure = assertFailsWith<IllegalArgumentException> {
-            ConversationProfileReducer.reduce(
-                profiles = USERS.associateWith(::emptyProfile),
-                batch = batch(),
-                eligibleUserIds = USERS,
-                response = ConversationProfileModelResponse(
-                    users = listOf(
-                        ConversationProfileUserResponse(
-                            userAlias = "U1",
-                            operations = listOf(
-                                ProfileModelOperation(
-                                    action = ProfileOperationAction.ADD,
-                                    category = ProfileCategory.NOTABLE_FACT,
-                                    content = "关注本地大模型",
-                                    confidence = ProfileConfidence.MEDIUM,
-                                    evidenceRefs = listOf(2),
-                                )
-                            ),
-                            summary = "关注本地大模型。",
-                        )
+    fun skipsEvidenceAuthoredByAnotherUser() {
+        val reductions = ConversationProfileReducer.reduce(
+            profiles = USERS.associateWith(::emptyProfile),
+            batch = batch(),
+            eligibleUserIds = USERS,
+            response = ConversationProfileModelResponse(
+                users = listOf(
+                    ConversationProfileUserResponse(
+                        userAlias = "U1",
+                        operations = listOf(
+                            ProfileModelOperation(
+                                action = ProfileOperationAction.ADD,
+                                category = ProfileCategory.NOTABLE_FACT,
+                                content = "关注本地大模型",
+                                confidence = ProfileConfidence.MEDIUM,
+                                evidenceRefs = listOf(2),
+                            )
+                        ),
+                        summary = "关注本地大模型。",
                     )
-                ),
-                model = "test-model",
-                promptVersion = "test-prompt",
-                summaryMaxLength = 500,
-            )
-        }
+                )
+            ),
+            model = "test-model",
+            promptVersion = "test-prompt",
+            summaryMaxLength = 500,
+        )
 
-        assertTrue(failure.message.orEmpty().contains("目标用户"))
+        val userReduction = reductions.single { it.profile.userId == USER_A }
+        assertTrue(userReduction.operations.isEmpty())
+        assertTrue(userReduction.skippedOperations.single().contains("目标用户"))
     }
 
     @Test
@@ -120,12 +120,12 @@ class ConversationProfileReducerTest {
                         operations = listOf(
                             ProfileModelOperation(
                                 action = ProfileOperationAction.CONFIRM,
-                                itemId = oldItem.id,
+                                itemRef = "P1",
                                 confidence = ProfileConfidence.MEDIUM,
                                 evidenceRefs = listOf(1),
                             )
                         ),
-                        summary = "关注 Kotlin 开发。",
+                        summary = "本批再次提到 Kotlin。",
                     )
                 )
             ),
@@ -138,14 +138,14 @@ class ConversationProfileReducerTest {
         assertEquals(2, updated.version)
         assertEquals("existing-item", updated.items.single().id)
         assertEquals(ProfileConfidence.MEDIUM, updated.items.single().confidence)
-        assertTrue(
-            ProfilePromptStore.buildConversationUserPrompt(profiles, batch(), USERS)
-                .contains("[P:existing-item]")
-        )
+        assertEquals(existing.summary, updated.summary)
+        val prompt = ProfilePromptStore.buildConversationUserPrompt(profiles, batch(), USERS)
+        assertTrue(prompt.contains("[P1]"))
+        assertFalse(prompt.contains(oldItem.id))
     }
 
     @Test
-    fun rejectsMoreThanFourOperationsForOneUser() {
+    fun acceptsMoreThanFourOperationsForOneUser() {
         val operations = (1..5).map { index ->
             ProfileModelOperation(
                 action = ProfileOperationAction.ADD,
@@ -156,27 +156,126 @@ class ConversationProfileReducerTest {
             )
         }
 
-        val failure = assertFailsWith<IllegalArgumentException> {
-            ConversationProfileReducer.reduce(
-                profiles = USERS.associateWith(::emptyProfile),
-                batch = batch(),
-                eligibleUserIds = USERS,
-                response = ConversationProfileModelResponse(
-                    users = listOf(
-                        ConversationProfileUserResponse(
-                            userAlias = "U1",
-                            operations = operations,
-                            summary = "包含过多事实。",
-                        )
+        val reductions = ConversationProfileReducer.reduce(
+            profiles = USERS.associateWith(::emptyProfile),
+            batch = batch(),
+            eligibleUserIds = USERS,
+            response = ConversationProfileModelResponse(
+                users = listOf(
+                    ConversationProfileUserResponse(
+                        userAlias = "U1",
+                        operations = operations,
+                        summary = "包含多项事实。",
                     )
-                ),
-                model = "test-model",
-                promptVersion = "test-prompt",
-                summaryMaxLength = 500,
-            )
-        }
+                )
+            ),
+            model = "test-model",
+            promptVersion = "test-prompt",
+            summaryMaxLength = 500,
+        )
 
-        assertTrue(failure.message.orEmpty().contains("超过 4 项"))
+        assertEquals(5, reductions.single { it.profile.userId == USER_A }.operations.size)
+    }
+
+    @Test
+    fun mergesDuplicateUserResultGroupsAndDeduplicatesOperations() {
+        val operation = ProfileModelOperation(
+            action = ProfileOperationAction.ADD,
+            category = ProfileCategory.NOTABLE_FACT,
+            content = "日常使用 Kotlin 开发",
+            confidence = ProfileConfidence.MEDIUM,
+            evidenceRefs = listOf(1),
+        )
+
+        val reductions = ConversationProfileReducer.reduce(
+            profiles = USERS.associateWith(::emptyProfile),
+            batch = batch(),
+            eligibleUserIds = USERS,
+            response = ConversationProfileModelResponse(
+                users = listOf(
+                    ConversationProfileUserResponse(
+                        userAlias = "U1",
+                        operations = listOf(operation),
+                        summary = "使用 Kotlin。",
+                    ),
+                    ConversationProfileUserResponse(
+                        userAlias = "U1",
+                        operations = listOf(
+                            operation,
+                            ProfileModelOperation(
+                                action = ProfileOperationAction.ADD,
+                                category = ProfileCategory.PREFERENCE,
+                                content = "偏好 Kotlin",
+                                confidence = ProfileConfidence.LOW,
+                                evidenceRefs = listOf(1),
+                            ),
+                        ),
+                        summary = "使用并偏好 Kotlin。",
+                    ),
+                )
+            ),
+            model = "test-model",
+            promptVersion = "test-prompt",
+            summaryMaxLength = 500,
+        )
+
+        val reduction = reductions.single { it.profile.userId == USER_A }
+        assertEquals(2, reduction.operations.size)
+        assertEquals(2, reduction.profile.items.size)
+        assertEquals("使用并偏好 Kotlin。", reduction.profile.summary)
+    }
+
+    @Test
+    fun ignoresModelResultsForNonCandidateContextUsers() {
+        val contextUser = 400L
+        val batch = batch().copy(aliases = batch().aliases + (contextUser to "U4"))
+        val reductions = ConversationProfileReducer.reduce(
+            profiles = USERS.associateWith(::emptyProfile),
+            batch = batch,
+            eligibleUserIds = USERS,
+            response = ConversationProfileModelResponse(
+                users = listOf(
+                    ConversationProfileUserResponse(
+                        userAlias = "U4",
+                        operations = listOf(
+                            ProfileModelOperation(
+                                action = ProfileOperationAction.ADD,
+                                category = ProfileCategory.INTEREST,
+                                content = "关注 Kotlin",
+                                confidence = ProfileConfidence.LOW,
+                                evidenceRefs = listOf(1),
+                            )
+                        ),
+                        summary = "关注 Kotlin。",
+                    ),
+                    ConversationProfileUserResponse(
+                        userAlias = "U1",
+                        operations = listOf(
+                            ProfileModelOperation(
+                                action = ProfileOperationAction.ADD,
+                                category = ProfileCategory.NOTABLE_FACT,
+                                content = "日常使用 Kotlin 开发",
+                                confidence = ProfileConfidence.MEDIUM,
+                                evidenceRefs = listOf(1),
+                            )
+                        ),
+                        summary = "日常使用 Kotlin 开发。",
+                    ),
+                )
+            ),
+            model = "test-model",
+            promptVersion = "test-prompt",
+            summaryMaxLength = 500,
+        )
+
+        assertEquals(1, reductions.single { it.profile.userId == USER_A }.operations.size)
+        assertTrue(reductions.single { it.profile.userId == USER_B }.operations.isEmpty())
+        val prompt = ProfilePromptStore.buildConversationUserPrompt(
+            profiles = USERS.associateWith(::emptyProfile),
+            batch = batch,
+            eligibleUserIds = USERS,
+        )
+        assertTrue(prompt.contains("候选用户别名: U1, U2"))
     }
 
     private fun batch() = ConversationProfileBatch(

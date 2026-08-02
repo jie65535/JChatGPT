@@ -11,7 +11,9 @@ object UserProfileContextRenderer {
         summaryMaxChars: Int,
     ): String {
         val profilesByUserId = profiles
-            .filter { it.reliable && it.summary.isNotBlank() }
+            .filter { profile ->
+                profile.reliable && ProfilePersistentText.summaryForDisplay(profile.summary).isNotBlank()
+            }
             .associateBy { it.userId }
         val userIds = activeUserIds.filter { userId ->
             userId in profilesByUserId || favorabilityByUserId[userId]?.hasVisibleContext() == true
@@ -21,7 +23,7 @@ object UserProfileContextRenderer {
         val maxChars = summaryMaxChars.coerceAtLeast(50)
         return buildString {
             appendLine("## 你对相关群友的认识")
-            appendLine("好感度、代号和主观印象代表你的关系状态；长期认识来自可修正的历史归纳。仅在当前话题相关时自然运用，不要逐条复述或提及信息来源。")
+            appendLine("好感度、代号和主观印象代表你的关系状态；画像认识来自可修正的历史归纳。仅在当前话题相关时自然运用，不要逐条复述或提及信息来源。")
             userIds.forEach { userId ->
                 val profile = profilesByUserId[userId]
                 val favorability = favorabilityByUserId[userId]
@@ -34,8 +36,10 @@ object UserProfileContextRenderer {
                     if (info.tags.isNotEmpty()) append(" | 标签：").append(info.tags.joinToString("、"))
                     if (info.impression.isNotBlank()) append(" | 主观印象：").append(info.impression.normalized())
                 }
-                profile?.let {
-                    append(" | 长期认识：").append(it.summary.normalized().take(maxChars))
+                profile?.summary?.let(ProfilePersistentText::summaryForDisplay)
+                    ?.takeIf(String::isNotBlank)?.let { summary ->
+                    append(" | 画像认识：")
+                        .append(summary.normalized().take(maxChars))
                 }
 
                 profile?.items?.asSequence()
@@ -46,8 +50,11 @@ object UserProfileContextRenderer {
                     ?.take(2)
                     ?.forEach { item ->
                         val relatedId = checkNotNull(item.relatedUserId)
-                        val relatedName = displayNames[relatedId].orEmpty().ifBlank { relatedId.toString() }
-                        append("；与").append(relatedName).append("：").append(item.content.normalized())
+                        val relatedName = favorabilityByUserId[relatedId]?.name.orEmpty().ifBlank {
+                            displayNames[relatedId].orEmpty().ifBlank { relatedId.toString() }
+                        }
+                        append("；与").append(relatedName).append("：")
+                            .append(ProfilePersistentText.itemForDisplay(item.content, relationship = true).normalized())
                     }
                 appendLine()
             }

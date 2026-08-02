@@ -18,9 +18,12 @@ import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.data.SkillStore
 import top.jie65535.mirai.data.TokenUsageStore
 import top.jie65535.mirai.llm.LargeLanguageModels
+import top.jie65535.mirai.profile.GroupProfileAnalysisReport
 import top.jie65535.mirai.profile.ProfileAnalysisReport
 import top.jie65535.mirai.profile.ProfileAutoMaintenance
-import top.jie65535.mirai.profile.ProfilePromptStore
+import top.jie65535.mirai.profile.ProfileCategory
+import top.jie65535.mirai.profile.ProfileCompactionReport
+import top.jie65535.mirai.profile.ProfilePersistentText
 import top.jie65535.mirai.profile.UserProfileAnalysisService
 import top.jie65535.mirai.profile.UserProfileSnapshot
 import top.jie65535.mirai.profile.UserProfileStore
@@ -38,7 +41,6 @@ object PluginCommands : CompositeCommand(
         PluginConfig.reload()
         PluginData.reload()
         LargeLanguageModels.reload()
-        ProfilePromptStore.reload()
         if (!PluginConfig.profileEnabled || !PluginConfig.profileAutoUpdateEnabled) {
             ProfileAutoMaintenance.clear()
         }
@@ -48,7 +50,7 @@ object PluginCommands : CompositeCommand(
 
     @SubCommand
     suspend fun CommandSender.profileAnalyze(userId: Long, batches: Int = 1) {
-        require(batches in 1..50) { "batches 必须在 1 到 50 之间" }
+        require(batches > 0) { "batches 必须是正数" }
         sendMessage("已启动用户 $userId 的画像分析，本次最多推进 $batches 个批次。")
         JChatGPT.launch {
             try {
@@ -57,6 +59,7 @@ object PluginCommands : CompositeCommand(
                         "PROFILE_BATCH user=$userId batch=${progress.batchIndex}/$batches " +
                                 "range=${progress.startTime}-${progress.endTime} " +
                                 "messages=${progress.messageCount} operations=${progress.operationCount} " +
+                                "skipped=${progress.skippedOperationCount} " +
                                 "tokens=${progress.usage.promptTokens}/${progress.usage.completionTokens} " +
                                 "cached=${progress.usage.cachedTokens}"
                     )
@@ -76,6 +79,36 @@ object PluginCommands : CompositeCommand(
     }
 
     @SubCommand
+    suspend fun CommandSender.profileAnalyzeGroup(groupId: Long, batches: Int = 1) {
+        require(batches > 0) { "batches 必须是正数" }
+        sendMessage("已启动群 $groupId 的批量画像分析，本次最多推进 $batches 个批次。")
+        JChatGPT.launch {
+            try {
+                val report = UserProfileAnalysisService.analyzeGroup(groupId, batches) { progress ->
+                    JChatGPT.logger.info(
+                        "PROFILE_GROUP_BATCH group=$groupId batch=${progress.batchIndex}/$batches " +
+                                "range=${progress.startTime}-${progress.endTime} " +
+                                "messages=${progress.messageCount} users=${progress.analyzedUsers} " +
+                                "operations=${progress.appliedOperations} skipped=${progress.skippedOperations} " +
+                                "tokens=${progress.usage.promptTokens}/${progress.usage.completionTokens} " +
+                                "cached=${progress.usage.cachedTokens}"
+                    )
+                }
+                when {
+                    report.alreadyRunning -> sendMessage("群 $groupId 已有画像分析任务在运行。")
+                    report.botId == null -> sendMessage("聊天记录中没有找到群 $groupId 的消息。")
+                    else -> sendMessage(formatGroupProfileReport(report))
+                }
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Exception) {
+                JChatGPT.logger.error("群 $groupId 批量画像分析失败", cause)
+                sendMessage("群 $groupId 批量画像分析失败：${cause.message ?: cause::class.simpleName}")
+            }
+        }
+    }
+
+    @SubCommand
     suspend fun CommandSender.profileShow(userId: Long) {
         if (!UserProfileStore.isAvailable) {
             sendMessage("用户画像数据库不可用。")
@@ -83,6 +116,22 @@ object PluginCommands : CompositeCommand(
         }
         val profile = UserProfileStore.load(userId)
         sendMessage(profile?.let(::formatProfile) ?: "用户 $userId 尚无画像。")
+    }
+
+    @SubCommand
+    suspend fun CommandSender.profileCompact(userId: Long) {
+        sendMessage("已启动用户 $userId 的画像压缩反思。")
+        JChatGPT.launch {
+            try {
+                val report = UserProfileAnalysisService.compact(userId)
+                sendMessage(formatProfileCompactionReport(report))
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Exception) {
+                JChatGPT.logger.error("用户 $userId 画像压缩失败", cause)
+                sendMessage("用户 $userId 画像压缩失败：${cause.message ?: cause::class.simpleName}")
+            }
+        }
     }
 
     @SubCommand
@@ -269,7 +318,7 @@ object PluginCommands : CompositeCommand(
     private fun formatProfileReport(report: ProfileAnalysisReport): String = buildString {
         appendLine(
             "画像分析完成：${report.processedBatches} 批，${report.processedMessages} 条上下文消息，" +
-                    "${report.appliedOperations} 项变更"
+                    "${report.appliedOperations} 项变更，跳过 ${report.skippedOperations} 项无效建议"
         )
         appendLine(
             "Token：输入 ${formatNumber(report.usage.promptTokens)}，输出 " +
@@ -280,6 +329,36 @@ object PluginCommands : CompositeCommand(
         append(formatProfile(checkNotNull(report.profile)))
     }.trim()
 
+    private fun formatGroupProfileReport(report: GroupProfileAnalysisReport): String = buildString {
+        appendLine(
+            "群 ${report.groupId} 画像分析完成：${report.processedBatches} 批，" +
+                    "${report.processedMessages} 条消息，${report.analyzedUsers} 用户人次，" +
+                    "${report.appliedOperations} 项变更，跳过 ${report.skippedOperations} 项无效建议"
+        )
+        appendLine(
+            "Token：输入 ${formatNumber(report.usage.promptTokens)}，输出 " +
+                    "${formatNumber(report.usage.completionTokens)}，缓存命中 " +
+                    formatNumber(report.usage.cachedTokens)
+        )
+        appendLine("群历史覆盖至 ${formatProfileTime(report.cursorTime)}")
+        append("状态：${if (report.caughtUp) "已追平当前快照" else "可继续推进"}")
+    }.trim()
+
+    private fun formatProfileCompactionReport(report: ProfileCompactionReport): String = buildString {
+        appendLine(
+            "画像压缩完成：${report.beforeItems} -> ${report.afterItems} 条，" +
+                    "合并 ${report.mergedGroups} 组，改写 ${report.rewrittenItems} 条，删除 ${report.deletedItems} 条，" +
+                    "摘要${if (report.summaryChanged) "已重写" else "未变"}，" +
+                    "跳过 ${report.skippedOperations} 项不安全建议"
+        )
+        appendLine(
+            "Token：输入 ${formatNumber(report.usage.promptTokens)}，输出 " +
+                    "${formatNumber(report.usage.completionTokens)}，缓存命中 " +
+                    formatNumber(report.usage.cachedTokens)
+        )
+        append(formatProfile(report.profile))
+    }.trim()
+
     private fun formatProfile(profile: UserProfileSnapshot): String = buildString {
         appendLine("用户 ${profile.userId} · 画像 v${profile.version}")
         if (profile.cursorTime <= 0) {
@@ -287,16 +366,33 @@ object PluginCommands : CompositeCommand(
         } else {
             appendLine("历史回顾覆盖至 ${formatProfileTime(profile.cursorTime)}")
         }
-        appendLine("摘要：${profile.summary.ifBlank { "（暂无）" }}")
+        val summary = ProfilePersistentText.summaryForDisplay(profile.summary)
+        appendLine("摘要：${summary.ifBlank { "（暂无）" }}")
         if (profile.items.isEmpty()) {
             append("条目：（暂无）")
         } else {
             appendLine("条目：")
             profile.items.forEach { item ->
                 append("- [").append(item.category.name.lowercase()).append('/')
-                    .append(item.confidence.name.lowercase()).append("] ")
-                    .append(item.content)
-                item.relatedUserId?.let { append("（关联用户 ").append(it).append('）') }
+                    .append(item.confidence.name.lowercase()).append(" · 记录于 ")
+                    .append(formatProfileDate(item.firstSeenAt))
+                if (item.lastConfirmedAt != item.firstSeenAt) {
+                    append("，确认至 ").append(formatProfileDate(item.lastConfirmedAt))
+                }
+                append("] ")
+                val relatedUserId = item.relatedUserId
+                if (item.category == ProfileCategory.RELATIONSHIP_NOTE && relatedUserId != null) {
+                    val relatedName = PluginData.userFavorability[relatedUserId]?.name.orEmpty()
+                    if (relatedName.isBlank()) {
+                        append("与用户 ").append(relatedUserId).append("：")
+                    } else {
+                        append('与').append(relatedName).append('（').append(relatedUserId).append("）：")
+                    }
+                }
+                append(ProfilePersistentText.itemForDisplay(
+                    item.content,
+                    relationship = item.category == ProfileCategory.RELATIONSHIP_NOTE,
+                ))
                 appendLine()
             }
         }
@@ -304,10 +400,16 @@ object PluginCommands : CompositeCommand(
 
     private fun formatProfileTime(epochSecond: Int): String =
         PROFILE_TIME_FORMATTER.format(Instant.ofEpochSecond(epochSecond.toLong()))
+
+    private fun formatProfileDate(epochSecond: Int): String =
+        PROFILE_DATE_FORMATTER.format(Instant.ofEpochSecond(epochSecond.toLong()))
 }
 
 // 常量定义
 private const val TOP_LIMIT = 5
 private val PROFILE_TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter
     .ofPattern("yyyy-MM-dd HH:mm:ss")
+    .withZone(ZoneId.systemDefault())
+private val PROFILE_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter
+    .ofPattern("yyyy-MM-dd")
     .withZone(ZoneId.systemDefault())
