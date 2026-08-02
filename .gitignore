@@ -137,3 +137,5 @@ __pycache__/
 *.py[cod]
 /nul
 /.playwright-cli/
+/docs/
+/scripts/
