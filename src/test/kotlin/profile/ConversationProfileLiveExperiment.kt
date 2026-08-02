@@ -3,6 +3,7 @@ package top.jie65535.mirai.profile
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.Tag
 import top.jie65535.mirai.llm.LargeLanguageModels
 import top.jie65535.mirai.llm.ModelService
 import java.io.File
@@ -11,8 +12,11 @@ import kotlin.time.Duration.Companion.seconds
 
 class ConversationProfileLiveExperiment {
     @Test
+    @Tag("live")
     fun analyzeConfiguredHistoricalConversation() = runBlocking {
-        val apiKey = System.getenv("PROFILE_EXPERIMENT_API_KEY") ?: return@runBlocking
+        val apiKey = checkNotNull(System.getenv("PROFILE_EXPERIMENT_API_KEY")) {
+            "PROFILE_EXPERIMENT_API_KEY is required for the live profile experiment"
+        }
         val source = File(checkNotNull(System.getenv("PROFILE_EXPERIMENT_SOURCE")))
         val botId = checkNotNull(System.getenv("PROFILE_EXPERIMENT_BOT_ID")).toLong()
         val groupId = checkNotNull(System.getenv("PROFILE_EXPERIMENT_GROUP_ID")).toLong()

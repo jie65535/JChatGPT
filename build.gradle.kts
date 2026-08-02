@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.testing.Test
+
 plugins {
     val kotlinVersion = "2.0.20"
     kotlin("jvm") version kotlinVersion
@@ -47,5 +49,18 @@ dependencies {
 }
 
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags("live")
+    }
+}
+
+tasks.register<Test>("liveProfileTest") {
+    group = "verification"
+    description = "Runs the opt-in profile experiment against a configured live model."
+    testClassesDirs = tasks.test.get().testClassesDirs
+    classpath = tasks.test.get().classpath
+    useJUnitPlatform {
+        includeTags("live")
+    }
+    shouldRunAfter(tasks.test)
 }

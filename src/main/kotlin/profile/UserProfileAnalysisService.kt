@@ -161,42 +161,64 @@ object UserProfileAnalysisService {
                     maxMessageChars = PluginConfig.profileMaxMessageChars.coerceAtLeast(80),
                 )
             } ?: return@withPermit null
-            val eligibleUserIds = batch.authoredTextCharsByUser
-                .filterValues { it >= minAuthoredTextChars.coerceAtLeast(1) }
-                .keys
-            if (eligibleUserIds.isEmpty()) return@withPermit null
-            if (withContext(Dispatchers.IO) { UserProfileStore.isConversationProcessed(batch.inputHash) }) {
-                return@withPermit null
-            }
-            val profiles = withContext(Dispatchers.IO) {
-                eligibleUserIds.associateWith { userId ->
-                    UserProfileStore.load(userId) ?: UserProfileSnapshot(
-                        userId = userId,
-                        cursorTime = 0,
-                        snapshotEndTime = 0,
-                    )
-                }
-            }
-
-            val (result, reductions) = analyzeConversationWithRetry(
-                model = model,
-                profiles = profiles,
+            analyzeConversationBatch(
                 batch = batch,
-                eligibleUserIds = eligibleUserIds,
+                minAuthoredTextChars = minAuthoredTextChars,
+                model = model,
+                retryMax = PluginConfig.profileRetryMax,
+                summaryMaxLength = PluginConfig.profileSummaryMaxLength,
+                onRetryFailure = { message, cause -> JChatGPT.logger.warning(message, cause) },
             )
-            withContext(Dispatchers.IO) {
-                UserProfileStore.commitConversation(
-                    reductions = reductions.map { reduction -> reduction to batch.forUser(reduction.profile.userId) },
-                    usage = result.usage,
+        }
+    }
+
+    internal suspend fun analyzeConversationBatch(
+        batch: ConversationProfileBatch,
+        minAuthoredTextChars: Int,
+        model: ConversationProfileModel,
+        retryMax: Int,
+        summaryMaxLength: Int,
+        onRetryFailure: (String, Throwable) -> Unit = { _, _ -> },
+    ): ConversationProfileAnalysisReport? {
+        check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
+        val eligibleUserIds = batch.authoredTextCharsByUser
+            .filterValues { it >= minAuthoredTextChars.coerceAtLeast(1) }
+            .keys
+        if (eligibleUserIds.isEmpty()) return null
+        if (withContext(Dispatchers.IO) { UserProfileStore.isConversationProcessed(batch.inputHash) }) {
+            return null
+        }
+        val profiles = withContext(Dispatchers.IO) {
+            eligibleUserIds.associateWith { userId ->
+                UserProfileStore.load(userId) ?: UserProfileSnapshot(
+                    userId = userId,
+                    cursorTime = 0,
+                    snapshotEndTime = 0,
                 )
             }
-            ConversationProfileAnalysisReport(
-                analyzedUsers = eligibleUserIds.size,
-                processedMessages = batch.messages.size,
-                appliedOperations = reductions.sumOf { it.operations.size },
+        }
+
+        val (result, reductions) = analyzeConversationWithRetry(
+            model = model,
+            profiles = profiles,
+            batch = batch,
+            eligibleUserIds = eligibleUserIds,
+            retryMax = retryMax,
+            summaryMaxLength = summaryMaxLength,
+            onRetryFailure = onRetryFailure,
+        )
+        withContext(Dispatchers.IO) {
+            UserProfileStore.commitConversation(
+                reductions = reductions.map { reduction -> reduction to batch.forUser(reduction.profile.userId) },
                 usage = result.usage,
             )
         }
+        return ConversationProfileAnalysisReport(
+            analyzedUsers = eligibleUserIds.size,
+            processedMessages = batch.messages.size,
+            appliedOperations = reductions.sumOf { it.operations.size },
+            usage = result.usage,
+        )
     }
 
     private suspend fun analyzeConversationWithRetry(
@@ -204,8 +226,11 @@ object UserProfileAnalysisService {
         profiles: Map<Long, UserProfileSnapshot>,
         batch: ConversationProfileBatch,
         eligibleUserIds: Set<Long>,
+        retryMax: Int,
+        summaryMaxLength: Int,
+        onRetryFailure: (String, Throwable) -> Unit,
     ): Pair<ConversationProfileModelResult, List<ProfileReduction>> {
-        val attempts = PluginConfig.profileRetryMax.coerceIn(0, 3) + 1
+        val attempts = retryMax.coerceIn(0, 3) + 1
         var lastFailure: Throwable? = null
         repeat(attempts) { attempt ->
             try {
@@ -217,13 +242,13 @@ object UserProfileAnalysisService {
                     response = result.response,
                     model = model.modelName,
                     promptVersion = ProfilePromptStore.PROMPT_VERSION,
-                    summaryMaxLength = PluginConfig.profileSummaryMaxLength.coerceAtLeast(100),
+                    summaryMaxLength = summaryMaxLength.coerceAtLeast(100),
                 )
                 return result to reductions
             } catch (cause: Exception) {
                 if (cause is CancellationException) throw cause
                 lastFailure = cause
-                JChatGPT.logger.warning(
+                onRetryFailure(
                     "群 ${batch.groupId} 会话画像 [${batch.startTime}, ${batch.endTime}) " +
                             "第 ${attempt + 1}/$attempts 次分析失败",
                     cause,
