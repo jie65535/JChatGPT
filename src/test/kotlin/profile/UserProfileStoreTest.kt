@@ -175,10 +175,12 @@ class UserProfileStoreTest {
 
             UserProfileStore.saveGroupCursor(cursor)
             assertEquals(cursor, UserProfileStore.loadGroupCursor(1, 300))
+            assertEquals(listOf(cursor), UserProfileStore.loadGroupCursors())
 
             val advanced = cursor.copy(cursorTime = 400, updatedAt = 456)
             UserProfileStore.saveGroupCursor(advanced)
             assertEquals(advanced, UserProfileStore.loadGroupCursor(1, 300))
+            assertEquals(listOf(advanced), UserProfileStore.loadGroupCursors())
         } finally {
             UserProfileStore.close()
             directory.toFile().deleteRecursively()

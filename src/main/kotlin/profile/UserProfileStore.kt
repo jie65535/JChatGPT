@@ -192,13 +192,26 @@ object UserProfileStore {
                 statement.setLong(2, groupId)
                 statement.executeQuery().use { results ->
                     if (!results.next()) return@use null
-                    GroupProfileCursor(
-                        botId = results.getLong("bot_id"),
-                        groupId = results.getLong("group_id"),
-                        cursorTime = results.getInt("cursor_time"),
-                        snapshotEndTime = results.getInt("snapshot_end_time"),
-                        updatedAt = results.getLong("updated_at"),
-                    )
+                    results.toGroupProfileCursor()
+                }
+            }
+        }
+    }
+
+    fun loadGroupCursors(): List<GroupProfileCursor> {
+        check(initialized) { "用户画像数据库尚未初始化" }
+        return openReadConnection().use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT bot_id, group_id, cursor_time, snapshot_end_time, updated_at
+                FROM profile_group_cursor
+                ORDER BY bot_id, group_id
+                """.trimIndent()
+            ).use { statement ->
+                statement.executeQuery().use { results ->
+                    buildList {
+                        while (results.next()) add(results.toGroupProfileCursor())
+                    }
                 }
             }
         }
@@ -600,6 +613,14 @@ object UserProfileStore {
         relatedUserId = getLong("related_user_id").let { if (wasNull()) null else it },
         firstSeenAt = getInt("first_seen_at"),
         lastConfirmedAt = getInt("last_confirmed_at"),
+    )
+
+    private fun ResultSet.toGroupProfileCursor() = GroupProfileCursor(
+        botId = getLong("bot_id"),
+        groupId = getLong("group_id"),
+        cursorTime = getInt("cursor_time"),
+        snapshotEndTime = getInt("snapshot_end_time"),
+        updatedAt = getLong("updated_at"),
     )
 
     private fun ProfileCategory.toStorageValue(): String = name.lowercase()

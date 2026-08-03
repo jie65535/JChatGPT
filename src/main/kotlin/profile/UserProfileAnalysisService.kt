@@ -14,6 +14,8 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 object UserProfileAnalysisService {
+    private const val MAX_CONVERSATION_CONFLICT_RETRIES = 3
+
     private val runningUsers = ConcurrentHashMap.newKeySet<Long>()
     private val runningGroups = ConcurrentHashMap.newKeySet<Long>()
     private val runningCompactions = ConcurrentHashMap.newKeySet<Long>()
@@ -32,11 +34,19 @@ object UserProfileAnalysisService {
         return report
     }
 
-    suspend fun listHistoryGroupIds(): List<Long> {
+    suspend fun listPendingHistoryGroupIds(): List<Long> {
         check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
         return withContext(Dispatchers.IO) {
-            ProfileHistoryReader(resolveHistoryFile()).listGroupIds()
+            val historyBounds = ProfileHistoryReader(resolveHistoryFile()).listGroupTimeBounds()
+            val cursors = UserProfileStore.loadGroupCursors()
+                .associateBy { cursor -> cursor.botId to cursor.groupId }
+            historyBounds.asSequence()
+                .filter { bounds ->
+                    isGroupAnalysisPending(bounds, cursors[bounds.botId to bounds.groupId])
+                }
+                .map(ProfileHistoryReader.GroupTimeBounds::groupId)
+                .toList()
         }
     }
 
@@ -274,10 +284,6 @@ object UserProfileAnalysisService {
         val reader = withContext(Dispatchers.IO) { ProfileHistoryReader(resolveHistoryFile()) }
         val bounds = withContext(Dispatchers.IO) { reader.findGroupTimeBounds(groupId) }
             ?: return emptyGroupReport(groupId)
-        val endpoint = checkNotNull(LargeLanguageModels.profile) {
-            "画像分析模型未配置，请设置 profileModelApi/profileModelToken，或配置可继承的聊天模型接入点"
-        }
-        val model: ConversationProfileModel = ProfileModelClient(endpoint)
         var cursor = withContext(Dispatchers.IO) {
             UserProfileStore.loadGroupCursor(bounds.botId, groupId)
         } ?: GroupProfileCursor(
@@ -297,6 +303,12 @@ object UserProfileAnalysisService {
         var skippedOperations = 0
         var totalUsage = ProfileTokenUsage()
         var caughtUp = cursor.cursorTime >= cursor.snapshotEndTime
+        val model: ConversationProfileModel by lazy {
+            val endpoint = checkNotNull(LargeLanguageModels.profile) {
+                "画像分析模型未配置，请设置 profileModelApi/profileModelToken，或配置可继承的聊天模型接入点"
+            }
+            ProfileModelClient(endpoint)
+        }
 
         while (processedBatches < maxBatches && !caughtUp && runGate.canContinue(runToken)) {
             val batch = withContext(Dispatchers.IO) {
@@ -421,20 +433,16 @@ object UserProfileAnalysisService {
             .filterValues { it >= minAuthoredTextChars.coerceAtLeast(1) }
             .keys
         if (eligibleUserIds.isEmpty()) return null
-        return userLocks.withUserLocks(eligibleUserIds) locked@{
-            if (withContext(Dispatchers.IO) { UserProfileStore.isConversationProcessed(batch.inputHash) }) {
-                return@locked null
+        var profiles = userLocks.withUserLocks(eligibleUserIds) {
+            withContext(Dispatchers.IO) {
+                if (UserProfileStore.isConversationProcessed(batch.inputHash)) null
+                else loadConversationProfiles(eligibleUserIds)
             }
-            val profiles = withContext(Dispatchers.IO) {
-                eligibleUserIds.associateWith { userId ->
-                    UserProfileStore.load(userId) ?: UserProfileSnapshot(
-                        userId = userId,
-                        cursorTime = 0,
-                        snapshotEndTime = 0,
-                    )
-                }
-            }
+        } ?: return null
+        var conflictRetries = 0
+        var totalUsage = ProfileTokenUsage()
 
+        while (true) {
             val (result, reductions) = analyzeConversationWithRetry(
                 model = model,
                 profiles = profiles,
@@ -444,25 +452,72 @@ object UserProfileAnalysisService {
                 summaryMaxLength = summaryMaxLength,
                 onRetryFailure = onRetryFailure,
             )
-            withContext(Dispatchers.IO) {
-                UserProfileStore.commitConversation(
-                    reductions = reductions.map { reduction -> reduction to batch.forUser(reduction.profile.userId) },
-                    usage = result.usage,
-                )
+            totalUsage += result.usage
+            val commitOutcome = userLocks.withUserLocks(eligibleUserIds) {
+                withContext(Dispatchers.IO) {
+                    if (UserProfileStore.isConversationProcessed(batch.inputHash)) {
+                        ConversationCommitOutcome.AlreadyProcessed
+                    } else {
+                        val latestProfiles = loadConversationProfiles(eligibleUserIds)
+                        if (hasProfileVersionConflict(profiles, latestProfiles)) {
+                            ConversationCommitOutcome.Conflict(latestProfiles)
+                        } else {
+                            UserProfileStore.commitConversation(
+                                reductions = reductions.map { reduction ->
+                                    reduction to batch.forUser(reduction.profile.userId)
+                                },
+                                usage = totalUsage,
+                            )
+                            ConversationCommitOutcome.Committed
+                        }
+                    }
+                }
             }
-            onCommittedOperations(
-                "source=CONVERSATION bot=${batch.botId} group=${batch.groupId} " +
-                        "batch=[${batch.startTime},${batch.endTime})",
-                reductions,
-            )
-            ConversationProfileAnalysisReport(
-                analyzedUsers = eligibleUserIds.size,
-                processedMessages = batch.messages.size,
-                appliedOperations = reductions.sumOf { it.operations.size },
-                skippedOperations = reductions.sumOf { it.skippedOperations.size },
-                usage = result.usage,
+
+            when (commitOutcome) {
+                ConversationCommitOutcome.AlreadyProcessed -> return null
+                ConversationCommitOutcome.Committed -> {
+                    onCommittedOperations(
+                        "source=CONVERSATION bot=${batch.botId} group=${batch.groupId} " +
+                                "batch=[${batch.startTime},${batch.endTime})",
+                        reductions,
+                    )
+                    return ConversationProfileAnalysisReport(
+                        analyzedUsers = eligibleUserIds.size,
+                        processedMessages = batch.messages.size,
+                        appliedOperations = reductions.sumOf { it.operations.size },
+                        skippedOperations = reductions.sumOf { it.skippedOperations.size },
+                        usage = totalUsage,
+                    )
+                }
+
+                is ConversationCommitOutcome.Conflict -> {
+                    conflictRetries++
+                    if (conflictRetries > MAX_CONVERSATION_CONFLICT_RETRIES) {
+                        throw IllegalStateException(
+                            "群 ${batch.groupId} 会话画像提交连续冲突 $conflictRetries 次，未提交结果"
+                        )
+                    }
+                    profiles = commitOutcome.latestProfiles
+                }
+            }
+        }
+    }
+
+    private fun loadConversationProfiles(userIds: Set<Long>): Map<Long, UserProfileSnapshot> =
+        userIds.associateWith { userId ->
+            UserProfileStore.load(userId) ?: UserProfileSnapshot(
+                userId = userId,
+                cursorTime = 0,
+                snapshotEndTime = 0,
             )
         }
+
+    private fun hasProfileVersionConflict(
+        expectedProfiles: Map<Long, UserProfileSnapshot>,
+        latestProfiles: Map<Long, UserProfileSnapshot>,
+    ): Boolean = expectedProfiles.any { (userId, expected) ->
+        latestProfiles[userId]?.version != expected.version
     }
 
     private suspend fun analyzeConversationWithRetry(
@@ -698,4 +753,17 @@ object UserProfileAnalysisService {
                     if (skipped.size > 8) "；其余 ${skipped.size - 8} 项已省略" else ""
         )
     }
+
+    private sealed class ConversationCommitOutcome {
+        object Committed : ConversationCommitOutcome()
+        object AlreadyProcessed : ConversationCommitOutcome()
+        data class Conflict(
+            val latestProfiles: Map<Long, UserProfileSnapshot>,
+        ) : ConversationCommitOutcome()
+    }
 }
+
+internal fun isGroupAnalysisPending(
+    bounds: ProfileHistoryReader.GroupTimeBounds,
+    cursor: GroupProfileCursor?,
+): Boolean = cursor == null || cursor.cursorTime < maxOf(cursor.snapshotEndTime, bounds.endTime)

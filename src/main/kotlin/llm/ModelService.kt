@@ -12,10 +12,14 @@ import io.ktor.http.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
+import okhttp3.Dispatcher as OkHttpDispatcher
 import kotlin.time.Duration
 
 class ModelService(
@@ -23,10 +27,21 @@ class ModelService(
     val token: String,
     val timeout: Duration,
     val firstChunkTimeout: Duration,
-    val extraBody: JsonObject? = null
+    val extraBody: JsonObject? = null,
+    maxConcurrentRequests: Int? = null,
 ) {
+    private val maxConcurrentRequests = maxConcurrentRequests?.let(::normalizeMaxConcurrentRequests)
+    private val requestSemaphore = this.maxConcurrentRequests?.let(::Semaphore)
+
     val httpClient: HttpClient by lazy {
         HttpClient(OkHttp) {
+            this@ModelService.maxConcurrentRequests?.let { concurrencyLimit ->
+                engine {
+                    config {
+                        dispatcher(createRequestDispatcher(concurrencyLimit))
+                    }
+                }
+            }
             install(HttpTimeout) {
                 // 流式响应的「首 token」与「token 间隔」超时统一由应用层 withTimeout 管控（见 chatCompletions）。
                 // 这里特意不设 requestTimeoutMillis：否则正常但耗时较长的流式输出会被 Ktor 在中途整体掐断。
@@ -79,7 +94,7 @@ class ModelService(
         }
         val body = JsonObject(requestJson).toString()
 
-        return flow {
+        val responseFlow: Flow<ChatCompletionChunk> = flow {
             // 关键：服务器繁忙时会拖住「响应头」，使 httpClient.post() 自身阻塞在等待响应的阶段，
             // 因此必须把 post() 连同首个 data 块的读取一起包进 withTimeout。
             // 否则首 token 超时永远不会触发（post() 还没返回，根本进不到读取循环），
@@ -136,6 +151,28 @@ class ModelService(
             } finally {
                 channel?.cancel()
             }
+        }
+        return responseFlow.withConcurrencyLimit(requestSemaphore)
+    }
+}
+
+internal const val MAX_MODEL_CONCURRENT_REQUESTS = 512
+
+internal fun normalizeMaxConcurrentRequests(value: Int): Int =
+    value.coerceIn(1, MAX_MODEL_CONCURRENT_REQUESTS)
+
+internal fun createRequestDispatcher(maxConcurrentRequests: Int): OkHttpDispatcher =
+    OkHttpDispatcher().apply {
+        val concurrencyLimit = normalizeMaxConcurrentRequests(maxConcurrentRequests)
+        maxRequests = concurrencyLimit
+        maxRequestsPerHost = concurrencyLimit
+    }
+
+internal fun <T> Flow<T>.withConcurrencyLimit(semaphore: Semaphore?): Flow<T> {
+    semaphore ?: return this
+    return flow {
+        semaphore.withPermit {
+            this@withConcurrencyLimit.collect { value -> emit(value) }
         }
     }
 }

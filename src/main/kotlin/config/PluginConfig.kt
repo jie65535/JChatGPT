@@ -75,6 +75,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("画像分析模型额外请求体JSON。留空时继承聊天模型额外请求体")
     val profileModelExtraBody: String by value("")
 
+    @ValueDescription("画像模型同时执行的请求上限，取值1~512，默认128；应用层排队且不计入首块超时，仅影响画像模型")
+    val profileMaxConcurrentRequests: Int by value(128)
+
     @ValueDescription("画像分析使用的聊天记录SQLite路径。留空时使用插件自己的chat-history.sqlite；本地实验可填写历史库绝对路径")
     val profileHistoryDatabasePath: String by value("")
 

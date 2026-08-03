@@ -171,6 +171,7 @@ object LargeLanguageModels {
                         timeout = maxOf(timeout, profileFirstChunk),
                         firstChunkTimeout = profileFirstChunk,
                         extraBody = parseExtraBody(extraBody),
+                        maxConcurrentRequests = PluginConfig.profileMaxConcurrentRequests,
                     ),
                     model = model,
                     temperature = PluginConfig.profileModelTemperature ?: PluginConfig.chatTemperature,

@@ -68,7 +68,7 @@ class ProfileHistoryReaderTest {
             }
 
             val reader = ProfileHistoryReader(database.toFile())
-            assertEquals(listOf(10L, 20L), reader.listGroupIds())
+            assertEquals(listOf(10L, 20L), reader.listGroupTimeBounds().map { it.groupId })
             val bounds = assertNotNull(reader.findUserTimeBounds(TARGET))
             assertEquals(100, bounds.startTime)
             assertEquals(201, bounds.endTime)
@@ -125,6 +125,7 @@ class ProfileHistoryReaderTest {
 
             val groupBounds = assertNotNull(reader.findGroupTimeBounds(10))
             assertEquals(1, groupBounds.botId)
+            assertEquals(10L, groupBounds.groupId)
             assertEquals(100, groupBounds.startTime)
             assertEquals(201, groupBounds.endTime)
             val firstGroupBatch = assertNotNull(

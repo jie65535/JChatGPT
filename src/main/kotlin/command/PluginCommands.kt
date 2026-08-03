@@ -20,6 +20,7 @@ import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.data.SkillStore
 import top.jie65535.mirai.data.TokenUsageStore
 import top.jie65535.mirai.llm.LargeLanguageModels
+import top.jie65535.mirai.llm.normalizeMaxConcurrentRequests
 import top.jie65535.mirai.profile.GroupProfileAnalysisReport
 import top.jie65535.mirai.profile.ProfileAnalysisReport
 import top.jie65535.mirai.profile.ProfileAutoMaintenance
@@ -90,18 +91,22 @@ object PluginCommands : CompositeCommand(
         require(batches > 0) { "batches 必须是正数" }
         val analyzeAllGroups = groupIds.isBlank()
         val parsedGroupIds = if (analyzeAllGroups) {
-            UserProfileAnalysisService.listHistoryGroupIds()
+            UserProfileAnalysisService.listPendingHistoryGroupIds()
         } else {
             parseProfileGroupIds(groupIds)
         }
         if (parsedGroupIds.isEmpty()) {
-            sendMessage("聊天记录中没有可分析的群消息。")
+            sendMessage("没有待推进的群画像：历史库中无有效群消息，或所有群均已追平当前快照。")
             return
         }
         val runToken = UserProfileAnalysisService.newRunToken()
         sendMessage(
             "已启动 ${parsedGroupIds.size} 个群的画像分析，每群最多推进 $batches 个批次。" +
-                    if (analyzeAllGroups) " 全量模式不设并发上限。" else ""
+                    if (analyzeAllGroups) {
+                        " 画像请求并发上限 ${normalizeMaxConcurrentRequests(PluginConfig.profileMaxConcurrentRequests)}。"
+                    } else {
+                        ""
+                    }
         )
         val completedGroups = AtomicInteger()
         val successfulGroups = AtomicInteger()

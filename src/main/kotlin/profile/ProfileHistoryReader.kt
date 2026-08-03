@@ -13,7 +13,12 @@ import java.sql.ResultSet
 
 class ProfileHistoryReader(private val databaseFile: File) {
     data class TimeBounds(val startTime: Int, val endTime: Int)
-    data class GroupTimeBounds(val botId: Long, val startTime: Int, val endTime: Int)
+    data class GroupTimeBounds(
+        val botId: Long,
+        val groupId: Long,
+        val startTime: Int,
+        val endTime: Int,
+    )
 
     private data class Episode(
         val index: Int,
@@ -63,6 +68,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
                 if (!results.next()) return@use null
                 GroupTimeBounds(
                     botId = results.getLong("bot_id"),
+                    groupId = groupId,
                     startTime = results.getInt("min_time"),
                     endTime = results.getInt("max_time").safeNextSecond(),
                 )
@@ -70,20 +76,32 @@ class ProfileHistoryReader(private val databaseFile: File) {
         }
     }
 
-    fun listGroupIds(): List<Long> = openReadConnection().use { connection ->
+    fun listGroupTimeBounds(): List<GroupTimeBounds> = openReadConnection().use { connection ->
         connection.prepareStatement(
             """
-            SELECT target_id, MAX(time) AS last_message_time
+            SELECT bot_id, target_id, MIN(time) AS min_time, MAX(time) AS max_time
             FROM message_record
             WHERE kind = ? AND recalled = 0 AND target_id > 0
-            GROUP BY target_id
-            ORDER BY last_message_time DESC, target_id ASC
+            GROUP BY bot_id, target_id
+            ORDER BY max_time DESC, target_id ASC, bot_id ASC
             """.trimIndent()
         ).use { statement ->
             statement.setInt(1, MessageSourceKind.GROUP.ordinal)
             statement.executeQuery().use { results ->
+                val seenGroupIds = hashSetOf<Long>()
                 buildList {
-                    while (results.next()) add(results.getLong("target_id"))
+                    while (results.next()) {
+                        val groupId = results.getLong("target_id")
+                        if (!seenGroupIds.add(groupId)) continue
+                        add(
+                            GroupTimeBounds(
+                                botId = results.getLong("bot_id"),
+                                groupId = groupId,
+                                startTime = results.getInt("min_time"),
+                                endTime = results.getInt("max_time").safeNextSecond(),
+                            )
+                        )
+                    }
                 }
             }
         }

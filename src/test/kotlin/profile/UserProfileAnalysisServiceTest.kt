@@ -5,7 +5,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import net.mamoe.mirai.message.data.MessageSourceKind
 import top.jie65535.mirai.data.ChatMessageRecord
 import java.io.IOException
@@ -20,6 +19,36 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class UserProfileAnalysisServiceTest {
+    @Test
+    fun onlySchedulesGroupsWhoseCursorDoesNotCoverLatestHistory() {
+        val bounds = ProfileHistoryReader.GroupTimeBounds(
+            botId = BOT,
+            groupId = GROUP,
+            startTime = 100,
+            endTime = 500,
+        )
+
+        assertTrue(isGroupAnalysisPending(bounds, null))
+        assertTrue(
+            isGroupAnalysisPending(
+                bounds,
+                GroupProfileCursor(BOT, GROUP, cursorTime = 300, snapshotEndTime = 500),
+            )
+        )
+        assertTrue(
+            isGroupAnalysisPending(
+                bounds,
+                GroupProfileCursor(BOT, GROUP, cursorTime = 400, snapshotEndTime = 400),
+            )
+        )
+        assertFalse(
+            isGroupAnalysisPending(
+                bounds,
+                GroupProfileCursor(BOT, GROUP, cursorTime = 500, snapshotEndTime = 500),
+            )
+        )
+    }
+
     @Test
     fun analyzesAllEligibleUsersWithOneModelCall() = withProfileStore {
         val model = FakeConversationProfileModel { successfulResult() }
@@ -120,11 +149,13 @@ class UserProfileAnalysisServiceTest {
     }
 
     @Test
-    fun sharedUserBatchWaitsAndLoadsLatestCommittedProfile() = withProfileStore {
+    fun sharedUserRequestsRunConcurrentlyAndConflictReloadsLatestProfile() = withProfileStore {
         val firstEntered = CompletableDeferred<Unit>()
         val releaseFirst = CompletableDeferred<Unit>()
-        val secondStarted = CompletableDeferred<Unit>()
-        val secondEntered = CompletableDeferred<Unit>()
+        val secondFirstEntered = CompletableDeferred<Unit>()
+        val releaseSecondFirst = CompletableDeferred<Unit>()
+        val secondRetried = CompletableDeferred<Unit>()
+        val secondCalls = AtomicInteger()
         val firstModel = InspectingConversationProfileModel { profiles ->
             assertEquals(0, profiles.getValue(USER_A).version)
             firstEntered.complete(Unit)
@@ -132,26 +163,36 @@ class UserProfileAnalysisServiceTest {
             result(responseFor("U1", "第一群归纳的信息", evidenceRef = 1))
         }
         val secondModel = InspectingConversationProfileModel { profiles ->
-            assertEquals(1, profiles.getValue(USER_A).version)
-            secondEntered.complete(Unit)
+            when (secondCalls.incrementAndGet()) {
+                1 -> {
+                    assertEquals(0, profiles.getValue(USER_A).version)
+                    secondFirstEntered.complete(Unit)
+                    releaseSecondFirst.await()
+                }
+
+                2 -> {
+                    assertEquals(1, profiles.getValue(USER_A).version)
+                    secondRetried.complete(Unit)
+                }
+
+                else -> error("共享用户冲突只应触发一次重算")
+            }
             result(responseFor("U1", "第二群归纳的信息", evidenceRef = 1))
         }
 
         coroutineScope {
             val first = async { analyze(singleUserBatch(USER_A, 10, "shared-a"), firstModel) }
             firstEntered.await()
-            val second = async {
-                secondStarted.complete(Unit)
-                analyze(singleUserBatch(USER_A, 20, "shared-b"), secondModel)
-            }
-            secondStarted.await()
-            assertNull(withTimeoutOrNull(100) { secondEntered.await() })
+            val second = async { analyze(singleUserBatch(USER_A, 20, "shared-b"), secondModel) }
+            withTimeout(1_000) { secondFirstEntered.await() }
             releaseFirst.complete(Unit)
             assertNotNull(first.await())
-            withTimeout(1_000) { secondEntered.await() }
+            releaseSecondFirst.complete(Unit)
+            withTimeout(1_000) { secondRetried.await() }
             assertNotNull(second.await())
         }
 
+        assertEquals(2, secondCalls.get())
         val profile = assertNotNull(UserProfileStore.load(USER_A))
         assertEquals(2, profile.version)
         assertEquals(2, profile.items.size)
