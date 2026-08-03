@@ -3,6 +3,7 @@ package top.jie65535.mirai.profile
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import top.jie65535.mirai.data.ChatMessageRecord
+import top.jie65535.mirai.data.ContactProfileHint
 
 @Serializable
 enum class ProfileCategory {
@@ -115,6 +116,7 @@ data class ProfileHistoryBatch(
     val messages: List<ProfilePromptMessage>,
     val aliases: Map<Long, String>,
     val inputHash: String,
+    val contactHints: Map<Long, ContactProfileHint> = emptyMap(),
 ) {
     val evidenceByRef: Map<Int, ProfilePromptMessage> = messages
         .mapNotNull { message -> message.evidenceRef?.let { it to message } }
@@ -168,6 +170,7 @@ data class ConversationProfileBatch(
     val messages: List<ProfilePromptMessage>,
     val aliases: Map<Long, String>,
     val inputHash: String,
+    val contactHints: Map<Long, ContactProfileHint> = emptyMap(),
 ) {
     val evidenceByRef: Map<Int, ProfilePromptMessage> = messages
         .mapNotNull { message -> message.evidenceRef?.let { it to message } }
@@ -187,6 +190,7 @@ data class ConversationProfileBatch(
         messages = messages,
         aliases = aliases,
         inputHash = inputHash,
+        contactHints = contactHints,
     )
 }
 

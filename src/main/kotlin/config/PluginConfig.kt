@@ -78,6 +78,18 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("画像分析使用的聊天记录SQLite路径。留空时使用插件自己的chat-history.sqlite；本地实验可填写历史库绝对路径")
     val profileHistoryDatabasePath: String by value("")
 
+    @ValueDescription("是否异步刷新好友、群、群成员联系人快照；结果写入 chat-history.sqlite，供历史画像和上下文显示使用")
+    val contactSnapshotEnabled: Boolean by value(true)
+
+    @ValueDescription("插件启动或首次收到消息后延迟多少秒开始刷新联系人快照，避免阻塞启动")
+    val contactSnapshotInitialDelaySeconds: Int by value(30)
+
+    @ValueDescription("联系人快照定时刷新间隔（分钟）。设为0仅启动后刷新一次")
+    val contactSnapshotRefreshIntervalMinutes: Long by value(24 * 60L)
+
+    @ValueDescription("刷新每个群成员列表后的额外延迟（毫秒），用于降低 OneBot 端压力")
+    val contactSnapshotGroupDelayMillis: Long by value(200L)
+
     @ValueDescription("每个画像分析批次最多读取目标用户多少条消息")
     val profileBatchTargetMessages: Int by value(120)
 

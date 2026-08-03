@@ -31,6 +31,7 @@ import top.jie65535.mirai.tools.ImageAgent
 import top.jie65535.mirai.tools.LoadSkill
 import top.jie65535.mirai.tools.MemoryAppend
 import top.jie65535.mirai.tools.MemoryReplace
+import top.jie65535.mirai.tools.QueryUserProfileAgent
 import top.jie65535.mirai.tools.ReasoningAgent
 import top.jie65535.mirai.tools.RequestOwner
 import top.jie65535.mirai.tools.RunCode
@@ -68,6 +69,7 @@ internal object ConversationEngine {
         SaveSkill(),
         DeleteSkill(),
         SearchChatHistory(),
+        QueryUserProfileAgent(),
         WebSearch(),
         VisitWeb(),
         RunCode(),

@@ -2,6 +2,8 @@ package top.jie65535.mirai.profile
 
 import net.mamoe.mirai.message.data.MessageSourceKind
 import top.jie65535.mirai.data.ChatMessageRecord
+import top.jie65535.mirai.data.ContactGroupMemberHint
+import top.jie65535.mirai.data.ContactProfileHint
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -152,6 +154,36 @@ class UserProfileReducerTest {
         val prompt = ProfilePromptStore.buildUserPrompt(current, batch)
         assertTrue(prompt.contains("[P1]"))
         assertFalse(prompt.contains(item.id))
+    }
+
+    @Test
+    fun rendersContactSnapshotAsNonEvidenceAndIncludesItemCount() {
+        val profile = emptyProfile().copy(items = listOf(existingItem()))
+        val batch = batchOf(message(ref = 1, fromId = TARGET, text = "我平时会写 Kotlin")).copy(
+            contactHints = mapOf(
+                TARGET to ContactProfileHint(
+                    userId = TARGET,
+                    nickname = "公开昵称",
+                    sign = "公开签名",
+                    memberships = listOf(
+                        ContactGroupMemberHint(
+                            groupId = 10,
+                            groupName = "测试群",
+                            nameCard = "群名片",
+                            role = "admin",
+                        )
+                    ),
+                )
+            ),
+        )
+
+        val prompt = ProfilePromptStore.buildUserPrompt(profile, batch)
+
+        assertTrue(prompt.contains("当前条目数: 1"))
+        assertTrue(prompt.contains("联系人快照（辅助识别，不是画像证据）"))
+        assertTrue(prompt.contains("昵称=公开昵称"))
+        assertTrue(prompt.contains("群名片=群名片"))
+        assertTrue(ProfilePromptStore.systemPrompt.contains("不得仅凭昵称、群名片"))
     }
 
     @Test

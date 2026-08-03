@@ -27,6 +27,8 @@ import top.jie65535.mirai.conversation.ConversationContext
 import top.jie65535.mirai.conversation.ConversationEngine
 import top.jie65535.mirai.data.ChatHistoryStore
 import top.jie65535.mirai.data.ChatMessageRecord
+import top.jie65535.mirai.data.ContactSnapshotRefresher
+import top.jie65535.mirai.data.ContactSnapshotStore
 import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.data.SkillStore
 import top.jie65535.mirai.data.TokenUsageStore
@@ -66,6 +68,10 @@ object JChatGPT : KotlinPlugin(
             logger.error("初始化 SQLite 聊天记录失败，历史上下文与搜索将暂时禁用", cause)
             false
         }
+        if (includeHistory) {
+            runCatching { ContactSnapshotStore.init(dataFolder) }
+                .onFailure { logger.error("初始化联系人快照数据库失败，联系人画像辅助将暂时禁用", it) }
+        }
 
         runCatching { UserProfileStore.init(dataFolder) }
             .onFailure { logger.error("初始化用户画像数据库失败，画像分析将暂时禁用", it) }
@@ -76,6 +82,7 @@ object JChatGPT : KotlinPlugin(
 
         val eventChannel = GlobalEventChannel.parentScope(this)
         eventChannel.subscribeAlways<MessageEvent>(priority = EventPriority.HIGHEST) { event ->
+            ContactSnapshotRefresher.schedule(event.bot, "message")
             runCatching { ChatHistoryStore.record(event) }
                 .onFailure { logger.warning("保存接收消息到 SQLite 失败", it) }
         }
@@ -88,6 +95,7 @@ object JChatGPT : KotlinPlugin(
                 .onFailure { logger.warning("更新 SQLite 消息撤回状态失败", it) }
         }
         eventChannel.subscribeAlways<MessageEvent> { event -> onMessage(event) }
+        ContactSnapshotRefresher.scheduleAll("startup")
 
         logger.info { "Plugin loaded" }
     }
@@ -96,7 +104,9 @@ object JChatGPT : KotlinPlugin(
         ConversationEngine.clear()
         ConversationContext.clearAll()
         ProfileAutoMaintenance.clear()
+        ContactSnapshotRefresher.clear()
         UserProfileStore.close()
+        ContactSnapshotStore.close()
         ChatHistoryStore.close()
     }
 

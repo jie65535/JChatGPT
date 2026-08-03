@@ -9,10 +9,12 @@ object UserProfileContextRenderer {
         displayNames: Map<Long, String>,
         activeUserIds: Set<Long>,
         summaryMaxChars: Int,
+        sectionTitle: String = "你对相关群友的认识",
     ): String {
         val profilesByUserId = profiles
             .filter { profile ->
-                profile.reliable && ProfilePersistentText.summaryForDisplay(profile.summary).isNotBlank()
+                profile.reliable &&
+                        (ProfilePersistentText.summaryForDisplay(profile.summary).isNotBlank() || profile.items.isNotEmpty())
             }
             .associateBy { it.userId }
         val userIds = activeUserIds.filter { userId ->
@@ -22,7 +24,7 @@ object UserProfileContextRenderer {
 
         val maxChars = summaryMaxChars.coerceAtLeast(50)
         return buildString {
-            appendLine("## 你对相关群友的认识")
+            append("## ").appendLine(sectionTitle)
             appendLine("好感度、代号和主观印象代表你的关系状态；画像认识来自可修正的历史归纳。仅在当前话题相关时自然运用，不要逐条复述或提及信息来源。")
             userIds.forEach { userId ->
                 val profile = profilesByUserId[userId]
@@ -38,8 +40,11 @@ object UserProfileContextRenderer {
                 }
                 profile?.summary?.let(ProfilePersistentText::summaryForDisplay)
                     ?.takeIf(String::isNotBlank)?.let { summary ->
-                    append(" | 画像认识：")
+                    append(" | 画像认识")
+                    append("（").append(profile.items.size).append("条）：")
                         .append(summary.normalized().take(maxChars))
+                } ?: profile?.takeIf { it.items.isNotEmpty() }?.let {
+                    append(" | 画像认识：已有").append(it.items.size).append("条记录，可用 queryUserProfile 查询详情")
                 }
 
                 profile?.items?.asSequence()

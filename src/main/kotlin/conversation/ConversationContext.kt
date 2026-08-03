@@ -29,6 +29,7 @@ import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
 import top.jie65535.mirai.data.ChatHistoryStore
 import top.jie65535.mirai.data.ChatMessageRecord
+import top.jie65535.mirai.data.ContactSnapshotStore
 import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.data.SkillStore
 import top.jie65535.mirai.llm.LargeLanguageModels
@@ -197,7 +198,7 @@ internal object ConversationContext {
                 lastTime = record.time.toLong()
             }
         } else {
-            appendPrivateFavorabilityContext(result, event)
+            appendPrivateUserContext(result, event)
             result.appendLine("## 近期对话（更早已隐藏，行首[n]为消息编号；正文[图片n]/[表情包n]中的n为识图或图片编辑编号）")
             history.forEach { record ->
                 val showSender = lastUserId != record.fromId
@@ -291,7 +292,12 @@ internal object ConversationContext {
         val favorability = if (PluginConfig.enableFavorabilitySystem) {
             candidateIds.mapNotNull { id -> PluginData.userFavorability[id]?.let { id to it } }.toMap()
         } else emptyMap()
-        val names = candidateIds.associateWith { id -> event.group[id]?.nameCardOrNick ?: id.toString() }
+        val snapshotNames = runCatching {
+            ContactSnapshotStore.loadDisplayNames(event.bot.id, event.group.id, candidateIds)
+        }.getOrDefault(emptyMap())
+        val names = candidateIds.associateWith { id ->
+            event.group[id]?.nameCardOrNick ?: snapshotNames[id] ?: id.toString()
+        }
         target.append(
             UserProfileContextRenderer.render(
                 profiles = profiles,
@@ -303,17 +309,34 @@ internal object ConversationContext {
         )
     }
 
-    private fun appendPrivateFavorabilityContext(target: StringBuilder, event: MessageEvent) {
-        if (!PluginConfig.enableFavorabilitySystem) return
-        val info = PluginData.userFavorability[event.sender.id] ?: return
-        if (info.name.isEmpty() && info.tags.isEmpty() && info.impression.isEmpty()) return
-        val displayName = info.name.ifEmpty { event.senderName }
-        target.appendLine("【你认识的对方】")
-            .append("- ").append(displayName).append("(${event.sender.id})")
-            .append(" 好感度${if (info.value >= 0) "+" else ""}${info.value}")
-        if (info.tags.isNotEmpty()) target.append(" [${info.tags.joinToString(", ")}]")
-        if (info.impression.isNotEmpty()) target.append(" ${info.impression}")
-        target.appendLine().appendLine()
+    private fun appendPrivateUserContext(target: StringBuilder, event: MessageEvent) {
+        if (!PluginConfig.profileAutoInjectEnabled && !PluginConfig.enableFavorabilitySystem) return
+        val userId = event.sender.id
+        val profiles = if (PluginConfig.profileEnabled && PluginConfig.profileAutoInjectEnabled &&
+            UserProfileStore.isAvailable
+        ) {
+            listOfNotNull(
+                runCatching { UserProfileStore.load(userId) }
+                    .onFailure { JChatGPT.logger.warning("读取用户画像失败: user=$userId", it) }
+                    .getOrNull()
+            )
+        } else emptyList()
+        val favorability = if (PluginConfig.enableFavorabilitySystem) {
+            PluginData.userFavorability[userId]?.let { mapOf(userId to it) }.orEmpty()
+        } else emptyMap()
+        val snapshotName = runCatching {
+            ContactSnapshotStore.loadDisplayName(event.bot.id, null, userId)
+        }.getOrNull()
+        target.append(
+            UserProfileContextRenderer.render(
+                profiles = profiles,
+                favorabilityByUserId = favorability,
+                displayNames = mapOf(userId to (snapshotName ?: event.senderName)),
+                activeUserIds = setOf(userId),
+                summaryMaxChars = PluginConfig.profileAutoInjectSummaryMaxChars,
+                sectionTitle = "你对对方的认识",
+            )
+        )
     }
 
     private fun appendGroupMessageRecord(

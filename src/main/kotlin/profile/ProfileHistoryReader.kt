@@ -3,6 +3,8 @@ package top.jie65535.mirai.profile
 import net.mamoe.mirai.message.data.MessageSourceKind
 import org.sqlite.SQLiteConfig
 import top.jie65535.mirai.data.ChatMessageRecord
+import top.jie65535.mirai.data.ContactProfileHint
+import top.jie65535.mirai.data.ContactSnapshotStore
 import java.io.File
 import java.security.MessageDigest
 import java.sql.Connection
@@ -344,6 +346,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
             messages = promptMessages,
             aliases = aliases,
             inputHash = calculateInputHash(promptMessages),
+            contactHints = loadContactHints(records, participantIds),
         )
     }
 
@@ -386,7 +389,62 @@ class ProfileHistoryReader(private val databaseFile: File) {
             messages = promptMessages,
             aliases = aliases,
             inputHash = calculateInputHash(promptMessages),
+            contactHints = loadContactHints(records.map { it.second }, participantIds),
         )
+    }
+
+    private fun loadContactHints(
+        records: List<ChatMessageRecord>,
+        participantIds: Set<Long>,
+    ): Map<Long, ContactProfileHint> {
+        if (records.isEmpty() || participantIds.isEmpty()) return emptyMap()
+        return records.groupBy(ChatMessageRecord::botId)
+            .values
+            .fold(emptyMap()) { accumulated, botRecords ->
+                val botId = botRecords.first().botId
+                val groupIds = botRecords.mapTo(hashSetOf(), ChatMessageRecord::targetId)
+                val hints = runCatching {
+                    ContactSnapshotStore.loadProfileHints(
+                        databaseFile = databaseFile,
+                        botId = botId,
+                        groupIds = groupIds,
+                        userIds = participantIds,
+                    )
+                }.getOrDefault(emptyMap())
+                mergeContactHints(accumulated, hints)
+            }
+    }
+
+    private fun mergeContactHints(
+        left: Map<Long, ContactProfileHint>,
+        right: Map<Long, ContactProfileHint>,
+    ): Map<Long, ContactProfileHint> {
+        if (left.isEmpty()) return right
+        if (right.isEmpty()) return left
+        return buildMap {
+            putAll(left)
+            right.forEach { (userId, hint) ->
+                val current = this[userId]
+                put(
+                    userId,
+                    if (current == null) {
+                        hint
+                    } else {
+                        hint.copy(
+                            nickname = hint.nickname.ifBlank { current.nickname },
+                            remark = hint.remark.ifBlank { current.remark },
+                            sex = hint.sex.ifBlank { current.sex },
+                            age = hint.age.takeIf { it > 0 } ?: current.age,
+                            qLevel = hint.qLevel.takeIf { it > 0 } ?: current.qLevel,
+                            sign = hint.sign.ifBlank { current.sign },
+                            isFriend = hint.isFriend || current.isFriend,
+                            memberships = (current.memberships + hint.memberships)
+                                .distinctBy { it.groupId },
+                        )
+                    },
+                )
+            }
+        }
     }
 
     private fun contextDistance(

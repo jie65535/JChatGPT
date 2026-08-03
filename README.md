@@ -1,6 +1,6 @@
 # JChatGPT
 
-JChatGPT 是一个基于 Kotlin 的 Mirai Console 插件，它将大型语言模型（LLM）集成到即时通讯平台中。该插件支持多种 AI 模型和丰富的工具功能，使用户能够在群聊和私聊中与 AI 进行交互。
+JChatGPT 是一个基于 Kotlin 的 Mirai Console 插件，它将大型语言模型（LLM）集成到即时通讯平台中。生产运行链路为 NapCat -> OneBot -> Overflow -> Mirai Console -> JChatGPT；插件使用 Mirai 兼容 API，但联系人刷新等运行时能力以 Overflow 为准。
 
 ## 功能特性
 
@@ -15,7 +15,7 @@ JChatGPT 是一个基于 Kotlin 的 Mirai Console 插件，它将大型语言模
 - **LaTeX 渲染**：自动将数学表达式渲染为图片
 - **灵活的触发方式**：@机器人、关键字触发、回复消息等
 - **权限控制**：细粒度的权限管理系统
-- **内置历史消息**：使用插件自维护的 SQLite 保存、检索群聊和私聊消息
+- **内置历史与联系人快照**：使用插件自维护的 SQLite 保存、检索消息，并异步同步好友、群和群成员公开信息
 
 ## 用法
 
@@ -35,6 +35,7 @@ AI 可以自动调用多种工具来完成复杂任务：
 - 记忆管理（添加和修改对话记忆）
 - 技能管理（沉淀、加载、迭代、删除可复用知识技能）
 - 聊天历史搜索（按关键词、发送者、时间范围检索群聊消息，需启用历史消息上下文）
+- 用户画像查询（按当前发送者、QQ号或群名片读取已归纳的长期画像）
 
 ## 权限列表
 
@@ -105,6 +106,11 @@ profileModelTemperature: null
 profileModelExtraBody: ''
 # 留空使用插件自己的聊天库；本地实验可填写外部SQLite历史库的绝对路径
 profileHistoryDatabasePath: ''
+# 异步刷新好友、群、群成员联系人快照，写入 chat-history.sqlite
+contactSnapshotEnabled: true
+contactSnapshotInitialDelaySeconds: 30
+contactSnapshotRefreshIntervalMinutes: 1440
+contactSnapshotGroupDelayMillis: 200
 # 每批目标用户消息数、片段软间隔及上下文限制
 profileBatchTargetMessages: 120
 profileBatchMaxEpisodes: 16
@@ -202,8 +208,14 @@ searchHistoryMaxDays: 30
 searchHistoryMaxRecords: 5000
 ```
 
-聊天记录保存在插件数据目录的 `chat-history.sqlite` 中，并使用 SQLite WAL 模式支持记录与查询并行进行。
+聊天记录与联系人快照保存在插件数据目录的 `chat-history.sqlite` 中，并使用 SQLite WAL 模式支持记录与查询并行进行。
 数据库由插件在首次启动时自动创建和维护，无需安装额外的聊天记录插件。
+
+联系人刷新在后台通过 Overflow 的公开 `RemoteBot.executeAction` 调用 OneBot
+`get_friend_list`、`get_group_list` 和 `get_group_member_list`，不使用反射，也不依赖 Overflow 的 internal
+实现类。默认启动延迟 30 秒后刷新、此后每 24 小时刷新一次；单个群失败时保留上一版成员快照，完整刷新成功后
+会淘汰已经删除的好友关系和已经离群的成员关系。周期任务不会逐人调用 `queryProfile()`，避免对数万群成员
+产生高频资料卡请求和账号风控风险。
 
 ### 渐进式历史画像
 
@@ -217,7 +229,15 @@ searchHistoryMaxRecords: 5000
 旧历史可通过 `profileAnalyze` 或 `profileAnalyzeGroup` 手动分批推进。
 
 下一次正常群聊会自动携带触发者和最近发言者的认识。现有好感度、Bot 代号、标签和主观印象会与证据驱动的
-长期画像按同一个人合并渲染，但两套数据仍独立保存，自动画像不会修改好感度。
+长期画像按同一个人合并渲染，并明确给出长期画像条目数；私聊也会携带对方的可靠画像摘要和条目数。
+模型需要完整细节时可主动调用 `queryUserProfile`，按 QQ 号、群名片、昵称或好友备注读取画像。两套画像数据
+仍独立保存，自动画像不会修改好感度。
+
+`queryUserProfile` 解析出唯一联系人后才按需调用一次 `queryProfile()`，并在内存中缓存 10 分钟；周期联系人
+同步不会触发该调用，因此群成员总量不会放大资料卡请求数。
+
+好友昵称、群名片、群角色、签名、年龄等联系人公开资料只作为人物识别提示，不直接视为画像证据。画像模型
+仍必须依据对应用户本人在聊天历史中的发言，才能新增或确认长期画像条目。
 
 画像结果保存在插件数据目录的 `user-profile.sqlite`，不会覆盖现有好感度或旧印象数据。实验时可把历史
 备份配置为只读来源，例如：
@@ -427,6 +447,7 @@ fallbackCooldownMinutes: 5
 10. **ImageAgent** - 图像生成与编辑（文生图、单图编辑、多图融合）
 11. **WeatherService** - 天气查询
 12. **SearchChatHistory** - 按关键词、发送者、时间范围搜索插件内置 SQLite 聊天历史
+13. **QueryUserProfile** - 按当前发送者、QQ 号、群名片、昵称或好友备注读取长期画像，并针对该联系人按需读取公开资料卡
 
 ## 用户画像系统
 
@@ -445,9 +466,10 @@ JChatGPT 维护对每位用户的画像，由好感度、Bot 自定义代号、�
 - 好感度为 0 时仍会保留该用户的代号、标签、印象和调整原因
 
 ### 注入到上下文
-- 群聊：列出会话历史中"认识的群友"（name/tags/impression 任一非空）
-- 私聊：仅当对方有 name/tags/impression 时注入对方画像
-- 仅有好感度数值、其它字段全空的用户不会被列出，避免提示词噪声
+- 群聊：合并列出当前相关群友的关系状态，以及可靠长期画像的摘要和条目数
+- 私聊：合并注入对方的关系状态，以及可靠长期画像的摘要和条目数
+- 模型需要画像明细时主动调用 `queryUserProfile`，不必把全部条目常驻在上下文中
+- 只有好感度数值、其它关系字段和可靠长期画像均为空的用户不会被列出，避免提示词噪声
 
 ### 配置选项
 - `enableFavorabilitySystem` - 是否启用画像系统（默认：true）
@@ -568,6 +590,7 @@ JChatGPT 按 (日期, userId, groupId) 三元组聚合每次对话的 Token 消�
 
 - Java 11 或更高版本
 - Mirai Console 2.16.0 或更高版本
+- Overflow（生产运行时；由 OneBot 对接 NapCat）
 - 相关 API Tokens（根据需要启用的功能配置）
 
 ## 备注

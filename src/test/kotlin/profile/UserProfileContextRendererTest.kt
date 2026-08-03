@@ -38,7 +38,7 @@ class UserProfileContextRendererTest {
 
         assertContains(rendered, "小明代号(100)")
         assertContains(rendered, "好感度+12")
-        assertContains(rendered, "画像认识：长期关注 Kotlin 开发")
+        assertContains(rendered, "画像认识（2条）：长期关注 Kotlin 开发")
         assertContains(rendered, "与小王：经常与对方讨论技术方案")
         assertFalse(rendered.contains("U12"))
         assertFalse(rendered.contains("小李"))

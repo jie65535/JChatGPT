@@ -42,6 +42,7 @@ dependencies {
     implementation("org.scilab.forge:jlatexmath:$jLatexMathVersion")
     implementation("org.apache.commons:commons-text:$commonTextVersion")
     implementation("org.xerial:sqlite-jdbc:$sqliteVersion")
+    compileOnly("top.mrxiaom.mirai:overflow-core-api:$overflowVersion")
 
     testImplementation(kotlin("test-junit5"))
 
