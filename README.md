@@ -58,7 +58,7 @@ AI 可以自动调用多种工具来完成复杂任务：
 ### 渐进式历史画像（实验）
 - 日常使用无需画像命令：群聊缓存会话闭合后，一次模型调用会静默归纳其中所有有实质发言的参与者
 - `/jgpt profileAnalyze <userIds> [batches]` - 分析用户画像，多个 ID 用逗号分隔
-- `/jgpt profileAnalyzeGroup <groupIds> [batches]` - 分析群画像，多个 ID 用逗号分隔
+- `/jgpt profileAnalyzeGroup [groupIds] [batches]` - 分析群画像，多个 ID 用逗号分隔；不传群号时并发推进历史库中的全部群
 - `/jgpt profileShow <userId>` - 查看用户画像
 - `/jgpt profileCompact [userIds]` - 压缩画像，不传 ID 时处理全部用户
 - `/jgpt profileStop` - 当前批次完成后停止画像任务
@@ -231,7 +231,9 @@ searchHistoryMaxRecords: 5000
 
 模型只使用单次请求内有效的临时编号，不接触画像条目的内部 UUID；不合规建议会被跳过，不阻断其他有效更新。
 临时用户别名不会写入最终画像。`profileCompact` 可独立清理重复或低价值条目，且不推进历史水位线。
-旧历史可通过 `profileAnalyze` 或 `profileAnalyzeGroup` 手动分批推进。
+旧历史可通过 `profileAnalyze` 或 `profileAnalyzeGroup` 手动分批推进。执行不带参数的 `profileAnalyzeGroup` 时，
+插件会从画像历史库枚举所有含有效群消息的群，并为每个群同时启动一个分析任务，不设置额外的应用层并发上限；
+显式传入群号时仍只分析指定群。全量模式仅发送启动和最终汇总，逐群进度与结果写入日志，避免回执刷屏。
 
 下一次正常群聊会自动携带触发者和最近发言者的认识。现有好感度、Bot 代号、标签和主观印象会与证据驱动的
 长期画像按同一个人合并渲染，并明确给出长期画像条目数；私聊也会携带对方的可靠画像摘要和条目数。

@@ -32,6 +32,14 @@ object UserProfileAnalysisService {
         return report
     }
 
+    suspend fun listHistoryGroupIds(): List<Long> {
+        check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
+        check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
+        return withContext(Dispatchers.IO) {
+            ProfileHistoryReader(resolveHistoryFile()).listGroupIds()
+        }
+    }
+
     suspend fun analyze(
         userId: Long,
         maxBatches: Int,

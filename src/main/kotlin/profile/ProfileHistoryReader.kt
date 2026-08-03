@@ -70,6 +70,25 @@ class ProfileHistoryReader(private val databaseFile: File) {
         }
     }
 
+    fun listGroupIds(): List<Long> = openReadConnection().use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT target_id, MAX(time) AS last_message_time
+            FROM message_record
+            WHERE kind = ? AND recalled = 0 AND target_id > 0
+            GROUP BY target_id
+            ORDER BY last_message_time DESC, target_id ASC
+            """.trimIndent()
+        ).use { statement ->
+            statement.setInt(1, MessageSourceKind.GROUP.ordinal)
+            statement.executeQuery().use { results ->
+                buildList {
+                    while (results.next()) add(results.getLong("target_id"))
+                }
+            }
+        }
+    }
+
     fun loadNextBatch(
         userId: Long,
         startTime: Int,

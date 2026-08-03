@@ -37,14 +37,22 @@ class ProfileHistoryReaderTest {
                 connection.prepareStatement(
                     "INSERT INTO message_record(" +
                             "bot_id, from_id, target_id, time, kind, code, recalled" +
-                            ") VALUES (1, ?, ?, ?, ?, ?, 0)"
+                            ") VALUES (1, ?, ?, ?, ?, ?, ?)"
                 ).use { statement ->
-                    fun insert(fromId: Long, groupId: Long, time: Int, text: String) {
+                    fun insert(
+                        fromId: Long,
+                        groupId: Long,
+                        time: Int,
+                        text: String,
+                        kind: MessageSourceKind = MessageSourceKind.GROUP,
+                        recalled: Int = 0,
+                    ) {
                         statement.setLong(1, fromId)
                         statement.setLong(2, groupId)
                         statement.setInt(3, time)
-                        statement.setInt(4, MessageSourceKind.GROUP.ordinal)
+                        statement.setInt(4, kind.ordinal)
                         statement.setString(5, """[{"type":"PlainText","content":"$text"}]""")
+                        statement.setInt(6, recalled)
                         statement.executeUpdate()
                     }
                     insert(TARGET, 10, 100, "目标发言一")
@@ -54,10 +62,13 @@ class ProfileHistoryReaderTest {
                     insert(TARGET, 20, 130, "同一秒的另一群发言")
                     insert(OTHER, 20, 140, "后续上下文")
                     insert(TARGET, 10, 200, "下一批目标发言")
+                    insert(TARGET, 30, 300, "私聊消息", kind = MessageSourceKind.FRIEND)
+                    insert(TARGET, 40, 400, "已撤回群消息", recalled = 1)
                 }
             }
 
             val reader = ProfileHistoryReader(database.toFile())
+            assertEquals(listOf(10L, 20L), reader.listGroupIds())
             val bounds = assertNotNull(reader.findUserTimeBounds(TARGET))
             assertEquals(100, bounds.startTime)
             assertEquals(201, bounds.endTime)

@@ -33,6 +33,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.atomic.AtomicInteger
 
 object PluginCommands : CompositeCommand(
     JChatGPT, "jgpt", description = "J OpenAI ChatGPT"
@@ -85,11 +86,28 @@ object PluginCommands : CompositeCommand(
     }
 
     @SubCommand
-    suspend fun CommandSender.profileAnalyzeGroup(groupIds: String, batches: Int = 1) {
+    suspend fun CommandSender.profileAnalyzeGroup(groupIds: String = "", batches: Int = 1) {
         require(batches > 0) { "batches 必须是正数" }
-        val parsedGroupIds = parseProfileGroupIds(groupIds)
+        val analyzeAllGroups = groupIds.isBlank()
+        val parsedGroupIds = if (analyzeAllGroups) {
+            UserProfileAnalysisService.listHistoryGroupIds()
+        } else {
+            parseProfileGroupIds(groupIds)
+        }
+        if (parsedGroupIds.isEmpty()) {
+            sendMessage("聊天记录中没有可分析的群消息。")
+            return
+        }
         val runToken = UserProfileAnalysisService.newRunToken()
-        sendMessage("已启动 ${parsedGroupIds.size} 个群的画像分析，每群最多推进 $batches 个批次。")
+        sendMessage(
+            "已启动 ${parsedGroupIds.size} 个群的画像分析，每群最多推进 $batches 个批次。" +
+                    if (analyzeAllGroups) " 全量模式不设并发上限。" else ""
+        )
+        val completedGroups = AtomicInteger()
+        val successfulGroups = AtomicInteger()
+        val alreadyRunningGroups = AtomicInteger()
+        val missingGroups = AtomicInteger()
+        val failedGroups = AtomicInteger()
         parsedGroupIds.forEach { groupId ->
             JChatGPT.launch {
                 try {
@@ -104,15 +122,50 @@ object PluginCommands : CompositeCommand(
                         )
                     }
                     when {
-                        report.alreadyRunning -> sendMessage("群 $groupId 已有画像分析任务在运行。")
-                        report.botId == null -> sendMessage("聊天记录中没有找到群 $groupId 的消息。")
-                        else -> sendMessage(formatGroupProfileReport(report))
+                        report.alreadyRunning -> {
+                            alreadyRunningGroups.incrementAndGet()
+                            if (analyzeAllGroups) {
+                                JChatGPT.logger.info("群 $groupId 已有画像分析任务在运行")
+                            } else {
+                                sendMessage("群 $groupId 已有画像分析任务在运行。")
+                            }
+                        }
+
+                        report.botId == null -> {
+                            missingGroups.incrementAndGet()
+                            if (analyzeAllGroups) {
+                                JChatGPT.logger.warning("聊天记录中没有找到群 $groupId 的消息")
+                            } else {
+                                sendMessage("聊天记录中没有找到群 $groupId 的消息。")
+                            }
+                        }
+
+                        else -> {
+                            successfulGroups.incrementAndGet()
+                            val resultMessage = formatGroupProfileReport(report)
+                            if (analyzeAllGroups) {
+                                JChatGPT.logger.info(resultMessage)
+                            } else {
+                                sendMessage(resultMessage)
+                            }
+                        }
                     }
                 } catch (cause: CancellationException) {
                     throw cause
                 } catch (cause: Exception) {
+                    failedGroups.incrementAndGet()
                     JChatGPT.logger.error("群 $groupId 批量画像分析失败", cause)
-                    sendMessage("群 $groupId 批量画像分析失败：${cause.message ?: cause::class.simpleName}")
+                    if (!analyzeAllGroups) {
+                        sendMessage("群 $groupId 批量画像分析失败：${cause.message ?: cause::class.simpleName}")
+                    }
+                } finally {
+                    if (analyzeAllGroups && completedGroups.incrementAndGet() == parsedGroupIds.size) {
+                        sendMessage(
+                            "全量群画像分析完成：成功 ${successfulGroups.get()}，" +
+                                    "已在运行 ${alreadyRunningGroups.get()}，" +
+                                    "无历史 ${missingGroups.get()}，失败 ${failedGroups.get()}。"
+                        )
+                    }
                 }
             }
         }
