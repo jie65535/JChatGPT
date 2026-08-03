@@ -149,12 +149,11 @@ class UserProfileAnalysisServiceTest {
     }
 
     @Test
-    fun sharedUserRequestsRunConcurrentlyAndConflictReloadsLatestProfile() = withProfileStore {
+    fun sharedUserRequestsRunConcurrentlyAndConflictRebasesWithoutAnotherModelCall() = withProfileStore {
         val firstEntered = CompletableDeferred<Unit>()
         val releaseFirst = CompletableDeferred<Unit>()
         val secondFirstEntered = CompletableDeferred<Unit>()
         val releaseSecondFirst = CompletableDeferred<Unit>()
-        val secondRetried = CompletableDeferred<Unit>()
         val secondCalls = AtomicInteger()
         val firstModel = InspectingConversationProfileModel { profiles ->
             assertEquals(0, profiles.getValue(USER_A).version)
@@ -163,20 +162,10 @@ class UserProfileAnalysisServiceTest {
             result(responseFor("U1", "第一群归纳的信息", evidenceRef = 1))
         }
         val secondModel = InspectingConversationProfileModel { profiles ->
-            when (secondCalls.incrementAndGet()) {
-                1 -> {
-                    assertEquals(0, profiles.getValue(USER_A).version)
-                    secondFirstEntered.complete(Unit)
-                    releaseSecondFirst.await()
-                }
-
-                2 -> {
-                    assertEquals(1, profiles.getValue(USER_A).version)
-                    secondRetried.complete(Unit)
-                }
-
-                else -> error("共享用户冲突只应触发一次重算")
-            }
+            secondCalls.incrementAndGet()
+            assertEquals(0, profiles.getValue(USER_A).version)
+            secondFirstEntered.complete(Unit)
+            releaseSecondFirst.await()
             result(responseFor("U1", "第二群归纳的信息", evidenceRef = 1))
         }
 
@@ -188,11 +177,10 @@ class UserProfileAnalysisServiceTest {
             releaseFirst.complete(Unit)
             assertNotNull(first.await())
             releaseSecondFirst.complete(Unit)
-            withTimeout(1_000) { secondRetried.await() }
             assertNotNull(second.await())
         }
 
-        assertEquals(2, secondCalls.get())
+        assertEquals(1, secondCalls.get())
         val profile = assertNotNull(UserProfileStore.load(USER_A))
         assertEquals(2, profile.version)
         assertEquals(2, profile.items.size)

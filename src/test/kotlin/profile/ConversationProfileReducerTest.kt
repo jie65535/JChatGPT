@@ -145,6 +145,78 @@ class ConversationProfileReducerTest {
     }
 
     @Test
+    fun rebasesItemReferenceByStableIdWhenConcurrentUpdateChangesItemOrder() {
+        val target = item("target", "原始目标条目", 100)
+        val expected = emptyProfile(USER_A).copy(version = 1, items = listOf(target))
+        val inserted = item("inserted", "并发新增条目", 50)
+        val latest = expected.copy(version = 2, items = listOf(inserted, target))
+
+        val reduction = ConversationProfileReducer.reduceRebased(
+            expectedProfiles = mapOf(USER_A to expected, USER_B to emptyProfile(USER_B)),
+            latestProfiles = mapOf(USER_A to latest, USER_B to emptyProfile(USER_B)),
+            batch = batch(),
+            eligibleUserIds = USERS,
+            response = ConversationProfileModelResponse(
+                users = listOf(
+                    ConversationProfileUserResponse(
+                        userAlias = "U1",
+                        operations = listOf(
+                            ProfileModelOperation(
+                                action = ProfileOperationAction.UPDATE,
+                                itemRef = "P1",
+                                content = "更新后的目标条目",
+                                evidenceRefs = listOf(1),
+                            )
+                        ),
+                    )
+                )
+            ),
+            model = "test-model",
+            promptVersion = "test-prompt",
+            summaryMaxLength = 500,
+        ).single { it.profile.userId == USER_A }
+
+        assertEquals("并发新增条目", reduction.profile.items.single { it.id == "inserted" }.content)
+        assertEquals("更新后的目标条目", reduction.profile.items.single { it.id == "target" }.content)
+        assertEquals(1, reduction.operations.size)
+    }
+
+    @Test
+    fun skipsRebasedOperationWhenConcurrentUpdateRemovedTargetItem() {
+        val target = item("target", "稍后被删除的条目", 100)
+        val expected = emptyProfile(USER_A).copy(version = 1, items = listOf(target))
+        val latest = expected.copy(version = 2, items = emptyList())
+
+        val reduction = ConversationProfileReducer.reduceRebased(
+            expectedProfiles = mapOf(USER_A to expected, USER_B to emptyProfile(USER_B)),
+            latestProfiles = mapOf(USER_A to latest, USER_B to emptyProfile(USER_B)),
+            batch = batch(),
+            eligibleUserIds = USERS,
+            response = ConversationProfileModelResponse(
+                users = listOf(
+                    ConversationProfileUserResponse(
+                        userAlias = "U1",
+                        operations = listOf(
+                            ProfileModelOperation(
+                                action = ProfileOperationAction.DELETE,
+                                itemRef = "P1",
+                                evidenceRefs = listOf(1),
+                            )
+                        ),
+                    )
+                )
+            ),
+            model = "test-model",
+            promptVersion = "test-prompt",
+            summaryMaxLength = 500,
+        ).single { it.profile.userId == USER_A }
+
+        assertTrue(reduction.operations.isEmpty())
+        assertTrue(reduction.skippedOperations.single().contains("不存在"))
+        assertTrue(reduction.profile.items.isEmpty())
+    }
+
+    @Test
     fun acceptsMoreThanFourOperationsForOneUser() {
         val operations = (1..5).map { index ->
             ProfileModelOperation(
@@ -295,6 +367,15 @@ class ConversationProfileReducerTest {
         userId = userId,
         cursorTime = 0,
         snapshotEndTime = 0,
+    )
+
+    private fun item(id: String, content: String, firstSeenAt: Int) = UserProfileItem(
+        id = id,
+        category = ProfileCategory.NOTABLE_FACT,
+        content = content,
+        confidence = ProfileConfidence.MEDIUM,
+        firstSeenAt = firstSeenAt,
+        lastConfirmedAt = firstSeenAt,
     )
 
     private fun message(ref: Int, fromId: Long, text: String) = ProfilePromptMessage(

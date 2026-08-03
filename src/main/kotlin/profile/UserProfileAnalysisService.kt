@@ -14,8 +14,6 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 object UserProfileAnalysisService {
-    private const val MAX_CONVERSATION_CONFLICT_RETRIES = 3
-
     private val runningUsers = ConcurrentHashMap.newKeySet<Long>()
     private val runningGroups = ConcurrentHashMap.newKeySet<Long>()
     private val runningCompactions = ConcurrentHashMap.newKeySet<Long>()
@@ -433,75 +431,70 @@ object UserProfileAnalysisService {
             .filterValues { it >= minAuthoredTextChars.coerceAtLeast(1) }
             .keys
         if (eligibleUserIds.isEmpty()) return null
-        var profiles = userLocks.withUserLocks(eligibleUserIds) {
+        val profiles = userLocks.withUserLocks(eligibleUserIds) {
             withContext(Dispatchers.IO) {
                 if (UserProfileStore.isConversationProcessed(batch.inputHash)) null
                 else loadConversationProfiles(eligibleUserIds)
             }
         } ?: return null
-        var conflictRetries = 0
-        var totalUsage = ProfileTokenUsage()
-
-        while (true) {
-            val (result, reductions) = analyzeConversationWithRetry(
-                model = model,
-                profiles = profiles,
-                batch = batch,
-                eligibleUserIds = eligibleUserIds,
-                retryMax = retryMax,
-                summaryMaxLength = summaryMaxLength,
-                onRetryFailure = onRetryFailure,
-            )
-            totalUsage += result.usage
-            val commitOutcome = userLocks.withUserLocks(eligibleUserIds) {
-                withContext(Dispatchers.IO) {
-                    if (UserProfileStore.isConversationProcessed(batch.inputHash)) {
-                        ConversationCommitOutcome.AlreadyProcessed
+        val (result, reductions) = analyzeConversationWithRetry(
+            model = model,
+            profiles = profiles,
+            batch = batch,
+            eligibleUserIds = eligibleUserIds,
+            retryMax = retryMax,
+            summaryMaxLength = summaryMaxLength,
+            onRetryFailure = onRetryFailure,
+        )
+        val totalUsage = result.usage
+        val commitOutcome = userLocks.withUserLocks(eligibleUserIds) {
+            withContext(Dispatchers.IO) {
+                if (UserProfileStore.isConversationProcessed(batch.inputHash)) {
+                    ConversationCommitOutcome.AlreadyProcessed
+                } else {
+                    val latestProfiles = loadConversationProfiles(eligibleUserIds)
+                    val committedReductions = if (hasProfileVersionConflict(profiles, latestProfiles)) {
+                        ConversationProfileReducer.reduceRebased(
+                            expectedProfiles = profiles,
+                            latestProfiles = latestProfiles,
+                            batch = batch,
+                            eligibleUserIds = eligibleUserIds,
+                            response = result.response,
+                            model = model.modelName,
+                            promptVersion = ProfilePromptStore.PROMPT_VERSION,
+                            summaryMaxLength = summaryMaxLength.coerceAtLeast(100),
+                        )
                     } else {
-                        val latestProfiles = loadConversationProfiles(eligibleUserIds)
-                        if (hasProfileVersionConflict(profiles, latestProfiles)) {
-                            ConversationCommitOutcome.Conflict(latestProfiles)
-                        } else {
-                            UserProfileStore.commitConversation(
-                                reductions = reductions.map { reduction ->
-                                    reduction to batch.forUser(reduction.profile.userId)
-                                },
-                                usage = totalUsage,
-                            )
-                            ConversationCommitOutcome.Committed
-                        }
+                        reductions
                     }
-                }
-            }
-
-            when (commitOutcome) {
-                ConversationCommitOutcome.AlreadyProcessed -> return null
-                ConversationCommitOutcome.Committed -> {
-                    onCommittedOperations(
-                        "source=CONVERSATION bot=${batch.botId} group=${batch.groupId} " +
-                                "batch=[${batch.startTime},${batch.endTime})",
-                        reductions,
-                    )
-                    return ConversationProfileAnalysisReport(
-                        analyzedUsers = eligibleUserIds.size,
-                        processedMessages = batch.messages.size,
-                        appliedOperations = reductions.sumOf { it.operations.size },
-                        skippedOperations = reductions.sumOf { it.skippedOperations.size },
+                    UserProfileStore.commitConversation(
+                        reductions = committedReductions.map { reduction ->
+                            reduction to batch.forUser(reduction.profile.userId)
+                        },
                         usage = totalUsage,
                     )
-                }
-
-                is ConversationCommitOutcome.Conflict -> {
-                    conflictRetries++
-                    if (conflictRetries > MAX_CONVERSATION_CONFLICT_RETRIES) {
-                        throw IllegalStateException(
-                            "群 ${batch.groupId} 会话画像提交连续冲突 $conflictRetries 次，未提交结果"
-                        )
-                    }
-                    profiles = commitOutcome.latestProfiles
+                    ConversationCommitOutcome.Committed(committedReductions)
                 }
             }
         }
+
+        val committedReductions = when (commitOutcome) {
+            ConversationCommitOutcome.AlreadyProcessed -> return null
+            is ConversationCommitOutcome.Committed -> commitOutcome.reductions
+        }
+
+        onCommittedOperations(
+            "source=CONVERSATION bot=${batch.botId} group=${batch.groupId} " +
+                    "batch=[${batch.startTime},${batch.endTime})",
+            committedReductions,
+        )
+        return ConversationProfileAnalysisReport(
+            analyzedUsers = eligibleUserIds.size,
+            processedMessages = batch.messages.size,
+            appliedOperations = committedReductions.sumOf { it.operations.size },
+            skippedOperations = committedReductions.sumOf { it.skippedOperations.size },
+            usage = totalUsage,
+        )
     }
 
     private fun loadConversationProfiles(userIds: Set<Long>): Map<Long, UserProfileSnapshot> =
@@ -755,11 +748,10 @@ object UserProfileAnalysisService {
     }
 
     private sealed class ConversationCommitOutcome {
-        object Committed : ConversationCommitOutcome()
-        object AlreadyProcessed : ConversationCommitOutcome()
-        data class Conflict(
-            val latestProfiles: Map<Long, UserProfileSnapshot>,
+        data class Committed(
+            val reductions: List<ProfileReduction>,
         ) : ConversationCommitOutcome()
+        object AlreadyProcessed : ConversationCommitOutcome()
     }
 }
 
