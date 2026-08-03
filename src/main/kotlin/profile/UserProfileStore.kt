@@ -98,6 +98,19 @@ object UserProfileStore {
         }
     }
 
+    fun listUserIds(): List<Long> {
+        check(initialized) { "用户画像数据库尚未初始化" }
+        return openReadConnection().use { connection ->
+            connection.prepareStatement("SELECT user_id FROM user_profile ORDER BY user_id").use { statement ->
+                statement.executeQuery().use { results ->
+                    buildList {
+                        while (results.next()) add(results.getLong("user_id"))
+                    }
+                }
+            }
+        }
+    }
+
     fun loadSupportStats(userId: Long): Map<String, ProfileItemSupportStats> {
         check(initialized) { "用户画像数据库尚未初始化" }
         return openReadConnection().use { connection ->

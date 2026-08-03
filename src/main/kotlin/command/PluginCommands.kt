@@ -1,7 +1,9 @@
 package top.jie65535.mirai.command
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.mamoe.mirai.console.command.CommandSender
 import net.mamoe.mirai.console.command.CompositeCommand
 import net.mamoe.mirai.console.permission.PermissionService.Companion.cancel
@@ -49,61 +51,69 @@ object PluginCommands : CompositeCommand(
     }
 
     @SubCommand
-    suspend fun CommandSender.profileAnalyze(userId: Long, batches: Int = 1) {
+    suspend fun CommandSender.profileAnalyze(userIds: String, batches: Int = 1) {
         require(batches > 0) { "batches 必须是正数" }
-        sendMessage("已启动用户 $userId 的画像分析，本次最多推进 $batches 个批次。")
-        JChatGPT.launch {
-            try {
-                val report = UserProfileAnalysisService.analyze(userId, batches) { progress ->
-                    JChatGPT.logger.info(
-                        "PROFILE_BATCH user=$userId batch=${progress.batchIndex}/$batches " +
-                                "range=${progress.startTime}-${progress.endTime} " +
-                                "messages=${progress.messageCount} operations=${progress.operationCount} " +
-                                "skipped=${progress.skippedOperationCount} " +
-                                "tokens=${progress.usage.promptTokens}/${progress.usage.completionTokens} " +
-                                "cached=${progress.usage.cachedTokens}"
-                    )
+        val parsedUserIds = parseProfileUserIds(userIds)
+        val runToken = UserProfileAnalysisService.newRunToken()
+        sendMessage("已启动 ${parsedUserIds.size} 个用户的画像分析，每人最多推进 $batches 个批次。")
+        parsedUserIds.forEach { userId ->
+            JChatGPT.launch {
+                try {
+                    val report = UserProfileAnalysisService.analyze(userId, batches, runToken) { progress ->
+                        JChatGPT.logger.info(
+                            "PROFILE_BATCH user=$userId batch=${progress.batchIndex}/$batches " +
+                                    "range=${progress.startTime}-${progress.endTime} " +
+                                    "messages=${progress.messageCount} operations=${progress.operationCount} " +
+                                    "skipped=${progress.skippedOperationCount} " +
+                                    "tokens=${progress.usage.promptTokens}/${progress.usage.completionTokens} " +
+                                    "cached=${progress.usage.cachedTokens}"
+                        )
+                    }
+                    when {
+                        report.alreadyRunning -> sendMessage("用户 $userId 已有画像分析任务在运行。")
+                        report.profile == null -> sendMessage("聊天记录中没有找到用户 $userId 的群聊发言。")
+                        else -> sendMessage(formatProfileReport(report))
+                    }
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (cause: Exception) {
+                    JChatGPT.logger.error("用户 $userId 画像分析失败", cause)
+                    sendMessage("用户 $userId 画像分析失败：${cause.message ?: cause::class.simpleName}")
                 }
-                when {
-                    report.alreadyRunning -> sendMessage("用户 $userId 已有画像分析任务在运行。")
-                    report.profile == null -> sendMessage("聊天记录中没有找到用户 $userId 的群聊发言。")
-                    else -> sendMessage(formatProfileReport(report))
-                }
-            } catch (cause: CancellationException) {
-                throw cause
-            } catch (cause: Exception) {
-                JChatGPT.logger.error("用户 $userId 画像分析失败", cause)
-                sendMessage("用户 $userId 画像分析失败：${cause.message ?: cause::class.simpleName}")
             }
         }
     }
 
     @SubCommand
-    suspend fun CommandSender.profileAnalyzeGroup(groupId: Long, batches: Int = 1) {
+    suspend fun CommandSender.profileAnalyzeGroup(groupIds: String, batches: Int = 1) {
         require(batches > 0) { "batches 必须是正数" }
-        sendMessage("已启动群 $groupId 的批量画像分析，本次最多推进 $batches 个批次。")
-        JChatGPT.launch {
-            try {
-                val report = UserProfileAnalysisService.analyzeGroup(groupId, batches) { progress ->
-                    JChatGPT.logger.info(
-                        "PROFILE_GROUP_BATCH group=$groupId batch=${progress.batchIndex}/$batches " +
-                                "range=${progress.startTime}-${progress.endTime} " +
-                                "messages=${progress.messageCount} users=${progress.analyzedUsers} " +
-                                "operations=${progress.appliedOperations} skipped=${progress.skippedOperations} " +
-                                "tokens=${progress.usage.promptTokens}/${progress.usage.completionTokens} " +
-                                "cached=${progress.usage.cachedTokens}"
-                    )
+        val parsedGroupIds = parseProfileGroupIds(groupIds)
+        val runToken = UserProfileAnalysisService.newRunToken()
+        sendMessage("已启动 ${parsedGroupIds.size} 个群的画像分析，每群最多推进 $batches 个批次。")
+        parsedGroupIds.forEach { groupId ->
+            JChatGPT.launch {
+                try {
+                    val report = UserProfileAnalysisService.analyzeGroup(groupId, batches, runToken) { progress ->
+                        JChatGPT.logger.info(
+                            "PROFILE_GROUP_BATCH group=$groupId batch=${progress.batchIndex}/$batches " +
+                                    "range=${progress.startTime}-${progress.endTime} " +
+                                    "messages=${progress.messageCount} users=${progress.analyzedUsers} " +
+                                    "operations=${progress.appliedOperations} skipped=${progress.skippedOperations} " +
+                                    "tokens=${progress.usage.promptTokens}/${progress.usage.completionTokens} " +
+                                    "cached=${progress.usage.cachedTokens}"
+                        )
+                    }
+                    when {
+                        report.alreadyRunning -> sendMessage("群 $groupId 已有画像分析任务在运行。")
+                        report.botId == null -> sendMessage("聊天记录中没有找到群 $groupId 的消息。")
+                        else -> sendMessage(formatGroupProfileReport(report))
+                    }
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (cause: Exception) {
+                    JChatGPT.logger.error("群 $groupId 批量画像分析失败", cause)
+                    sendMessage("群 $groupId 批量画像分析失败：${cause.message ?: cause::class.simpleName}")
                 }
-                when {
-                    report.alreadyRunning -> sendMessage("群 $groupId 已有画像分析任务在运行。")
-                    report.botId == null -> sendMessage("聊天记录中没有找到群 $groupId 的消息。")
-                    else -> sendMessage(formatGroupProfileReport(report))
-                }
-            } catch (cause: CancellationException) {
-                throw cause
-            } catch (cause: Exception) {
-                JChatGPT.logger.error("群 $groupId 批量画像分析失败", cause)
-                sendMessage("群 $groupId 批量画像分析失败：${cause.message ?: cause::class.simpleName}")
             }
         }
     }
@@ -119,19 +129,47 @@ object PluginCommands : CompositeCommand(
     }
 
     @SubCommand
-    suspend fun CommandSender.profileCompact(userId: Long) {
-        sendMessage("已启动用户 $userId 的画像压缩反思。")
-        JChatGPT.launch {
-            try {
-                val report = UserProfileAnalysisService.compact(userId)
-                sendMessage(formatProfileCompactionReport(report))
-            } catch (cause: CancellationException) {
-                throw cause
-            } catch (cause: Exception) {
-                JChatGPT.logger.error("用户 $userId 画像压缩失败", cause)
-                sendMessage("用户 $userId 画像压缩失败：${cause.message ?: cause::class.simpleName}")
+    suspend fun CommandSender.profileCompact(userIds: String = "") {
+        check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
+        check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
+        val parsedUserIds = if (userIds.isBlank()) {
+            withContext(Dispatchers.IO) { UserProfileStore.listUserIds() }
+        } else {
+            parseProfileUserIds(userIds)
+        }
+        if (parsedUserIds.isEmpty()) {
+            sendMessage("当前没有可压缩的用户画像。")
+            return
+        }
+        val runToken = UserProfileAnalysisService.newRunToken()
+        sendMessage("已启动 ${parsedUserIds.size} 个用户的画像压缩反思。")
+        parsedUserIds.forEach { userId ->
+            JChatGPT.launch {
+                try {
+                    val report = UserProfileAnalysisService.compact(userId, runToken)
+                    when {
+                        report.alreadyRunning -> sendMessage("用户 $userId 已有画像压缩任务在运行。")
+                        report.stopped -> sendMessage("用户 $userId 的画像压缩已按请求停止，未开始新的压缩轮次。")
+                        else -> sendMessage(formatProfileCompactionReport(report))
+                    }
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (cause: Exception) {
+                    JChatGPT.logger.error("用户 $userId 画像压缩失败", cause)
+                    sendMessage("用户 $userId 画像压缩失败：${cause.message ?: cause::class.simpleName}")
+                }
             }
         }
+    }
+
+    @SubCommand
+    suspend fun CommandSender.profileStop() {
+        val report = UserProfileAnalysisService.stopAll()
+        sendMessage(
+            "已发出画像任务停止请求；当前检测到 ${report.totalTasks} 个任务" +
+                    "（用户分析 ${report.userTasks}，群分析 ${report.groupTasks}，压缩 ${report.compactionTasks}）。" +
+                    "当前轮次会正常完成，之后不再开始新一轮。"
+        )
     }
 
     @SubCommand
@@ -325,7 +363,7 @@ object PluginCommands : CompositeCommand(
                     "${formatNumber(report.usage.completionTokens)}，缓存命中 " +
                     formatNumber(report.usage.cachedTokens)
         )
-        appendLine("状态：${if (report.caughtUp) "已追平当前快照" else "可继续推进"}")
+        appendLine("状态：${profileAnalysisStatus(report.caughtUp, report.stopped)}")
         append(formatProfile(checkNotNull(report.profile)))
     }.trim()
 
@@ -341,8 +379,14 @@ object PluginCommands : CompositeCommand(
                     formatNumber(report.usage.cachedTokens)
         )
         appendLine("群历史覆盖至 ${formatProfileTime(report.cursorTime)}")
-        append("状态：${if (report.caughtUp) "已追平当前快照" else "可继续推进"}")
+        append("状态：${profileAnalysisStatus(report.caughtUp, report.stopped)}")
     }.trim()
+
+    private fun profileAnalysisStatus(caughtUp: Boolean, stopped: Boolean): String = when {
+        caughtUp -> "已追平当前快照"
+        stopped -> "已按请求停止，可继续推进"
+        else -> "可继续推进"
+    }
 
     private fun formatProfileCompactionReport(report: ProfileCompactionReport): String = buildString {
         appendLine(

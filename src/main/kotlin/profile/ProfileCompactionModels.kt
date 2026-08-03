@@ -79,4 +79,6 @@ data class ProfileCompactionReport(
     val skippedOperations: Int,
     val usage: ProfileTokenUsage,
     val profile: UserProfileSnapshot,
+    val alreadyRunning: Boolean = false,
+    val stopped: Boolean = false,
 )

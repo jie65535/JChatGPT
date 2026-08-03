@@ -2,8 +2,6 @@ package top.jie65535.mirai.profile
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
@@ -16,11 +14,26 @@ import java.util.concurrent.ConcurrentHashMap
 object UserProfileAnalysisService {
     private val runningUsers = ConcurrentHashMap.newKeySet<Long>()
     private val runningGroups = ConcurrentHashMap.newKeySet<Long>()
-    private val concurrencyLimiter = Semaphore(1)
+    private val runningCompactions = ConcurrentHashMap.newKeySet<Long>()
+    private val userLocks = ProfileUserLockManager()
+    private val runGate = ProfileAnalysisRunGate()
+
+    fun newRunToken(): ProfileAnalysisRunToken = runGate.newToken()
+
+    fun stopAll(): ProfileAnalysisStopReport {
+        val report = ProfileAnalysisStopReport(
+            userTasks = runningUsers.size,
+            groupTasks = runningGroups.size,
+            compactionTasks = runningCompactions.size,
+        )
+        runGate.stopCurrentRuns()
+        return report
+    }
 
     suspend fun analyze(
         userId: Long,
         maxBatches: Int,
+        runToken: ProfileAnalysisRunToken = newRunToken(),
         onProgress: suspend (ProfileAnalysisProgress) -> Unit = {},
     ): ProfileAnalysisReport {
         require(userId > 0) { "userId 必须是正数" }
@@ -43,65 +56,75 @@ object UserProfileAnalysisService {
         }
 
         try {
-            return concurrencyLimiter.withPermit {
-                analyzeExclusive(userId, maxBatches, onProgress)
+            return userLocks.withUserLocks(listOf(userId)) {
+                analyzeExclusive(userId, maxBatches, runToken, onProgress)
             }
         } finally {
             runningUsers.remove(userId)
         }
     }
 
-    suspend fun compact(userId: Long): ProfileCompactionReport {
+    suspend fun compact(
+        userId: Long,
+        runToken: ProfileAnalysisRunToken = newRunToken(),
+    ): ProfileCompactionReport {
         require(userId > 0) { "userId 必须是正数" }
         check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
 
-        return concurrencyLimiter.withPermit {
+        if (!runningCompactions.add(userId)) {
             val profile = withContext(Dispatchers.IO) { UserProfileStore.load(userId) }
                 ?: throw IllegalArgumentException("用户 $userId 尚无画像")
-            if (profile.items.isEmpty()) {
-                return@withPermit ProfileCompactionReport(
+            return unchangedCompactionReport(profile, alreadyRunning = true)
+        }
+
+        try {
+            return userLocks.withUserLocks(listOf(userId)) locked@{
+                val profile = withContext(Dispatchers.IO) { UserProfileStore.load(userId) }
+                    ?: throw IllegalArgumentException("用户 $userId 尚无画像")
+                if (!runGate.canContinue(runToken)) {
+                    return@locked unchangedCompactionReport(profile, stopped = true)
+                }
+                if (profile.items.isEmpty()) {
+                    return@locked unchangedCompactionReport(profile)
+                }
+
+                val endpoint = checkNotNull(LargeLanguageModels.profile) { "画像分析模型未配置" }
+                val model: ProfileCompactionModel = ProfileModelClient(endpoint)
+                val supportStats = withContext(Dispatchers.IO) { UserProfileStore.loadSupportStats(userId) }
+                val (result, plan) = compactWithRetry(model, profile, supportStats)
+                if (plan.reduction.profile.version != profile.version) {
+                    val batch = compactionBatch(profile, result.rawResponse)
+                    withContext(Dispatchers.IO) {
+                        UserProfileStore.commitCompaction(plan, batch, result.usage)
+                    }
+                    ProfileOperationLogger.log(
+                        context = "source=COMPACTION user=$userId",
+                        reductions = listOf(plan.reduction),
+                    )
+                }
+                ProfileCompactionReport(
                     userId = userId,
                     beforeItems = profile.items.size,
-                    afterItems = profile.items.size,
-                    mergedGroups = 0,
-                    rewrittenItems = 0,
-                    deletedItems = 0,
-                    summaryChanged = false,
-                    skippedOperations = 0,
-                    usage = ProfileTokenUsage(),
-                    profile = profile,
+                    afterItems = plan.reduction.profile.items.size,
+                    mergedGroups = plan.mergedGroups,
+                    rewrittenItems = plan.rewrittenItems,
+                    deletedItems = plan.deletedItems,
+                    summaryChanged = plan.reduction.profile.summary != profile.summary,
+                    skippedOperations = plan.skippedOperations.size,
+                    usage = result.usage,
+                    profile = plan.reduction.profile,
                 )
             }
-
-            val endpoint = checkNotNull(LargeLanguageModels.profile) { "画像分析模型未配置" }
-            val model: ProfileCompactionModel = ProfileModelClient(endpoint)
-            val supportStats = withContext(Dispatchers.IO) { UserProfileStore.loadSupportStats(userId) }
-            val (result, plan) = compactWithRetry(model, profile, supportStats)
-            if (plan.reduction.profile.version != profile.version) {
-                val batch = compactionBatch(profile, result.rawResponse)
-                withContext(Dispatchers.IO) {
-                    UserProfileStore.commitCompaction(plan, batch, result.usage)
-                }
-            }
-            ProfileCompactionReport(
-                userId = userId,
-                beforeItems = profile.items.size,
-                afterItems = plan.reduction.profile.items.size,
-                mergedGroups = plan.mergedGroups,
-                rewrittenItems = plan.rewrittenItems,
-                deletedItems = plan.deletedItems,
-                summaryChanged = plan.reduction.profile.summary != profile.summary,
-                skippedOperations = plan.skippedOperations.size,
-                usage = result.usage,
-                profile = plan.reduction.profile,
-            )
+        } finally {
+            runningCompactions.remove(userId)
         }
     }
 
     suspend fun analyzeGroup(
         groupId: Long,
         maxBatches: Int,
+        runToken: ProfileAnalysisRunToken = newRunToken(),
         onProgress: suspend (GroupProfileAnalysisProgress) -> Unit = {},
     ): GroupProfileAnalysisReport {
         require(groupId > 0) { "groupId 必须是正数" }
@@ -127,9 +150,7 @@ object UserProfileAnalysisService {
         }
 
         try {
-            return concurrencyLimiter.withPermit {
-                analyzeGroupExclusive(groupId, maxBatches, onProgress)
-            }
+            return analyzeGroupExclusive(groupId, maxBatches, runToken, onProgress)
         } finally {
             runningGroups.remove(groupId)
         }
@@ -138,6 +159,7 @@ object UserProfileAnalysisService {
     private suspend fun analyzeExclusive(
         userId: Long,
         maxBatches: Int,
+        runToken: ProfileAnalysisRunToken,
         onProgress: suspend (ProfileAnalysisProgress) -> Unit,
     ): ProfileAnalysisReport {
         val endpoint = checkNotNull(LargeLanguageModels.profile) {
@@ -166,7 +188,7 @@ object UserProfileAnalysisService {
         var totalUsage = ProfileTokenUsage()
         var caughtUp = false
 
-        while (processedBatches < maxBatches) {
+        while (processedBatches < maxBatches && runGate.canContinue(runToken)) {
             val batch = withContext(Dispatchers.IO) {
                 reader.loadNextBatch(
                     userId = userId,
@@ -195,6 +217,10 @@ object UserProfileAnalysisService {
                     source = ProfileRevisionSource.BACKFILL,
                 )
             }
+            ProfileOperationLogger.log(
+                context = "source=BACKFILL batch=[${batch.startTime},${batch.endTime})",
+                reductions = listOf(reduction),
+            )
             profile = reduction.profile
             processedBatches++
             processedMessages += batch.messages.size
@@ -215,6 +241,7 @@ object UserProfileAnalysisService {
         }
 
         if (!caughtUp && profile.cursorTime >= profile.snapshotEndTime) caughtUp = true
+        val stopped = processedBatches < maxBatches && !caughtUp && !runGate.canContinue(runToken)
         return ProfileAnalysisReport(
             userId = userId,
             processedBatches = processedBatches,
@@ -224,12 +251,14 @@ object UserProfileAnalysisService {
             usage = totalUsage,
             profile = withContext(Dispatchers.IO) { UserProfileStore.load(userId) } ?: profile,
             caughtUp = caughtUp,
+            stopped = stopped,
         )
     }
 
     private suspend fun analyzeGroupExclusive(
         groupId: Long,
         maxBatches: Int,
+        runToken: ProfileAnalysisRunToken,
         onProgress: suspend (GroupProfileAnalysisProgress) -> Unit,
     ): GroupProfileAnalysisReport {
         val reader = withContext(Dispatchers.IO) { ProfileHistoryReader(resolveHistoryFile()) }
@@ -259,7 +288,7 @@ object UserProfileAnalysisService {
         var totalUsage = ProfileTokenUsage()
         var caughtUp = cursor.cursorTime >= cursor.snapshotEndTime
 
-        while (processedBatches < maxBatches && !caughtUp) {
+        while (processedBatches < maxBatches && !caughtUp && runGate.canContinue(runToken)) {
             val batch = withContext(Dispatchers.IO) {
                 reader.loadNextConversationBatch(
                     botId = cursor.botId,
@@ -287,6 +316,7 @@ object UserProfileAnalysisService {
                 retryMax = PluginConfig.profileRetryMax,
                 summaryMaxLength = PluginConfig.profileSummaryMaxLength,
                 onRetryFailure = { message, cause -> JChatGPT.logger.warning(message, cause) },
+                onCommittedOperations = ProfileOperationLogger::log,
             )
             cursor = cursor.copy(
                 cursorTime = batch.endTime,
@@ -328,6 +358,7 @@ object UserProfileAnalysisService {
             cursorTime = cursor.cursorTime,
             snapshotEndTime = cursor.snapshotEndTime,
             caughtUp = caughtUp,
+            stopped = processedBatches < maxBatches && !caughtUp && !runGate.canContinue(runToken),
         )
     }
 
@@ -342,29 +373,28 @@ object UserProfileAnalysisService {
         check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
 
-        return concurrencyLimiter.withPermit {
-            val endpoint = checkNotNull(LargeLanguageModels.profile) { "画像分析模型未配置" }
-            val model: ConversationProfileModel = ProfileModelClient(endpoint)
-            val reader = withContext(Dispatchers.IO) { ProfileHistoryReader(resolveLiveHistoryFile()) }
-            val batch = withContext(Dispatchers.IO) {
-                reader.loadConversationBatch(
-                    botId = botId,
-                    groupId = groupId,
-                    startTime = startTime,
-                    endTime = endTime,
-                    messageLimit = PluginConfig.profileAutoConversationMessageLimit.coerceIn(20, 500),
-                    maxMessageChars = PluginConfig.profileMaxMessageChars.coerceAtLeast(80),
-                )
-            } ?: return@withPermit null
-            analyzeConversationBatch(
-                batch = batch,
-                minAuthoredTextChars = minAuthoredTextChars,
-                model = model,
-                retryMax = PluginConfig.profileRetryMax,
-                summaryMaxLength = PluginConfig.profileSummaryMaxLength,
-                onRetryFailure = { message, cause -> JChatGPT.logger.warning(message, cause) },
+        val endpoint = checkNotNull(LargeLanguageModels.profile) { "画像分析模型未配置" }
+        val model: ConversationProfileModel = ProfileModelClient(endpoint)
+        val reader = withContext(Dispatchers.IO) { ProfileHistoryReader(resolveLiveHistoryFile()) }
+        val batch = withContext(Dispatchers.IO) {
+            reader.loadConversationBatch(
+                botId = botId,
+                groupId = groupId,
+                startTime = startTime,
+                endTime = endTime,
+                messageLimit = PluginConfig.profileAutoConversationMessageLimit.coerceIn(20, 500),
+                maxMessageChars = PluginConfig.profileMaxMessageChars.coerceAtLeast(80),
             )
-        }
+        } ?: return null
+        return analyzeConversationBatch(
+            batch = batch,
+            minAuthoredTextChars = minAuthoredTextChars,
+            model = model,
+            retryMax = PluginConfig.profileRetryMax,
+            summaryMaxLength = PluginConfig.profileSummaryMaxLength,
+            onRetryFailure = { message, cause -> JChatGPT.logger.warning(message, cause) },
+            onCommittedOperations = ProfileOperationLogger::log,
+        )
     }
 
     internal suspend fun analyzeConversationBatch(
@@ -374,47 +404,55 @@ object UserProfileAnalysisService {
         retryMax: Int,
         summaryMaxLength: Int,
         onRetryFailure: (String, Throwable) -> Unit = { _, _ -> },
+        onCommittedOperations: (String, Collection<ProfileReduction>) -> Unit = { _, _ -> },
     ): ConversationProfileAnalysisReport? {
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
         val eligibleUserIds = batch.authoredTextCharsByUser
             .filterValues { it >= minAuthoredTextChars.coerceAtLeast(1) }
             .keys
         if (eligibleUserIds.isEmpty()) return null
-        if (withContext(Dispatchers.IO) { UserProfileStore.isConversationProcessed(batch.inputHash) }) {
-            return null
-        }
-        val profiles = withContext(Dispatchers.IO) {
-            eligibleUserIds.associateWith { userId ->
-                UserProfileStore.load(userId) ?: UserProfileSnapshot(
-                    userId = userId,
-                    cursorTime = 0,
-                    snapshotEndTime = 0,
+        return userLocks.withUserLocks(eligibleUserIds) locked@{
+            if (withContext(Dispatchers.IO) { UserProfileStore.isConversationProcessed(batch.inputHash) }) {
+                return@locked null
+            }
+            val profiles = withContext(Dispatchers.IO) {
+                eligibleUserIds.associateWith { userId ->
+                    UserProfileStore.load(userId) ?: UserProfileSnapshot(
+                        userId = userId,
+                        cursorTime = 0,
+                        snapshotEndTime = 0,
+                    )
+                }
+            }
+
+            val (result, reductions) = analyzeConversationWithRetry(
+                model = model,
+                profiles = profiles,
+                batch = batch,
+                eligibleUserIds = eligibleUserIds,
+                retryMax = retryMax,
+                summaryMaxLength = summaryMaxLength,
+                onRetryFailure = onRetryFailure,
+            )
+            withContext(Dispatchers.IO) {
+                UserProfileStore.commitConversation(
+                    reductions = reductions.map { reduction -> reduction to batch.forUser(reduction.profile.userId) },
+                    usage = result.usage,
                 )
             }
-        }
-
-        val (result, reductions) = analyzeConversationWithRetry(
-            model = model,
-            profiles = profiles,
-            batch = batch,
-            eligibleUserIds = eligibleUserIds,
-            retryMax = retryMax,
-            summaryMaxLength = summaryMaxLength,
-            onRetryFailure = onRetryFailure,
-        )
-        withContext(Dispatchers.IO) {
-            UserProfileStore.commitConversation(
-                reductions = reductions.map { reduction -> reduction to batch.forUser(reduction.profile.userId) },
+            onCommittedOperations(
+                "source=CONVERSATION bot=${batch.botId} group=${batch.groupId} " +
+                        "batch=[${batch.startTime},${batch.endTime})",
+                reductions,
+            )
+            ConversationProfileAnalysisReport(
+                analyzedUsers = eligibleUserIds.size,
+                processedMessages = batch.messages.size,
+                appliedOperations = reductions.sumOf { it.operations.size },
+                skippedOperations = reductions.sumOf { it.skippedOperations.size },
                 usage = result.usage,
             )
         }
-        return ConversationProfileAnalysisReport(
-            analyzedUsers = eligibleUserIds.size,
-            processedMessages = batch.messages.size,
-            appliedOperations = reductions.sumOf { it.operations.size },
-            skippedOperations = reductions.sumOf { it.skippedOperations.size },
-            usage = result.usage,
-        )
     }
 
     private suspend fun analyzeConversationWithRetry(
@@ -584,6 +622,25 @@ object UserProfileAnalysisService {
         cursorTime = 0,
         snapshotEndTime = 0,
         caughtUp = true,
+    )
+
+    private fun unchangedCompactionReport(
+        profile: UserProfileSnapshot,
+        alreadyRunning: Boolean = false,
+        stopped: Boolean = false,
+    ) = ProfileCompactionReport(
+        userId = profile.userId,
+        beforeItems = profile.items.size,
+        afterItems = profile.items.size,
+        mergedGroups = 0,
+        rewrittenItems = 0,
+        deletedItems = 0,
+        summaryChanged = false,
+        skippedOperations = 0,
+        usage = ProfileTokenUsage(),
+        profile = profile,
+        alreadyRunning = alreadyRunning,
+        stopped = stopped,
     )
 
     private operator fun ProfileTokenUsage.plus(other: ProfileTokenUsage) = ProfileTokenUsage(

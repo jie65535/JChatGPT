@@ -210,6 +210,7 @@ class UserProfileStoreTest {
 
             assertNotNull(UserProfileStore.load(100))
             assertNotNull(UserProfileStore.load(200))
+            assertEquals(listOf(100L, 200L), UserProfileStore.listUserIds())
             assertTrue(UserProfileStore.isConversationProcessed("shared-conversation-hash"))
             val database = directory.resolve("user-profile.sqlite")
             DriverManager.getConnection("jdbc:sqlite:${database.toAbsolutePath()}").use { connection ->

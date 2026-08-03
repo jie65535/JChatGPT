@@ -1,10 +1,16 @@
 package top.jie65535.mirai.profile
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import net.mamoe.mirai.message.data.MessageSourceKind
 import top.jie65535.mirai.data.ChatMessageRecord
 import java.io.IOException
 import java.nio.file.Files
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -88,6 +94,69 @@ class UserProfileAnalysisServiceTest {
         assertFalse(UserProfileStore.isConversationProcessed(INPUT_HASH))
     }
 
+    @Test
+    fun analyzesDisjointGroupsConcurrently() = withProfileStore {
+        val entered = AtomicInteger()
+        val bothEntered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        fun concurrentModel(content: String) = InspectingConversationProfileModel {
+            if (entered.incrementAndGet() == 2) bothEntered.complete(Unit)
+            release.await()
+            result(responseFor("U1", content, evidenceRef = 1))
+        }
+
+        coroutineScope {
+            val first = async {
+                analyze(singleUserBatch(USER_A, 10, "parallel-a"), concurrentModel("用户 A 的信息"))
+            }
+            val second = async {
+                analyze(singleUserBatch(USER_B, 20, "parallel-b"), concurrentModel("用户 B 的信息"))
+            }
+            withTimeout(1_000) { bothEntered.await() }
+            release.complete(Unit)
+            assertNotNull(first.await())
+            assertNotNull(second.await())
+        }
+    }
+
+    @Test
+    fun sharedUserBatchWaitsAndLoadsLatestCommittedProfile() = withProfileStore {
+        val firstEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val secondStarted = CompletableDeferred<Unit>()
+        val secondEntered = CompletableDeferred<Unit>()
+        val firstModel = InspectingConversationProfileModel { profiles ->
+            assertEquals(0, profiles.getValue(USER_A).version)
+            firstEntered.complete(Unit)
+            releaseFirst.await()
+            result(responseFor("U1", "第一群归纳的信息", evidenceRef = 1))
+        }
+        val secondModel = InspectingConversationProfileModel { profiles ->
+            assertEquals(1, profiles.getValue(USER_A).version)
+            secondEntered.complete(Unit)
+            result(responseFor("U1", "第二群归纳的信息", evidenceRef = 1))
+        }
+
+        coroutineScope {
+            val first = async { analyze(singleUserBatch(USER_A, 10, "shared-a"), firstModel) }
+            firstEntered.await()
+            val second = async {
+                secondStarted.complete(Unit)
+                analyze(singleUserBatch(USER_A, 20, "shared-b"), secondModel)
+            }
+            secondStarted.await()
+            assertNull(withTimeoutOrNull(100) { secondEntered.await() })
+            releaseFirst.complete(Unit)
+            assertNotNull(first.await())
+            withTimeout(1_000) { secondEntered.await() }
+            assertNotNull(second.await())
+        }
+
+        val profile = assertNotNull(UserProfileStore.load(USER_A))
+        assertEquals(2, profile.version)
+        assertEquals(2, profile.items.size)
+    }
+
     private suspend fun analyze(
         batch: ConversationProfileBatch,
         model: ConversationProfileModel,
@@ -145,11 +214,25 @@ class UserProfileAnalysisServiceTest {
         inputHash = INPUT_HASH,
     )
 
-    private fun message(ref: Int, fromId: Long, text: String) = ProfilePromptMessage(
+    private fun singleUserBatch(
+        userId: Long,
+        groupId: Long,
+        inputHash: String,
+    ) = ConversationProfileBatch(
+        botId = BOT,
+        groupId = groupId,
+        startTime = 100,
+        endTime = 200,
+        messages = listOf(message(1, userId, "用于并发画像测试的信息", groupId)),
+        aliases = mapOf(BOT to "BOT", userId to "U1"),
+        inputHash = inputHash,
+    )
+
+    private fun message(ref: Int, fromId: Long, text: String, groupId: Long = GROUP) = ProfilePromptMessage(
         record = ChatMessageRecord(
             botId = BOT,
             fromId = fromId,
-            targetId = GROUP,
+            targetId = groupId,
             ids = null,
             internalIds = null,
             time = 120 + ref,
@@ -188,6 +271,18 @@ class UserProfileAnalysisServiceTest {
             calls++
             return behavior()
         }
+    }
+
+    private class InspectingConversationProfileModel(
+        private val behavior: suspend (Map<Long, UserProfileSnapshot>) -> ConversationProfileModelResult,
+    ) : ConversationProfileModel {
+        override val modelName: String = "inspecting-profile-model"
+
+        override suspend fun analyzeConversation(
+            profiles: Map<Long, UserProfileSnapshot>,
+            batch: ConversationProfileBatch,
+            eligibleUserIds: Set<Long>,
+        ): ConversationProfileModelResult = behavior(profiles)
     }
 
     companion object {

@@ -57,10 +57,11 @@ AI 可以自动调用多种工具来完成复杂任务：
 
 ### 渐进式历史画像（实验）
 - 日常使用无需画像命令：群聊缓存会话闭合后，一次模型调用会静默归纳其中所有有实质发言的参与者
-- `/jgpt profileAnalyze <userId> [batches]` - 手动推进指定用户画像，默认1批
-- `/jgpt profileAnalyzeGroup <groupId> [batches]` - 按群历史批量推进参与者画像，默认1批
-- `/jgpt profileShow <userId>` - 诊断或验收时查看已经提交的完整画像和覆盖时间
-- `/jgpt profileCompact <userId>` - 独立反思并压缩指定用户的重复、过细或低价值画像条目
+- `/jgpt profileAnalyze <userIds> [batches]` - 分析用户画像，多个 ID 用逗号分隔
+- `/jgpt profileAnalyzeGroup <groupIds> [batches]` - 分析群画像，多个 ID 用逗号分隔
+- `/jgpt profileShow <userId>` - 查看用户画像
+- `/jgpt profileCompact [userIds]` - 压缩画像，不传 ID 时处理全部用户
+- `/jgpt profileStop` - 当前批次完成后停止画像任务
 
 ## 配置文件
 
@@ -238,6 +239,8 @@ searchHistoryMaxRecords: 5000
 
 好友昵称、群名片、群角色、签名、年龄等联系人公开资料只作为人物识别提示，不直接视为画像证据。画像模型
 仍必须依据对应用户本人在聊天历史中的发言，才能新增或确认长期画像条目。
+
+画像发生变更时，日志会输出 `PROFILE_OPERATIONS` 供抽查。
 
 画像结果保存在插件数据目录的 `user-profile.sqlite`，不会覆盖现有好感度或旧印象数据。实验时可把历史
 备份配置为只读来源，例如：

@@ -261,6 +261,7 @@ data class GroupProfileAnalysisReport(
     val snapshotEndTime: Int,
     val caughtUp: Boolean,
     val alreadyRunning: Boolean = false,
+    val stopped: Boolean = false,
 )
 
 data class ProfileAnalysisReport(
@@ -273,4 +274,5 @@ data class ProfileAnalysisReport(
     val profile: UserProfileSnapshot?,
     val caughtUp: Boolean,
     val alreadyRunning: Boolean = false,
+    val stopped: Boolean = false,
 )
