@@ -138,6 +138,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("备用接入点冷却时间（分钟）。某接入点失败后在此时间内会被排到重试队尾，避免每条消息都先卡在故障接入点上。设为0禁用，默认5分钟")
     val fallbackCooldownMinutes: Long by value(5L)
 
+    @ValueDescription("失败后首次重试的基础退避时间（毫秒），后续按指数增长并加入抖动。设为0禁用退避，最大60000")
+    val retryBackoffBaseMillis: Long by value(1000L)
+
+    @ValueDescription("失败重试的最大退避时间（毫秒）。设为0禁用退避，最大60000")
+    val retryBackoffMaxMillis: Long by value(10000L)
+
     @ValueDescription("推理模型额外请求体JSON，会合并到请求体中。例如DeepSeek启用思维: {\"thinking\": {\"type\": \"enabled\"}}")
     val reasoningModelExtraBody: String by value("")
 

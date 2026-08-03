@@ -25,6 +25,7 @@ import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
 import top.jie65535.mirai.llm.LargeLanguageModels
+import top.jie65535.mirai.util.RetryBackoff
 import java.net.URI
 
 class VisualAgent : BaseAgent(
@@ -118,6 +119,7 @@ class VisualAgent : BaseAgent(
             val messageContent = buildMessageContent(imageGroups, prompt)
 
             val maxAttempts = PluginConfig.visualRetryMax.coerceIn(1, 3)
+            val retryBackoff = RetryBackoff.fromConfig()
             var lastError: Throwable? = null
             repeat(maxAttempts) { attempt ->
                 try {
@@ -150,11 +152,12 @@ class VisualAgent : BaseAgent(
                     if (!isRetryable(e)) throw e
                     lastError = e
                     if (attempt + 1 < maxAttempts) {
+                        val retryDelayMillis = retryBackoff.delayMillis(attempt + 1)
                         JChatGPT.logger.warning(
-                            "视觉模型调用失败，将进行第 ${attempt + 2}/$maxAttempts 次尝试",
+                            "视觉模型调用失败，将在 ${retryDelayMillis}ms 后进行第 ${attempt + 2}/$maxAttempts 次尝试",
                             e
                         )
-                        delay(RETRY_BASE_DELAY_MILLIS * (attempt + 1L))
+                        if (retryDelayMillis > 0) delay(retryDelayMillis)
                     }
                 }
             }
@@ -165,7 +168,6 @@ class VisualAgent : BaseAgent(
 
     companion object {
         private const val VISUAL_MAX_CONCURRENCY = 2
-        private const val RETRY_BASE_DELAY_MILLIS = 800L
         private const val MAX_SOURCE_IMAGES = 16
         private const val MAX_MODEL_IMAGES = 32
         private const val MAX_TOTAL_PAYLOAD_CHARS = 48_000_000

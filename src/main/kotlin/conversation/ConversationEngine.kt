@@ -8,6 +8,7 @@ import com.aallam.openai.api.chat.ToolCall
 import com.aallam.openai.api.core.Usage
 import com.aallam.openai.api.model.ModelId
 import io.ktor.util.collections.ConcurrentSet
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -46,6 +47,7 @@ import top.jie65535.mirai.tools.VisitWeb
 import top.jie65535.mirai.tools.VisualAgent
 import top.jie65535.mirai.tools.WeatherService
 import top.jie65535.mirai.tools.WebSearch
+import top.jie65535.mirai.util.RetryBackoff
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import kotlin.math.max
@@ -128,6 +130,8 @@ internal object ConversationEngine {
             var endpointIndex = 0
             var done: Boolean
             var retry = max(PluginConfig.retryMax, 3)
+            val retryBackoff = RetryBackoff.fromConfig()
+            var consecutiveFailures = 0
             do {
                 val endpoint = endpoints[min(endpointIndex, endpoints.lastIndex)]
                 var streamingOk = false
@@ -183,6 +187,7 @@ internal object ConversationEngine {
 
                     streamingOk = true
                     LargeLanguageModels.reportSuccess(endpoint)
+                    consecutiveFailures = 0
                     val answer = responseContent?.replace(thinkRegex, "")?.trim()
                     JChatGPT.logger.info("LLM Response: $answer")
                     history += ChatMessage(
@@ -217,24 +222,34 @@ internal object ConversationEngine {
                         }
                     }
                 } catch (cause: Exception) {
-                    if (!streamingOk) {
+                    if (cause is CancellationException) throw cause
+                    val failureMessage = if (!streamingOk) {
                         LargeLanguageModels.reportFailure(endpoint)
                         if (endpointIndex < endpoints.lastIndex) {
                             endpointIndex++
-                            JChatGPT.logger.warning(
-                                "接入点[${endpoint.label}]调用失败，切换备用接入点[${endpoints[endpointIndex].label}]重试",
-                                cause,
-                            )
+                            "接入点[${endpoint.label}]调用失败，将切换备用接入点[${endpoints[endpointIndex].label}]"
                         } else {
-                            JChatGPT.logger.warning("接入点[${endpoint.label}]调用失败，无更多备用接入点，重试中", cause)
+                            "接入点[${endpoint.label}]调用失败，无更多备用接入点"
                         }
                     } else {
-                        JChatGPT.logger.warning("调用llm后处理时发生异常，重试中", cause)
+                        "调用llm后处理时发生异常"
                     }
-                    if (retry <= 1) throw cause
+                    if (retry <= 1) {
+                        JChatGPT.logger.warning("$failureMessage，已无剩余尝试", cause)
+                        throw cause
+                    }
+                    consecutiveFailures++
+                    val retryDelayMillis = retryBackoff.delayMillis(consecutiveFailures)
+                    JChatGPT.logger.warning(
+                        "$failureMessage，将在 ${retryDelayMillis}ms 后重试",
+                        cause,
+                    )
+                    if (retryDelayMillis > 0) delay(retryDelayMillis)
                     done = false
                 }
             } while (!done && 0 < --retry)
+        } catch (cause: CancellationException) {
+            throw cause
         } catch (cause: Throwable) {
             JChatGPT.logger.warning(cause)
             event.subject.sendMessage("很抱歉，发生异常，请稍后重试")

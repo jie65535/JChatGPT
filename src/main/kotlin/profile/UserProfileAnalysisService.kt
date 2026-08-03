@@ -2,11 +2,13 @@ package top.jie65535.mirai.profile
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
 import top.jie65535.mirai.data.ChatHistoryStore
 import top.jie65535.mirai.llm.LargeLanguageModels
+import top.jie65535.mirai.util.RetryBackoff
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -465,6 +467,7 @@ object UserProfileAnalysisService {
         onRetryFailure: (String, Throwable) -> Unit,
     ): Pair<ConversationProfileModelResult, List<ProfileReduction>> {
         val attempts = retryMax.coerceIn(0, 3) + 1
+        val retryBackoff = RetryBackoff.fromConfig()
         var lastFailure: Throwable? = null
         repeat(attempts) { attempt ->
             try {
@@ -482,10 +485,14 @@ object UserProfileAnalysisService {
             } catch (cause: Exception) {
                 if (cause is CancellationException) throw cause
                 lastFailure = cause
-                onRetryFailure(
-                    "群 ${batch.groupId} 会话画像 [${batch.startTime}, ${batch.endTime}) " +
+                handleRetryFailure(
+                    attempt = attempt,
+                    attempts = attempts,
+                    message = "群 ${batch.groupId} 会话画像 [${batch.startTime}, ${batch.endTime}) " +
                             "第 ${attempt + 1}/$attempts 次分析失败",
-                    cause,
+                    cause = cause,
+                    retryBackoff = retryBackoff,
+                    logFailure = onRetryFailure,
                 )
             }
         }
@@ -502,6 +509,7 @@ object UserProfileAnalysisService {
         advanceBackfillCursor: Boolean = true,
     ): Pair<ProfileModelResult, ProfileReduction> {
         val attempts = PluginConfig.profileRetryMax.coerceIn(0, 3) + 1
+        val retryBackoff = RetryBackoff.fromConfig()
         var lastFailure: Throwable? = null
         repeat(attempts) { attempt ->
             try {
@@ -523,10 +531,14 @@ object UserProfileAnalysisService {
             } catch (cause: Exception) {
                 if (cause is CancellationException) throw cause
                 lastFailure = cause
-                JChatGPT.logger.warning(
-                    "用户 ${batch.userId} 画像批次 [${batch.startTime}, ${batch.endTime}) " +
+                handleRetryFailure(
+                    attempt = attempt,
+                    attempts = attempts,
+                    message = "用户 ${batch.userId} 画像批次 [${batch.startTime}, ${batch.endTime}) " +
                             "第 ${attempt + 1}/$attempts 次分析失败",
-                    cause,
+                    cause = cause,
+                    retryBackoff = retryBackoff,
+                    logFailure = JChatGPT.logger::warning,
                 )
             }
         }
@@ -542,6 +554,7 @@ object UserProfileAnalysisService {
         supportStats: Map<String, ProfileItemSupportStats>,
     ): Pair<ProfileCompactionModelResult, ProfileCompactionPlan> {
         val attempts = PluginConfig.profileRetryMax.coerceIn(0, 3) + 1
+        val retryBackoff = RetryBackoff.fromConfig()
         var lastFailure: Throwable? = null
         repeat(attempts) { attempt ->
             try {
@@ -558,9 +571,13 @@ object UserProfileAnalysisService {
             } catch (cause: Exception) {
                 if (cause is CancellationException) throw cause
                 lastFailure = cause
-                JChatGPT.logger.warning(
-                    "用户 ${profile.userId} 画像压缩第 ${attempt + 1}/$attempts 次失败",
-                    cause,
+                handleRetryFailure(
+                    attempt = attempt,
+                    attempts = attempts,
+                    message = "用户 ${profile.userId} 画像压缩第 ${attempt + 1}/$attempts 次失败",
+                    cause = cause,
+                    retryBackoff = retryBackoff,
+                    logFailure = JChatGPT.logger::warning,
                 )
             }
         }
@@ -568,6 +585,23 @@ object UserProfileAnalysisService {
             "用户 ${profile.userId} 画像压缩连续 $attempts 次失败，未提交任何结果",
             lastFailure,
         )
+    }
+
+    private suspend fun handleRetryFailure(
+        attempt: Int,
+        attempts: Int,
+        message: String,
+        cause: Throwable,
+        retryBackoff: RetryBackoff,
+        logFailure: (String, Throwable) -> Unit,
+    ) {
+        if (attempt + 1 >= attempts) {
+            logFailure("$message，已无剩余尝试", cause)
+            return
+        }
+        val retryDelayMillis = retryBackoff.delayMillis(attempt + 1)
+        logFailure("$message，将在 ${retryDelayMillis}ms 后重试", cause)
+        if (retryDelayMillis > 0) delay(retryDelayMillis)
     }
 
     private fun compactionBatch(profile: UserProfileSnapshot, rawResponse: String): ProfileHistoryBatch {
