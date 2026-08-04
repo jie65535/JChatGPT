@@ -9,7 +9,16 @@ import java.io.File
 import java.security.MessageDigest
 import java.sql.Connection
 import java.sql.DriverManager
+import java.sql.PreparedStatement
 import java.sql.ResultSet
+
+internal object ProfileConversationWindowDefaults {
+    const val IDLE_GAP_SECONDS = 20 * 60
+    const val TARGET_CONTENT_CHARS = 30_000
+    const val MAX_MESSAGES = 800
+    const val MAX_CONTENT_CHARS = 70_000
+    const val MAX_PACKED_SPAN_SECONDS = 24 * 60 * 60
+}
 
 class ProfileHistoryReader(private val databaseFile: File) {
     data class TimeBounds(val startTime: Int, val endTime: Int)
@@ -77,30 +86,95 @@ class ProfileHistoryReader(private val databaseFile: File) {
     }
 
     fun listGroupTimeBounds(): List<GroupTimeBounds> = openReadConnection().use { connection ->
-        connection.prepareStatement(
+        val pairs = connection.prepareStatement(
             """
-            SELECT bot_id, target_id, MIN(time) AS min_time, MAX(time) AS max_time
+            SELECT bot_id, target_id
             FROM message_record
-            WHERE kind = ? AND recalled = 0 AND target_id > 0
+            WHERE kind = ? AND target_id > 0
             GROUP BY bot_id, target_id
-            ORDER BY max_time DESC, target_id ASC, bot_id ASC
             """.trimIndent()
         ).use { statement ->
             statement.setInt(1, MessageSourceKind.GROUP.ordinal)
             statement.executeQuery().use { results ->
-                val seenGroupIds = hashSetOf<Long>()
                 buildList {
                     while (results.next()) {
-                        val groupId = results.getLong("target_id")
-                        if (!seenGroupIds.add(groupId)) continue
-                        add(
-                            GroupTimeBounds(
-                                botId = results.getLong("bot_id"),
-                                groupId = groupId,
-                                startTime = results.getInt("min_time"),
-                                endTime = results.getInt("max_time").safeNextSecond(),
-                            )
-                        )
+                        add(results.getLong("bot_id") to results.getLong("target_id"))
+                    }
+                }
+            }
+        }
+
+        val selectedByGroup = hashMapOf<Long, GroupTimeBounds>()
+        connection.prepareStatement(GROUP_ENDPOINT_TIME_SQL.format("ASC", "ASC")).use { earliest ->
+            connection.prepareStatement(GROUP_ENDPOINT_TIME_SQL.format("DESC", "DESC")).use { latest ->
+                pairs.forEach { (botId, groupId) ->
+                    val startTime = queryGroupEndpointTime(earliest, botId, groupId) ?: return@forEach
+                    val endTime = queryGroupEndpointTime(latest, botId, groupId)?.safeNextSecond()
+                        ?: return@forEach
+                    val candidate = GroupTimeBounds(
+                        botId = botId,
+                        groupId = groupId,
+                        startTime = startTime,
+                        endTime = endTime,
+                    )
+                    val current = selectedByGroup[groupId]
+                    if (current == null ||
+                        candidate.endTime > current.endTime ||
+                        (candidate.endTime == current.endTime && candidate.botId < current.botId)
+                    ) {
+                        selectedByGroup[groupId] = candidate
+                    }
+                }
+            }
+        }
+        selectedByGroup.values.sortedWith(
+            compareByDescending<GroupTimeBounds> { it.endTime }
+                .thenBy { it.groupId }
+                .thenBy { it.botId }
+        )
+    }
+
+    private fun queryGroupEndpointTime(
+        statement: PreparedStatement,
+        botId: Long,
+        groupId: Long,
+    ): Int? {
+        statement.setLong(1, botId)
+        statement.setInt(2, MessageSourceKind.GROUP.ordinal)
+        statement.setLong(3, groupId)
+        return statement.executeQuery().use { results ->
+            if (results.next()) results.getInt("time") else null
+        }
+    }
+
+    fun filterGroupRangesByMinimumMessageCount(
+        ranges: List<GroupTimeBounds>,
+        minimumMessages: Int,
+    ): List<GroupTimeBounds> {
+        if (ranges.isEmpty()) return emptyList()
+        val requiredMessages = minimumMessages.coerceAtLeast(1)
+        return openReadConnection().use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT 1
+                FROM message_record
+                WHERE bot_id = ? AND target_id = ? AND kind = ? AND recalled = 0
+                  AND time >= ? AND time < ?
+                ORDER BY time ASC, id ASC
+                LIMIT ?
+                """.trimIndent()
+            ).use { statement ->
+                ranges.filter { range ->
+                    statement.setLong(1, range.botId)
+                    statement.setLong(2, range.groupId)
+                    statement.setInt(3, MessageSourceKind.GROUP.ordinal)
+                    statement.setInt(4, range.startTime)
+                    statement.setInt(5, range.endTime)
+                    statement.setInt(6, requiredMessages)
+                    statement.executeQuery().use { results ->
+                        var messages = 0
+                        while (messages < requiredMessages && results.next()) messages++
+                        messages >= requiredMessages
                     }
                 }
             }
@@ -230,9 +304,18 @@ class ProfileHistoryReader(private val databaseFile: File) {
         snapshotEndTime: Int,
         messageLimit: Int,
         maxMessageChars: Int,
+        idleGapSeconds: Int = ProfileConversationWindowDefaults.IDLE_GAP_SECONDS,
+        targetContentChars: Int = ProfileConversationWindowDefaults.TARGET_CONTENT_CHARS,
+        maxMessages: Int = ProfileConversationWindowDefaults.MAX_MESSAGES,
+        maxContentChars: Int = ProfileConversationWindowDefaults.MAX_CONTENT_CHARS,
+        maxPackedSpanSeconds: Int = ProfileConversationWindowDefaults.MAX_PACKED_SPAN_SECONDS,
     ): ConversationProfileBatch? {
         require(startTime <= snapshotEndTime) { "startTime must not be after snapshotEndTime" }
         if (startTime == snapshotEndTime) return null
+        val targetMessages = messageLimit.coerceAtLeast(1)
+        val adaptiveGap = idleGapSeconds.coerceAtLeast(0)
+        val hardMessageLimit = maxMessages.coerceAtLeast(targetMessages)
+        val adaptiveWindow = adaptiveGap > 0
         return openReadConnection().use { connection ->
             val firstPage = queryOldestConversationMessages(
                 connection = connection,
@@ -240,11 +323,24 @@ class ProfileHistoryReader(private val databaseFile: File) {
                 groupId = groupId,
                 startTime = startTime,
                 endTime = snapshotEndTime,
-                limit = messageLimit.coerceAtLeast(1),
+                limit = if (adaptiveWindow) hardMessageLimit.safeIncrement() else targetMessages,
             )
             if (firstPage.isEmpty()) return@use null
 
-            val endTime = firstPage.last().time.safeNextSecond()
+            val endTime = if (adaptiveWindow) {
+                selectConversationWindowEndTime(
+                    records = firstPage,
+                    idleGapSeconds = adaptiveGap,
+                    targetMessages = targetMessages,
+                    targetContentChars = targetContentChars.coerceAtLeast(1),
+                    maxMessages = hardMessageLimit,
+                    maxContentChars = maxContentChars.coerceAtLeast(targetContentChars.coerceAtLeast(1)),
+                    maxPackedSpanSeconds = maxPackedSpanSeconds.coerceAtLeast(1),
+                    maxMessageChars = maxMessageChars,
+                )
+            } else {
+                firstPage.last().time.safeNextSecond()
+            }
             val records = queryOldestConversationMessages(
                 connection = connection,
                 botId = botId,
@@ -253,9 +349,57 @@ class ProfileHistoryReader(private val databaseFile: File) {
                 endTime = endTime,
                 limit = Int.MAX_VALUE,
             )
-            createConversationBatch(botId, groupId, startTime, endTime, records, maxMessageChars)
+            createConversationBatch(
+                botId = botId,
+                groupId = groupId,
+                startTime = startTime,
+                endTime = endTime,
+                records = records,
+                maxMessageChars = maxMessageChars,
+                episodeGapSeconds = adaptiveGap.takeIf { adaptiveWindow },
+            )
         }
     }
+
+    private fun selectConversationWindowEndTime(
+        records: List<ChatMessageRecord>,
+        idleGapSeconds: Int,
+        targetMessages: Int,
+        targetContentChars: Int,
+        maxMessages: Int,
+        maxContentChars: Int,
+        maxPackedSpanSeconds: Int,
+        maxMessageChars: Int,
+    ): Int {
+        var selectedMessages = 0
+        var selectedChars = 0L
+        val targetContentLimit = targetContentChars.toLong()
+        val hardContentLimit = maxContentChars.toLong().coerceAtLeast(targetContentLimit)
+        val firstTime = records.first().time
+        var previousTime = firstTime
+
+        records.forEachIndexed { index, record ->
+            val timeBoundary = index > 0 && record.time != previousTime
+            if (timeBoundary && selectedMessages > 0) {
+                val startsNewEpisode = record.time - previousTime > idleGapSeconds
+                val nextChars = estimatePromptChars(record, maxMessageChars)
+                val exceedsHardSize = selectedMessages >= maxMessages || selectedChars + nextChars > hardContentLimit
+                val exceedsPackedSpan = startsNewEpisode && record.time - firstTime > maxPackedSpanSeconds
+                val reachedTargetAtEpisodeBoundary = startsNewEpisode &&
+                        (selectedMessages >= targetMessages || selectedChars >= targetContentLimit)
+                if (exceedsHardSize || exceedsPackedSpan || reachedTargetAtEpisodeBoundary) {
+                    return records[index - 1].time.safeNextSecond()
+                }
+            }
+            selectedMessages++
+            selectedChars += estimatePromptChars(record, maxMessageChars)
+            previousTime = record.time
+        }
+        return records.last().time.safeNextSecond()
+    }
+
+    private fun estimatePromptChars(record: ChatMessageRecord, maxMessageChars: Int): Int =
+        record.code.length.coerceAtMost(maxMessageChars.coerceAtLeast(80))
 
     private fun queryTargetMessages(
         connection: Connection,
@@ -352,6 +496,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
         endTime: Int,
         records: List<ChatMessageRecord>,
         maxMessageChars: Int,
+        episodeGapSeconds: Int? = null,
     ): ConversationProfileBatch {
         val participantIds = buildSet {
             add(botId)
@@ -367,12 +512,19 @@ class ProfileHistoryReader(private val databaseFile: File) {
                 .sorted()
                 .forEachIndexed { index, participantId -> put(participantId, "U${index + 1}") }
         }
+        var episodeIndex = 1
+        var previousTime: Int? = null
         val promptMessages = records.mapIndexed { index, record ->
+            val lastTime = previousTime
+            if (episodeGapSeconds != null && lastTime != null && record.time - lastTime > episodeGapSeconds) {
+                episodeIndex++
+            }
+            previousTime = record.time
             ProfilePromptMessage(
                 record = record,
                 text = ProfileMessageRenderer.render(record, aliases, maxMessageChars.coerceAtLeast(80)),
                 evidenceRef = index + 1,
-                episodeIndex = 1,
+                episodeIndex = episodeIndex,
             )
         }
         return ConversationProfileBatch(
@@ -655,4 +807,16 @@ class ProfileHistoryReader(private val databaseFile: File) {
         .joinToString("") { byte -> "%02x".format(byte) }
 
     private fun Int.safeNextSecond(): Int = if (this == Int.MAX_VALUE) this else this + 1
+
+    private fun Int.safeIncrement(): Int = if (this == Int.MAX_VALUE) this else this + 1
+
+    private companion object {
+        const val GROUP_ENDPOINT_TIME_SQL = """
+            SELECT time
+            FROM message_record
+            WHERE bot_id = ? AND kind = ? AND target_id = ? AND recalled = 0
+            ORDER BY time %s, id %s
+            LIMIT 1
+        """
+    }
 }

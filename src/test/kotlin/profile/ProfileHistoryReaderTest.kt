@@ -11,6 +11,81 @@ import kotlin.test.assertTrue
 
 class ProfileHistoryReaderTest {
     @Test
+    fun filtersPendingGroupRangesByValidMessageCount() {
+        val directory = Files.createTempDirectory("jchatgpt-profile-pending-groups-test-")
+        val database = directory.resolve("history.sqlite")
+        try {
+            DriverManager.getConnection("jdbc:sqlite:${database.absolutePathString()}").use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeUpdate(
+                        """
+                        CREATE TABLE message_record(
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            bot_id INTEGER NOT NULL,
+                            from_id INTEGER NOT NULL,
+                            target_id INTEGER NOT NULL,
+                            ids TEXT,
+                            internal_ids TEXT,
+                            time INTEGER NOT NULL,
+                            kind INTEGER NOT NULL,
+                            code TEXT NOT NULL,
+                            recalled INTEGER NOT NULL DEFAULT 0
+                        )
+                        """.trimIndent()
+                    )
+                }
+                connection.prepareStatement(
+                    "INSERT INTO message_record(" +
+                            "bot_id, from_id, target_id, time, kind, code, recalled" +
+                            ") VALUES (?, 100, ?, ?, ?, '[]', ?)"
+                ).use { statement ->
+                    fun insert(
+                        botId: Long,
+                        groupId: Long,
+                        time: Int,
+                        kind: MessageSourceKind = MessageSourceKind.GROUP,
+                        recalled: Int = 0,
+                    ) {
+                        statement.setLong(1, botId)
+                        statement.setLong(2, groupId)
+                        statement.setInt(3, time)
+                        statement.setInt(4, kind.ordinal)
+                        statement.setInt(5, recalled)
+                        statement.executeUpdate()
+                    }
+
+                    insert(1, 10, 100)
+                    insert(1, 10, 110, recalled = 1)
+                    insert(1, 10, 120)
+                    insert(1, 10, 130)
+                    insert(1, 20, 100)
+                    insert(1, 20, 110, kind = MessageSourceKind.FRIEND)
+                    insert(2, 30, 100)
+                    insert(2, 30, 110)
+                }
+            }
+
+            val reader = ProfileHistoryReader(database.toFile())
+            val ranges = listOf(
+                ProfileHistoryReader.GroupTimeBounds(1, 10, 110, 131),
+                ProfileHistoryReader.GroupTimeBounds(1, 20, 90, 120),
+                ProfileHistoryReader.GroupTimeBounds(1, 30, 90, 120),
+            )
+
+            assertEquals(
+                listOf(10L),
+                reader.filterGroupRangesByMinimumMessageCount(ranges, 2).map { it.groupId },
+            )
+            assertEquals(
+                listOf(10L, 20L),
+                reader.filterGroupRangesByMinimumMessageCount(ranges, 1).map { it.groupId },
+            )
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun keepsEqualTimestampTargetMessagesTogetherAndLoadsGroupContext() {
         val directory = Files.createTempDirectory("jchatgpt-profile-history-test-")
         val database = directory.resolve("history.sqlite")
@@ -136,6 +211,7 @@ class ProfileHistoryReaderTest {
                     snapshotEndTime = groupBounds.endTime,
                     messageLimit = 2,
                     maxMessageChars = 200,
+                    idleGapSeconds = 0,
                 )
             )
             assertEquals(111, firstGroupBatch.endTime)
@@ -148,10 +224,80 @@ class ProfileHistoryReaderTest {
                     snapshotEndTime = groupBounds.endTime,
                     messageLimit = 2,
                     maxMessageChars = 200,
+                    idleGapSeconds = 0,
                 )
             )
             assertEquals(201, secondGroupBatch.endTime)
             assertEquals(listOf(130, 200), secondGroupBatch.messages.map { it.record.time })
+
+            val defaultAdaptiveGroupBatch = assertNotNull(
+                reader.loadNextConversationBatch(
+                    botId = groupBounds.botId,
+                    groupId = 10,
+                    startTime = groupBounds.startTime,
+                    snapshotEndTime = groupBounds.endTime,
+                    messageLimit = 2,
+                    maxMessageChars = 200,
+                )
+            )
+            assertEquals(201, defaultAdaptiveGroupBatch.endTime)
+            assertEquals(listOf(100, 110, 110, 130, 200), defaultAdaptiveGroupBatch.messages.map { it.record.time })
+            assertEquals(listOf(1, 1, 1, 1, 1), defaultAdaptiveGroupBatch.messages.map { it.episodeIndex })
+
+            val adaptiveGroupBatch = assertNotNull(
+                reader.loadNextConversationBatch(
+                    botId = groupBounds.botId,
+                    groupId = 10,
+                    startTime = groupBounds.startTime,
+                    snapshotEndTime = groupBounds.endTime,
+                    messageLimit = 2,
+                    maxMessageChars = 200,
+                    idleGapSeconds = 30,
+                    targetContentChars = 10_000,
+                    maxMessages = 20,
+                    maxContentChars = 100_000,
+                    maxPackedSpanSeconds = 1_000,
+                )
+            )
+            assertEquals(131, adaptiveGroupBatch.endTime)
+            assertEquals(listOf(100, 110, 110, 130), adaptiveGroupBatch.messages.map { it.record.time })
+            assertEquals(listOf(1, 1, 1, 1), adaptiveGroupBatch.messages.map { it.episodeIndex })
+
+            val packedSmallEpisodes = assertNotNull(
+                reader.loadNextConversationBatch(
+                    botId = groupBounds.botId,
+                    groupId = 10,
+                    startTime = groupBounds.startTime,
+                    snapshotEndTime = groupBounds.endTime,
+                    messageLimit = 10,
+                    maxMessageChars = 200,
+                    idleGapSeconds = 30,
+                    targetContentChars = 10_000,
+                    maxMessages = 20,
+                    maxContentChars = 100_000,
+                    maxPackedSpanSeconds = 1_000,
+                )
+            )
+            assertEquals(201, packedSmallEpisodes.endTime)
+            assertEquals(listOf(1, 1, 1, 1, 2), packedSmallEpisodes.messages.map { it.episodeIndex })
+
+            val hardLimitedConversation = assertNotNull(
+                reader.loadNextConversationBatch(
+                    botId = groupBounds.botId,
+                    groupId = 10,
+                    startTime = groupBounds.startTime,
+                    snapshotEndTime = groupBounds.endTime,
+                    messageLimit = 2,
+                    maxMessageChars = 200,
+                    idleGapSeconds = 30,
+                    targetContentChars = 10_000,
+                    maxMessages = 3,
+                    maxContentChars = 100_000,
+                    maxPackedSpanSeconds = 1_000,
+                )
+            )
+            assertEquals(111, hardLimitedConversation.endTime)
+            assertEquals(listOf(100, 110, 110), hardLimitedConversation.messages.map { it.record.time })
         } finally {
             directory.toFile().deleteRecursively()
         }
