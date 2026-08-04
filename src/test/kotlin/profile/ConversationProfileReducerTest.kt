@@ -139,8 +139,15 @@ class ConversationProfileReducerTest {
         assertEquals("existing-item", updated.items.single().id)
         assertEquals(ProfileConfidence.MEDIUM, updated.items.single().confidence)
         assertEquals(existing.summary, updated.summary)
-        val prompt = ProfilePromptStore.buildConversationUserPrompt(profiles, batch(), USERS)
+        val prompt = ProfilePromptStore.buildConversationUserPrompt(
+            profiles,
+            batch(),
+            USERS,
+            mapOf(USER_A to mapOf(oldItem.id to ProfileItemSupportStats(4, 100, 400))),
+        )
         assertTrue(prompt.contains("[P1]"))
+        assertTrue(prompt.contains("supports=4"))
+        assertTrue(prompt.contains("support_range="))
         assertFalse(prompt.contains(oldItem.id))
     }
 

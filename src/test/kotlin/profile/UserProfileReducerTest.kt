@@ -151,8 +151,15 @@ class UserProfileReducerTest {
         assertEquals(item.id, reduction.profile.items.single().id)
         assertEquals(ProfileConfidence.HIGH, reduction.profile.items.single().confidence)
         assertEquals("该用户仍然关注 Kotlin。", reduction.profile.summary)
-        val prompt = ProfilePromptStore.buildUserPrompt(current, batch)
+        val prompt = ProfilePromptStore.buildUserPrompt(
+            current,
+            batch,
+            mapOf(item.id to ProfileItemSupportStats(3, 100, 300)),
+        )
         assertTrue(prompt.contains("[P1]"))
+        assertTrue(prompt.contains("supports=3"))
+        assertTrue(prompt.contains("support_range="))
+        assertTrue(prompt.contains("item_range="))
         assertFalse(prompt.contains(item.id))
     }
 
@@ -382,6 +389,77 @@ class UserProfileReducerTest {
         assertEquals("本人在对方提及离职时会建议对方先找到下家", reduction.profile.items.single().content)
         assertEquals("该用户会给其他用户提供务实建议。", reduction.profile.summary)
         assertFalse(reduction.profile.items.single().content.contains("U1"))
+    }
+
+    @Test
+    fun keepsAProvisionalCorrectionUntilLaterEvidenceResolvesTheConflict() {
+        val old = UserProfileItem(
+            id = "old-work",
+            category = ProfileCategory.NOTABLE_FACT,
+            content = "在 A 公司工作",
+            confidence = ProfileConfidence.HIGH,
+            firstSeenAt = 80,
+            lastConfirmedAt = 100,
+        )
+        val current = emptyProfile().copy(
+            summary = "在 A 公司工作。",
+            reliable = true,
+            items = listOf(old),
+        )
+        val first = UserProfileReducer.reduce(
+            current = current,
+            batch = batchOf(message(ref = 1, fromId = TARGET, text = "我其实在 B 公司工作")),
+            response = ProfileModelResponse(
+                operations = listOf(
+                    ProfileModelOperation(
+                        action = ProfileOperationAction.ADD,
+                        category = ProfileCategory.NOTABLE_FACT,
+                        content = "2026-08-05 本人自述在 B 公司工作",
+                        confidence = ProfileConfidence.LOW,
+                        evidenceRefs = listOf(1),
+                    )
+                ),
+                summary = current.summary,
+            ),
+            model = "test-model",
+            promptVersion = "test-prompt",
+            summaryMaxLength = 500,
+        )
+
+        assertEquals(2, first.profile.items.size)
+        assertEquals(current.summary, first.profile.summary)
+        val candidate = first.profile.items.single { it.id != old.id }
+        assertEquals(ProfileConfidence.LOW, candidate.confidence)
+
+        val references = ProfileItemReferences.entries(first.profile)
+            .associate { entry -> entry.item.id to entry.reference }
+        val resolved = UserProfileReducer.reduce(
+            current = first.profile,
+            batch = batchOf(message(ref = 1, fromId = TARGET, text = "我仍在 B 公司工作")),
+            response = ProfileModelResponse(
+                operations = listOf(
+                    ProfileModelOperation(
+                        action = ProfileOperationAction.CONFIRM,
+                        itemRef = references.getValue(candidate.id),
+                        confidence = ProfileConfidence.MEDIUM,
+                        evidenceRefs = listOf(1),
+                    ),
+                    ProfileModelOperation(
+                        action = ProfileOperationAction.DELETE,
+                        itemRef = references.getValue(old.id),
+                        evidenceRefs = listOf(1),
+                    ),
+                ),
+                summary = "截至 2026-08-05，本人自述在 B 公司工作。",
+            ),
+            model = "test-model",
+            promptVersion = "test-prompt",
+            summaryMaxLength = 500,
+        )
+
+        assertEquals(candidate.id, resolved.profile.items.single().id)
+        assertEquals(ProfileConfidence.MEDIUM, resolved.profile.items.single().confidence)
+        assertFalse(resolved.profile.items.any { it.id == old.id })
     }
 
     private fun emptyProfile() = UserProfileSnapshot(

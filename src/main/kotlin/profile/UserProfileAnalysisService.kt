@@ -233,7 +233,10 @@ object UserProfileAnalysisService {
                 break
             }
 
-            val (result, reduction) = analyzeWithRetry(model, profile, batch)
+            val supportStats = withContext(Dispatchers.IO) {
+                UserProfileStore.loadSupportStats(userId)
+            }
+            val (result, reduction) = analyzeWithRetry(model, profile, batch, supportStats)
             withContext(Dispatchers.IO) {
                 UserProfileStore.commit(
                     reduction = reduction,
@@ -446,17 +449,22 @@ object UserProfileAnalysisService {
             .filterValues { it >= minAuthoredTextChars.coerceAtLeast(1) }
             .keys
         if (eligibleUserIds.isEmpty()) return null
-        val profiles = userLocks.withUserLocks(eligibleUserIds) {
+        val profileState = userLocks.withUserLocks(eligibleUserIds) {
             withContext(Dispatchers.IO) {
                 if (UserProfileStore.isConversationProcessed(batch.inputHash)) null
-                else loadConversationProfiles(eligibleUserIds)
+                else {
+                    val profiles = loadConversationProfiles(eligibleUserIds)
+                    profiles to loadConversationSupportStats(eligibleUserIds)
+                }
             }
         } ?: return null
+        val (profiles, supportStatsByUserId) = profileState
         val (result, reductions) = analyzeConversationWithRetry(
             model = model,
             profiles = profiles,
             batch = batch,
             eligibleUserIds = eligibleUserIds,
+            supportStatsByUserId = supportStatsByUserId,
             retryMax = retryMax,
             summaryMaxLength = summaryMaxLength,
             onRetryFailure = onRetryFailure,
@@ -521,6 +529,12 @@ object UserProfileAnalysisService {
             )
         }
 
+    private fun loadConversationSupportStats(
+        userIds: Set<Long>,
+    ): Map<Long, Map<String, ProfileItemSupportStats>> = userIds.associateWith { userId ->
+        UserProfileStore.loadSupportStats(userId)
+    }
+
     private fun hasProfileVersionConflict(
         expectedProfiles: Map<Long, UserProfileSnapshot>,
         latestProfiles: Map<Long, UserProfileSnapshot>,
@@ -533,6 +547,7 @@ object UserProfileAnalysisService {
         profiles: Map<Long, UserProfileSnapshot>,
         batch: ConversationProfileBatch,
         eligibleUserIds: Set<Long>,
+        supportStatsByUserId: Map<Long, Map<String, ProfileItemSupportStats>>,
         retryMax: Int,
         summaryMaxLength: Int,
         onRetryFailure: (String, Throwable) -> Unit,
@@ -542,7 +557,12 @@ object UserProfileAnalysisService {
         var lastFailure: Throwable? = null
         repeat(attempts) { attempt ->
             try {
-                val result = model.analyzeConversation(profiles, batch, eligibleUserIds)
+                val result = model.analyzeConversation(
+                    profiles,
+                    batch,
+                    eligibleUserIds,
+                    supportStatsByUserId,
+                )
                 val reductions = ConversationProfileReducer.reduce(
                     profiles = profiles,
                     batch = batch,
@@ -585,6 +605,7 @@ object UserProfileAnalysisService {
         model: ProfileModel,
         profile: UserProfileSnapshot,
         batch: ProfileHistoryBatch,
+        supportStats: Map<String, ProfileItemSupportStats>,
         advanceBackfillCursor: Boolean = true,
     ): Pair<ProfileModelResult, ProfileReduction> {
         val attempts = PluginConfig.profileRetryMax.coerceIn(0, 3) + 1
@@ -592,7 +613,7 @@ object UserProfileAnalysisService {
         var lastFailure: Throwable? = null
         repeat(attempts) { attempt ->
             try {
-                val result = model.analyze(profile, batch)
+                val result = model.analyze(profile, batch, supportStats)
                 val reduction = UserProfileReducer.reduce(
                     current = profile,
                     batch = batch,

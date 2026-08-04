@@ -23,6 +23,12 @@ interface ProfileModel {
         profile: UserProfileSnapshot,
         batch: ProfileHistoryBatch,
     ): ProfileModelResult
+
+    suspend fun analyze(
+        profile: UserProfileSnapshot,
+        batch: ProfileHistoryBatch,
+        supportStats: Map<String, ProfileItemSupportStats>,
+    ): ProfileModelResult = analyze(profile, batch)
 }
 
 interface ConversationProfileModel {
@@ -33,6 +39,13 @@ interface ConversationProfileModel {
         batch: ConversationProfileBatch,
         eligibleUserIds: Set<Long>,
     ): ConversationProfileModelResult
+
+    suspend fun analyzeConversation(
+        profiles: Map<Long, UserProfileSnapshot>,
+        batch: ConversationProfileBatch,
+        eligibleUserIds: Set<Long>,
+        supportStatsByUserId: Map<Long, Map<String, ProfileItemSupportStats>>,
+    ): ConversationProfileModelResult = analyzeConversation(profiles, batch, eligibleUserIds)
 }
 
 interface ProfileCompactionModel {
@@ -55,6 +68,12 @@ class ProfileModelClient(
     override suspend fun analyze(
         profile: UserProfileSnapshot,
         batch: ProfileHistoryBatch,
+    ): ProfileModelResult = analyze(profile, batch, emptyMap())
+
+    override suspend fun analyze(
+        profile: UserProfileSnapshot,
+        batch: ProfileHistoryBatch,
+        supportStats: Map<String, ProfileItemSupportStats>,
     ): ProfileModelResult {
         val completion = complete(
             ChatCompletionRequest(
@@ -64,7 +83,7 @@ class ProfileModelClient(
                 streamOptions = StreamOptions(includeUsage = true),
                 messages = listOf(
                     ChatMessage.System(ProfilePromptStore.systemPrompt),
-                    ChatMessage.User(ProfilePromptStore.buildUserPrompt(profile, batch)),
+                    ChatMessage.User(ProfilePromptStore.buildUserPrompt(profile, batch, supportStats)),
                 ),
             )
         )
@@ -81,6 +100,13 @@ class ProfileModelClient(
         profiles: Map<Long, UserProfileSnapshot>,
         batch: ConversationProfileBatch,
         eligibleUserIds: Set<Long>,
+    ): ConversationProfileModelResult = analyzeConversation(profiles, batch, eligibleUserIds, emptyMap())
+
+    override suspend fun analyzeConversation(
+        profiles: Map<Long, UserProfileSnapshot>,
+        batch: ConversationProfileBatch,
+        eligibleUserIds: Set<Long>,
+        supportStatsByUserId: Map<Long, Map<String, ProfileItemSupportStats>>,
     ): ConversationProfileModelResult {
         val completion = complete(
             ChatCompletionRequest(
@@ -91,7 +117,12 @@ class ProfileModelClient(
                 messages = listOf(
                     ChatMessage.System(ProfilePromptStore.conversationSystemPrompt),
                     ChatMessage.User(
-                        ProfilePromptStore.buildConversationUserPrompt(profiles, batch, eligibleUserIds)
+                        ProfilePromptStore.buildConversationUserPrompt(
+                            profiles,
+                            batch,
+                            eligibleUserIds,
+                            supportStatsByUserId,
+                        )
                     ),
                 ),
             )

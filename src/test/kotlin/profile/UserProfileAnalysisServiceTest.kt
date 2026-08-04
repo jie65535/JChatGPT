@@ -153,6 +153,23 @@ class UserProfileAnalysisServiceTest {
     }
 
     @Test
+    fun passesPersistedSupportStatsToTheNextConversationAnalysis() = withProfileStore {
+        val firstBatch = singleUserBatch(USER_A, 10, "support-first")
+        val firstModel = FakeConversationProfileModel {
+            result(responseFor("U1", "长期关注 Kotlin", evidenceRef = 1))
+        }
+        assertNotNull(analyze(firstBatch, firstModel))
+        val itemId = assertNotNull(UserProfileStore.load(USER_A)).items.single().id
+
+        val secondModel = SupportInspectingConversationProfileModel { supportStatsByUserId ->
+            val support = assertNotNull(supportStatsByUserId[USER_A]?.get(itemId))
+            assertEquals(1, support.count)
+            result()
+        }
+        assertNotNull(analyze(singleUserBatch(USER_A, 20, "support-second"), secondModel))
+    }
+
+    @Test
     fun skipsModelWhenNoParticipantMeetsTheTextThreshold() = withProfileStore {
         val model = FakeConversationProfileModel {
             throw AssertionError("model must not be called")
@@ -354,6 +371,27 @@ class UserProfileAnalysisServiceTest {
             batch: ConversationProfileBatch,
             eligibleUserIds: Set<Long>,
         ): ConversationProfileModelResult = behavior(profiles)
+    }
+
+    private class SupportInspectingConversationProfileModel(
+        private val behavior: suspend (
+            Map<Long, Map<String, ProfileItemSupportStats>>,
+        ) -> ConversationProfileModelResult,
+    ) : ConversationProfileModel {
+        override val modelName: String = "support-inspecting-profile-model"
+
+        override suspend fun analyzeConversation(
+            profiles: Map<Long, UserProfileSnapshot>,
+            batch: ConversationProfileBatch,
+            eligibleUserIds: Set<Long>,
+        ): ConversationProfileModelResult = error("画像服务未调用支持统计重载")
+
+        override suspend fun analyzeConversation(
+            profiles: Map<Long, UserProfileSnapshot>,
+            batch: ConversationProfileBatch,
+            eligibleUserIds: Set<Long>,
+            supportStatsByUserId: Map<Long, Map<String, ProfileItemSupportStats>>,
+        ): ConversationProfileModelResult = behavior(supportStatsByUserId)
     }
 
     companion object {

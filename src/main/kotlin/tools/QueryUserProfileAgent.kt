@@ -21,6 +21,7 @@ import top.jie65535.mirai.config.PluginConfig
 import top.jie65535.mirai.data.ContactSnapshotStore
 import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.profile.ProfileCategory
+import top.jie65535.mirai.profile.ProfileItemSupportStats
 import top.jie65535.mirai.profile.ProfilePersistentText
 import top.jie65535.mirai.profile.UserProfileItem
 import top.jie65535.mirai.profile.UserProfileSnapshot
@@ -62,7 +63,10 @@ class QueryUserProfileAgent : BaseAgent(
     override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         val userId = resolveUserId(args, event)
             ?: return "未找到唯一匹配用户。请提供 userId，或使用更明确的群名片、昵称、好友备注。"
-        val profile = runCatching { UserProfileStore.load(userId) }
+        val (profile, supportStats) = runCatching {
+            val snapshot = UserProfileStore.load(userId)
+            snapshot to if (snapshot == null) emptyMap() else UserProfileStore.loadSupportStats(userId)
+        }
             .getOrElse { cause -> return "读取用户 $userId 画像失败：${cause.message ?: cause::class.simpleName}" }
         val publicProfile = loadPublicProfile(userId, event)
         if (profile == null && publicProfile == null) return "用户 $userId 尚无画像，当前联系人也没有可读取的公开资料卡。"
@@ -70,7 +74,7 @@ class QueryUserProfileAgent : BaseAgent(
         val includeItems = args?.get("includeItems")?.jsonPrimitive?.booleanOrNull ?: true
         val displayName = resolveDisplayName(userId, event)
 
-        return formatProfile(userId, profile, publicProfile, displayName, includeItems)
+        return formatProfile(userId, profile, supportStats, publicProfile, displayName, includeItems)
     }
 
     private fun resolveUserId(args: JsonObject?, event: MessageEvent): Long? {
@@ -139,6 +143,7 @@ class QueryUserProfileAgent : BaseAgent(
     private fun formatProfile(
         userId: Long,
         profile: UserProfileSnapshot?,
+        supportStats: Map<String, ProfileItemSupportStats>,
         publicProfile: UserProfile?,
         displayName: String,
         includeItems: Boolean,
@@ -164,6 +169,7 @@ class QueryUserProfileAgent : BaseAgent(
                     if (item.lastConfirmedAt != item.firstSeenAt) {
                         append("~").append(formatDate(item.lastConfirmedAt))
                     }
+                    append(" · ").append(formatSupportStats(supportStats[item.id]))
                     item.relatedUserId?.let { append(" · related=").append(it) }
                     append("：")
                     appendLine(ProfilePersistentText.itemForDisplay(
@@ -222,6 +228,17 @@ class QueryUserProfileAgent : BaseAgent(
 
     private fun formatDate(epochSecond: Int): String =
         DATE_FORMATTER.format(Instant.ofEpochSecond(epochSecond.toLong()))
+
+    internal fun formatSupportStats(stats: ProfileItemSupportStats?): String = buildString {
+        append("支持=").append(stats?.count ?: 0).append("次")
+        stats?.takeIf { it.count > 0 }?.let {
+            append("（").append(formatDate(it.firstSupportedAt))
+            if (it.lastSupportedAt != it.firstSupportedAt) {
+                append("~").append(formatDate(it.lastSupportedAt))
+            }
+            append("）")
+        }
+    }
 
     companion object {
         private const val PUBLIC_PROFILE_TIMEOUT_MS = 5_000L

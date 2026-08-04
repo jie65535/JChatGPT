@@ -160,6 +160,12 @@ class UserProfileCompactorTest {
         assertTrue(ProfilePromptStore.conversationSystemPrompt.contains("连续命令"))
         assertTrue(ProfilePromptStore.compactionSystemPrompt.contains("reason=not_profile"))
         assertTrue(ProfilePromptStore.compactionSystemPrompt.contains("完成150次钓鱼"))
+        assertTrue(ProfilePromptStore.systemPrompt.contains("测试或投毒"))
+        assertTrue(ProfilePromptStore.conversationSystemPrompt.contains("单次矛盾发言"))
+        assertTrue(ProfilePromptStore.systemPrompt.contains("supports<=1"))
+        assertTrue(ProfilePromptStore.conversationSystemPrompt.contains("supports>=2"))
+        assertTrue(ProfilePromptStore.systemPrompt.contains("候选修正"))
+        assertTrue(ProfilePromptStore.compactionSystemPrompt.contains("待决状态"))
     }
 
     @Test
