@@ -111,6 +111,29 @@ object UserProfileStore {
         }
     }
 
+    fun listUserIdsWithMinimumItems(minimumItems: Int): List<Long> {
+        check(initialized) { "用户画像数据库尚未初始化" }
+        require(minimumItems > 0) { "minimumItems must be positive" }
+        return openReadConnection().use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT user_id
+                FROM profile_item
+                GROUP BY user_id
+                HAVING COUNT(*) >= ?
+                ORDER BY user_id
+                """.trimIndent()
+            ).use { statement ->
+                statement.setInt(1, minimumItems)
+                statement.executeQuery().use { results ->
+                    buildList {
+                        while (results.next()) add(results.getLong("user_id"))
+                    }
+                }
+            }
+        }
+    }
+
     fun loadSupportStats(userId: Long): Map<String, ProfileItemSupportStats> {
         check(initialized) { "用户画像数据库尚未初始化" }
         return openReadConnection().use { connection ->

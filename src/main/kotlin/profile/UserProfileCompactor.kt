@@ -9,7 +9,17 @@ object UserProfileCompactor {
         promptVersion: String,
         summaryMaxLength: Int,
     ): ProfileCompactionPlan {
-        val items = current.items.associateBy { it.id }.toMutableMap()
+        val repairedItemRanges = current.items.count { it.firstSeenAt > it.lastConfirmedAt }
+        val items = current.items.associate { item ->
+            item.id to if (item.firstSeenAt <= item.lastConfirmedAt) {
+                item
+            } else {
+                item.copy(
+                    firstSeenAt = item.lastConfirmedAt,
+                    lastConfirmedAt = item.firstSeenAt,
+                )
+            }
+        }.toMutableMap()
         val usedItemIds = mutableSetOf<String>()
         val supportReassignments = mutableMapOf<String, String>()
         val applied = mutableListOf<AppliedProfileOperation>()
@@ -36,11 +46,12 @@ object UserProfileCompactor {
                     relationship = category == ProfileCategory.RELATIONSHIP_NOTE,
                     label = "merges[$index]",
                 )
-                val updated = target.copy(
+                val endpoints = sourceItems.flatMap { listOf(it.firstSeenAt, it.lastConfirmedAt) }
+                val updated = items.getValue(target.id).copy(
                     content = content,
                     confidence = sourceItems.minBy { it.confidence.ordinal }.confidence,
-                    firstSeenAt = sourceItems.minOf { it.firstSeenAt },
-                    lastConfirmedAt = sourceItems.maxOf { it.lastConfirmedAt },
+                    firstSeenAt = endpoints.min(),
+                    lastConfirmedAt = endpoints.max(),
                 )
                 usedItemIds += sourceItems.map(UserProfileItem::id)
                 sourceItems.forEach { source -> items.remove(source.id) }
@@ -68,7 +79,7 @@ object UserProfileCompactor {
                     return@forEachIndexed
                 }
                 usedItemIds += old.id
-                val updated = old.copy(
+                val updated = items.getValue(old.id).copy(
                     content = content,
                 )
                 items[old.id] = updated
@@ -82,10 +93,14 @@ object UserProfileCompactor {
             try {
                 val old = resolve(current, delete.itemRef, "deletes[$index]")
                 require(old.id !in usedItemIds) { "重复操作了画像条目" }
-                require(old.confidence != ProfileConfidence.HIGH) { "不能自动删除 high 置信条目" }
                 val supports = supportStats[old.id]?.count ?: 0
-                require(supports <= MAX_DELETE_SUPPORTS) {
-                    "画像条目已有 $supports 次支持，不能自动删除"
+                if (delete.reason != ProfileCompactionDeleteReason.NOT_PROFILE) {
+                    require(old.confidence != ProfileConfidence.HIGH) {
+                        "不能以 ${delete.reason} 删除 high 置信条目"
+                    }
+                    require(supports <= MAX_DELETE_SUPPORTS) {
+                        "画像条目已有 $supports 次支持，不能以 ${delete.reason} 自动删除"
+                    }
                 }
                 usedItemIds += old.id
                 items.remove(old.id)
@@ -95,21 +110,32 @@ object UserProfileCompactor {
                 skippedOperations += "deletes[$index]: ${cause.message}"
             }
         }
-        val summary = if (skippedOperations.isNotEmpty()) {
+        val batchScopedItems = items.values
+            .filter { item -> ProfileContentRules.containsBatchScopedText(item.content) }
+            .sortedBy(UserProfileItem::id)
+        batchScopedItems.forEach { item ->
+            items.remove(item.id)
+            applied += item.toApplied(ProfileOperationAction.DELETE)
+            deletedItems++
+        }
+        val summaryCandidate = runCatching {
+            ProfileContentRules.validateSummary(
+                ProfilePersistentText.summaryForDisplay(response.summary),
+                summaryMaxLength,
+            )
+        }.getOrElse { cause ->
+            skippedOperations += "summary: ${cause.message}"
+            if (ProfileContentRules.containsBatchScopedText(current.summary)) "" else current.summary
+        }
+        val summary = if (summaryCandidate.isBlank() &&
+            !ProfileContentRules.containsBatchScopedText(current.summary)
+        ) {
             current.summary
         } else {
-            runCatching {
-                ProfileContentRules.validateSummary(
-                    ProfilePersistentText.summaryForDisplay(response.summary),
-                    summaryMaxLength,
-                )
-            }.getOrElse { cause ->
-                skippedOperations += "summary: ${cause.message}"
-                current.summary
-            }.ifBlank { current.summary }
+            summaryCandidate
         }
         val summaryChanged = summary != current.summary
-        val profile = if (applied.isEmpty() && !summaryChanged) current else current.copy(
+        val profile = if (applied.isEmpty() && !summaryChanged && repairedItemRanges == 0) current else current.copy(
                 summary = summary,
                 version = current.version + 1,
                 reliable = items.isNotEmpty(),
@@ -126,6 +152,7 @@ object UserProfileCompactor {
             mergedGroups = mergedGroups,
             rewrittenItems = rewrittenItems,
             deletedItems = deletedItems,
+            repairedItemRanges = repairedItemRanges,
             skippedOperations = skippedOperations,
         )
     }

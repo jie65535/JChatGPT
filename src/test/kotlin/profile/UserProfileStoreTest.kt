@@ -192,7 +192,7 @@ class UserProfileStoreTest {
         val directory = Files.createTempDirectory("jchatgpt-profile-conversation-commit-test-")
         try {
             UserProfileStore.init(directory.toFile())
-            val entries = listOf(100L, 200L).map { userId ->
+            val entries = listOf(100L to 9, 200L to 10).map { (userId, itemCount) ->
                 val batch = batchFor(userId, "shared-conversation-hash")
                 val profile = UserProfileSnapshot(
                     userId = userId,
@@ -203,7 +203,7 @@ class UserProfileStoreTest {
                     reliable = true,
                     model = "test-model",
                     promptVersion = "test-prompt",
-                    items = listOf(itemFor("item-$userId")),
+                    items = (1..itemCount).map { index -> itemFor("item-$userId-$index") },
                 )
                 ProfileReduction(profile, emptyList()) to batch
             }
@@ -213,6 +213,9 @@ class UserProfileStoreTest {
             assertNotNull(UserProfileStore.load(100))
             assertNotNull(UserProfileStore.load(200))
             assertEquals(listOf(100L, 200L), UserProfileStore.listUserIds())
+            assertEquals(listOf(100L, 200L), UserProfileStore.listUserIdsWithMinimumItems(9))
+            assertEquals(listOf(200L), UserProfileStore.listUserIdsWithMinimumItems(10))
+            assertEquals(emptyList(), UserProfileStore.listUserIdsWithMinimumItems(11))
             assertTrue(UserProfileStore.isConversationProcessed("shared-conversation-hash"))
             val database = directory.resolve("user-profile.sqlite")
             DriverManager.getConnection("jdbc:sqlite:${database.toAbsolutePath()}").use { connection ->

@@ -35,6 +35,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 object PluginCommands : CompositeCommand(
     JChatGPT, "jgpt", description = "J OpenAI ChatGPT"
@@ -200,31 +201,109 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.profileCompact(userIds: String = "") {
         check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
-        val parsedUserIds = if (userIds.isBlank()) {
-            withContext(Dispatchers.IO) { UserProfileStore.listUserIds() }
+        val compactAllUsers = userIds.isBlank()
+        val (parsedUserIds, skippedBelowThreshold) = if (compactAllUsers) {
+            withContext(Dispatchers.IO) {
+                val allUserIds = UserProfileStore.listUserIds()
+                val candidates = UserProfileStore.listUserIdsWithMinimumItems(
+                    BULK_PROFILE_COMPACTION_MIN_ITEMS
+                )
+                candidates to (allUserIds.size - candidates.size)
+            }
         } else {
-            parseProfileUserIds(userIds)
+            parseProfileUserIds(userIds) to 0
         }
         if (parsedUserIds.isEmpty()) {
-            sendMessage("当前没有可压缩的用户画像。")
+            val skipped = if (compactAllUsers && skippedBelowThreshold > 0) {
+                "，已跳过 $skippedBelowThreshold 个不足 $BULK_PROFILE_COMPACTION_MIN_ITEMS 条的画像"
+            } else {
+                ""
+            }
+            sendMessage("当前没有达到压缩门槛的用户画像$skipped。")
             return
         }
         val runToken = UserProfileAnalysisService.newRunToken()
-        sendMessage("已启动 ${parsedUserIds.size} 个用户的画像压缩反思。")
+        if (compactAllUsers) {
+            sendMessage(
+                "已启动 ${parsedUserIds.size} 个用户的画像压缩反思；" +
+                        "全量门槛为至少 $BULK_PROFILE_COMPACTION_MIN_ITEMS 条，" +
+                        "已跳过 $skippedBelowThreshold 个未达门槛的画像。"
+            )
+        } else {
+            sendMessage("已启动 ${parsedUserIds.size} 个指定用户的画像压缩反思。")
+        }
+
+        val completedUsers = AtomicInteger()
+        val successfulUsers = AtomicInteger()
+        val changedUsers = AtomicInteger()
+        val alreadyRunningUsers = AtomicInteger()
+        val stoppedUsers = AtomicInteger()
+        val failedUsers = AtomicInteger()
+        val beforeItems = AtomicLong()
+        val afterItems = AtomicLong()
+        val mergedGroups = AtomicLong()
+        val rewrittenItems = AtomicLong()
+        val deletedItems = AtomicLong()
+        val repairedRanges = AtomicLong()
+        val promptTokens = AtomicLong()
+        val completionTokens = AtomicLong()
+        val cachedTokens = AtomicLong()
         parsedUserIds.forEach { userId ->
             JChatGPT.launch {
                 try {
                     val report = UserProfileAnalysisService.compact(userId, runToken)
                     when {
-                        report.alreadyRunning -> sendMessage("用户 $userId 已有画像压缩任务在运行。")
-                        report.stopped -> sendMessage("用户 $userId 的画像压缩已按请求停止，未开始新的压缩轮次。")
-                        else -> sendMessage(formatProfileCompactionReport(report))
+                        report.alreadyRunning -> {
+                            alreadyRunningUsers.incrementAndGet()
+                            if (!compactAllUsers) sendMessage("用户 $userId 已有画像压缩任务在运行。")
+                        }
+                        report.stopped -> {
+                            stoppedUsers.incrementAndGet()
+                            if (!compactAllUsers) {
+                                sendMessage("用户 $userId 的画像压缩已按请求停止，未开始新的压缩轮次。")
+                            }
+                        }
+                        else -> {
+                            successfulUsers.incrementAndGet()
+                            if (report.hasCompactionChanges()) changedUsers.incrementAndGet()
+                            beforeItems.addAndGet(report.beforeItems.toLong())
+                            afterItems.addAndGet(report.afterItems.toLong())
+                            mergedGroups.addAndGet(report.mergedGroups.toLong())
+                            rewrittenItems.addAndGet(report.rewrittenItems.toLong())
+                            deletedItems.addAndGet(report.deletedItems.toLong())
+                            repairedRanges.addAndGet(report.repairedItemRanges.toLong())
+                            promptTokens.addAndGet(report.usage.promptTokens.toLong())
+                            completionTokens.addAndGet(report.usage.completionTokens.toLong())
+                            cachedTokens.addAndGet(report.usage.cachedTokens.toLong())
+                            if (!compactAllUsers) sendMessage(formatProfileCompactionReport(report))
+                        }
                     }
                 } catch (cause: CancellationException) {
                     throw cause
                 } catch (cause: Exception) {
+                    failedUsers.incrementAndGet()
                     JChatGPT.logger.error("用户 $userId 画像压缩失败", cause)
-                    sendMessage("用户 $userId 画像压缩失败：${cause.message ?: cause::class.simpleName}")
+                    if (!compactAllUsers) {
+                        sendMessage("用户 $userId 画像压缩失败：${cause.message ?: cause::class.simpleName}")
+                    }
+                } finally {
+                    if (compactAllUsers && completedUsers.incrementAndGet() == parsedUserIds.size) {
+                        val successful = successfulUsers.get()
+                        sendMessage(
+                            "全量画像压缩完成：成功 $successful（有变更 ${changedUsers.get()}，" +
+                                    "无变更 ${successful - changedUsers.get()}），" +
+                                    "已在运行 ${alreadyRunningUsers.get()}，已停止 ${stoppedUsers.get()}，" +
+                                    "失败 ${failedUsers.get()}；跳过未达门槛 $skippedBelowThreshold。\n" +
+                                    "条目 ${formatNumber(beforeItems.get())} -> ${formatNumber(afterItems.get())}，" +
+                                    "合并 ${formatNumber(mergedGroups.get())} 组，" +
+                                    "改写 ${formatNumber(rewrittenItems.get())} 条，" +
+                                    "删除 ${formatNumber(deletedItems.get())} 条，" +
+                                    "修复 ${formatNumber(repairedRanges.get())} 条时间范围。\n" +
+                                    "Token：输入 ${formatNumber(promptTokens.get())}，" +
+                                    "输出 ${formatNumber(completionTokens.get())}，" +
+                                    "缓存命中 ${formatNumber(cachedTokens.get())}"
+                        )
+                    }
                 }
             }
         }
@@ -460,6 +539,7 @@ object PluginCommands : CompositeCommand(
         appendLine(
             "画像压缩完成：${report.beforeItems} -> ${report.afterItems} 条，" +
                     "合并 ${report.mergedGroups} 组，改写 ${report.rewrittenItems} 条，删除 ${report.deletedItems} 条，" +
+                    "修复 ${report.repairedItemRanges} 条时间范围，" +
                     "摘要${if (report.summaryChanged) "已重写" else "未变"}，" +
                     "跳过 ${report.skippedOperations} 项不安全建议"
         )
@@ -470,6 +550,10 @@ object PluginCommands : CompositeCommand(
         )
         append(formatProfile(report.profile))
     }.trim()
+
+    private fun ProfileCompactionReport.hasCompactionChanges(): Boolean =
+        beforeItems != afterItems || mergedGroups > 0 || rewrittenItems > 0 || deletedItems > 0 ||
+                repairedItemRanges > 0 || summaryChanged
 
     private fun formatProfile(profile: UserProfileSnapshot): String = buildString {
         appendLine("用户 ${profile.userId} · 画像 v${profile.version}")
@@ -519,6 +603,7 @@ object PluginCommands : CompositeCommand(
 
 // 常量定义
 private const val TOP_LIMIT = 5
+private const val BULK_PROFILE_COMPACTION_MIN_ITEMS = 10
 private val PROFILE_TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter
     .ofPattern("yyyy-MM-dd HH:mm:ss")
     .withZone(ZoneId.systemDefault())

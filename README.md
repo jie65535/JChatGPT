@@ -60,7 +60,7 @@ AI 可以自动调用多种工具来完成复杂任务：
 - `/jgpt profileAnalyze <userIds> [batches]` - 分析用户画像，多个 ID 用逗号分隔
 - `/jgpt profileAnalyzeGroup [groupIds] [batches]` - 分析群画像，多个 ID 用逗号分隔；不传群号时并发推进历史库中的全部群
 - `/jgpt profileShow <userId>` - 查看用户画像
-- `/jgpt profileCompact [userIds]` - 压缩画像，不传 ID 时处理全部用户
+- `/jgpt profileCompact [userIds]` - 压缩画像；不传 ID 时仅批量处理至少 10 条画像条目的用户并汇总回报，显式指定 ID 时不受门槛限制
 - `/jgpt profileStop` - 当前批次完成后停止画像任务
 
 ## 配置文件

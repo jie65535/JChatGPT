@@ -65,6 +65,7 @@ data class ProfileCompactionPlan(
     val mergedGroups: Int,
     val rewrittenItems: Int,
     val deletedItems: Int,
+    val repairedItemRanges: Int = 0,
     val skippedOperations: List<String> = emptyList(),
 )
 
@@ -75,6 +76,7 @@ data class ProfileCompactionReport(
     val mergedGroups: Int,
     val rewrittenItems: Int,
     val deletedItems: Int,
+    val repairedItemRanges: Int = 0,
     val summaryChanged: Boolean,
     val skippedOperations: Int,
     val usage: ProfileTokenUsage,

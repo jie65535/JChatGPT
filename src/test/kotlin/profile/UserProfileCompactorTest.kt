@@ -94,6 +94,44 @@ class UserProfileCompactorTest {
     }
 
     @Test
+    fun allowsDeletingClearlyNonProfileContentRegardlessOfConfidenceOrSupportCount() {
+        val profile = profile()
+        val allowed = UserProfileCompactor.reduce(
+            current = profile,
+            supportStats = mapOf("fact-item" to supportStats(1)),
+            response = ProfileCompactionResponse(
+                deletes = listOf(
+                    ProfileCompactionDelete("P4", ProfileCompactionDeleteReason.NOT_PROFILE)
+                ),
+                summary = profile.summary,
+            ),
+            model = "test-model",
+            promptVersion = "compact-v5",
+            summaryMaxLength = 500,
+        )
+
+        assertEquals(1, allowed.deletedItems)
+        assertFalse(allowed.reduction.profile.items.any { it.id == "fact-item" })
+
+        val supported = UserProfileCompactor.reduce(
+            current = profile,
+            supportStats = mapOf("fact-item" to supportStats(2)),
+            response = ProfileCompactionResponse(
+                deletes = listOf(
+                    ProfileCompactionDelete("P4", ProfileCompactionDeleteReason.NOT_PROFILE)
+                ),
+                summary = profile.summary,
+            ),
+            model = "test-model",
+            promptVersion = "compact-v5",
+            summaryMaxLength = 500,
+        )
+
+        assertEquals(1, supported.deletedItems)
+        assertFalse(supported.reduction.profile.items.any { it.id == "fact-item" })
+    }
+
+    @Test
     fun compactionPromptUsesTemporaryReferencesAndSupportCounts() {
         val profile = profile()
         val prompt = ProfilePromptStore.buildCompactionUserPrompt(
@@ -112,6 +150,16 @@ class UserProfileCompactorTest {
         assertTrue(ProfilePromptStore.systemPrompt.contains("截至 YYYY-MM-DD"))
         assertTrue(ProfilePromptStore.conversationSystemPrompt.contains("截至 YYYY-MM-DD"))
         assertTrue(ProfilePromptStore.compactionSystemPrompt.contains("item_range"))
+    }
+
+    @Test
+    fun promptsRejectMachineResultsAndBatchScopedObservations() {
+        assertTrue(ProfilePromptStore.systemPrompt.contains("本人原话门槛"))
+        assertTrue(ProfilePromptStore.systemPrompt.contains("游戏结算"))
+        assertTrue(ProfilePromptStore.conversationSystemPrompt.contains("三个月后"))
+        assertTrue(ProfilePromptStore.conversationSystemPrompt.contains("连续命令"))
+        assertTrue(ProfilePromptStore.compactionSystemPrompt.contains("reason=not_profile"))
+        assertTrue(ProfilePromptStore.compactionSystemPrompt.contains("完成150次钓鱼"))
     }
 
     @Test
@@ -193,6 +241,93 @@ class UserProfileCompactorTest {
             "该用户从事上位机开发，关注大语言模型，表达直接。",
             plan.reduction.profile.summary,
         )
+    }
+
+    @Test
+    fun appliesValidSummaryEvenWhenSomeOperationsAreSkipped() {
+        val profile = profile()
+        val plan = UserProfileCompactor.reduce(
+            current = profile,
+            supportStats = mapOf("fact-item" to supportStats(1)),
+            response = ProfileCompactionResponse(
+                deletes = listOf(
+                    ProfileCompactionDelete("P4", ProfileCompactionDeleteReason.OVER_SPECIFIC)
+                ),
+                summary = "该用户从事上位机开发，并关注大语言模型。",
+            ),
+            model = "test-model",
+            promptVersion = "compact-v4",
+            summaryMaxLength = 500,
+        )
+
+        assertTrue(plan.reduction.operations.isEmpty())
+        assertTrue(plan.skippedOperations.single().contains("high"))
+        assertEquals(profile.version + 1, plan.reduction.profile.version)
+        assertEquals("该用户从事上位机开发，并关注大语言模型。", plan.reduction.profile.summary)
+    }
+
+    @Test
+    fun repairsInvertedItemRangesEvenWithoutModelOperations() {
+        val current = profile().copy(
+            items = listOf(
+                profile().items.first().copy(firstSeenAt = 300, lastConfirmedAt = 100)
+            )
+        )
+        val plan = UserProfileCompactor.reduce(
+            current = current,
+            supportStats = emptyMap(),
+            response = ProfileCompactionResponse(summary = current.summary),
+            model = "test-model",
+            promptVersion = "compact-v5",
+            summaryMaxLength = 500,
+        )
+
+        assertEquals(1, plan.repairedItemRanges)
+        assertEquals(100, plan.reduction.profile.items.single().firstSeenAt)
+        assertEquals(300, plan.reduction.profile.items.single().lastConfirmedAt)
+        assertEquals(current.version + 1, plan.reduction.profile.version)
+    }
+
+    @Test
+    fun deletesRetainedBatchScopedItemsEvenWhenModelMissesThem() {
+        val batchScoped = UserProfileItem(
+            id = "batch-scoped",
+            category = ProfileCategory.SOCIAL_MODE,
+            content = "本批多次通过简短调侃参与群聊。",
+            confidence = ProfileConfidence.HIGH,
+            firstSeenAt = 100,
+            lastConfirmedAt = 200,
+        )
+        val stable = UserProfileItem(
+            id = "stable",
+            category = ProfileCategory.NOTABLE_FACT,
+            content = "2025-01-01提及正在准备研究生复试。",
+            confidence = ProfileConfidence.MEDIUM,
+            firstSeenAt = 100,
+            lastConfirmedAt = 200,
+        )
+        val current = UserProfileSnapshot(
+            userId = 1,
+            summary = "本批多次参与群聊。",
+            version = 1,
+            cursorTime = 100,
+            snapshotEndTime = 200,
+            items = listOf(batchScoped, stable),
+        )
+
+        val plan = UserProfileCompactor.reduce(
+            current = current,
+            supportStats = mapOf("batch-scoped" to supportStats(5)),
+            response = ProfileCompactionResponse(summary = current.summary),
+            model = "test-model",
+            promptVersion = "compact-v5",
+            summaryMaxLength = 500,
+        )
+
+        assertEquals(1, plan.deletedItems)
+        assertFalse(plan.reduction.profile.items.any { it.id == "batch-scoped" })
+        assertTrue(plan.reduction.profile.items.any { it.id == "stable" })
+        assertFalse(ProfileContentRules.containsBatchScopedText(plan.reduction.profile.summary))
     }
 
     @Test
