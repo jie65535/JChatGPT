@@ -47,6 +47,28 @@ class UserProfileAnalysisServiceTest {
                 GroupProfileCursor(BOT, GROUP, cursorTime = 500, snapshotEndTime = 500),
             )
         )
+
+        assertEquals(bounds, pendingGroupAnalysisRange(bounds, null))
+        assertEquals(
+            bounds.copy(startTime = 300),
+            pendingGroupAnalysisRange(
+                bounds,
+                GroupProfileCursor(BOT, GROUP, cursorTime = 300, snapshotEndTime = 500),
+            )
+        )
+        assertEquals(
+            bounds.copy(startTime = 400, endTime = 600),
+            pendingGroupAnalysisRange(
+                bounds,
+                GroupProfileCursor(BOT, GROUP, cursorTime = 400, snapshotEndTime = 600),
+            )
+        )
+        assertNull(
+            pendingGroupAnalysisRange(
+                bounds,
+                GroupProfileCursor(BOT, GROUP, cursorTime = 500, snapshotEndTime = 500),
+            )
+        )
     }
 
     @Test

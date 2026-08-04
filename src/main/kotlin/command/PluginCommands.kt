@@ -90,20 +90,30 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.profileAnalyzeGroup(groupIds: String = "", batches: Int = 1) {
         require(batches > 0) { "batches 必须是正数" }
         val analyzeAllGroups = groupIds.isBlank()
+        val minimumMessages = PluginConfig.profileBulkGroupMinPendingMessages.coerceAtLeast(1)
         val parsedGroupIds = if (analyzeAllGroups) {
-            UserProfileAnalysisService.listPendingHistoryGroupIds()
+            UserProfileAnalysisService.listPendingHistoryGroupIds(minimumMessages)
         } else {
             parseProfileGroupIds(groupIds)
         }
         if (parsedGroupIds.isEmpty()) {
-            sendMessage("没有待推进的群画像：历史库中无有效群消息，或所有群均已追平当前快照。")
+            sendMessage(
+                if (analyzeAllGroups) {
+                    "没有达到启动条件的群画像：历史库中无有效群消息、群已追平，" +
+                            "或尚未处理的消息少于 $minimumMessages 条。"
+                } else {
+                    "没有可推进的指定群画像。"
+                }
+            )
             return
         }
         val runToken = UserProfileAnalysisService.newRunToken()
         sendMessage(
             "已启动 ${parsedGroupIds.size} 个群的画像分析，每群最多推进 $batches 个批次。" +
                     if (analyzeAllGroups) {
-                        " 画像请求并发上限 ${normalizeMaxConcurrentRequests(PluginConfig.profileMaxConcurrentRequests)}。"
+                        " 全量启动门槛 $minimumMessages 条待处理消息，" +
+                                "画像请求并发上限 " +
+                                "${normalizeMaxConcurrentRequests(PluginConfig.profileMaxConcurrentRequests)}。"
                     } else {
                         ""
                     }

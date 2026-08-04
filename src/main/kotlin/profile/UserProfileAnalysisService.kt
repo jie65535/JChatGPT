@@ -32,17 +32,21 @@ object UserProfileAnalysisService {
         return report
     }
 
-    suspend fun listPendingHistoryGroupIds(): List<Long> {
+    suspend fun listPendingHistoryGroupIds(
+        minimumMessages: Int = PluginConfig.profileBulkGroupMinPendingMessages,
+    ): List<Long> {
         check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
         return withContext(Dispatchers.IO) {
-            val historyBounds = ProfileHistoryReader(resolveHistoryFile()).listGroupTimeBounds()
+            val reader = ProfileHistoryReader(resolveHistoryFile())
+            val historyBounds = reader.listGroupTimeBounds()
             val cursors = UserProfileStore.loadGroupCursors()
                 .associateBy { cursor -> cursor.botId to cursor.groupId }
-            historyBounds.asSequence()
-                .filter { bounds ->
-                    isGroupAnalysisPending(bounds, cursors[bounds.botId to bounds.groupId])
-                }
+            val pendingRanges = historyBounds.mapNotNull { bounds ->
+                pendingGroupAnalysisRange(bounds, cursors[bounds.botId to bounds.groupId])
+            }
+            reader.filterGroupRangesByMinimumMessageCount(pendingRanges, minimumMessages)
+                .asSequence()
                 .map(ProfileHistoryReader.GroupTimeBounds::groupId)
                 .toList()
         }
@@ -758,4 +762,14 @@ object UserProfileAnalysisService {
 internal fun isGroupAnalysisPending(
     bounds: ProfileHistoryReader.GroupTimeBounds,
     cursor: GroupProfileCursor?,
-): Boolean = cursor == null || cursor.cursorTime < maxOf(cursor.snapshotEndTime, bounds.endTime)
+): Boolean = pendingGroupAnalysisRange(bounds, cursor) != null
+
+internal fun pendingGroupAnalysisRange(
+    bounds: ProfileHistoryReader.GroupTimeBounds,
+    cursor: GroupProfileCursor?,
+): ProfileHistoryReader.GroupTimeBounds? {
+    val startTime = cursor?.cursorTime ?: bounds.startTime
+    val endTime = maxOf(cursor?.snapshotEndTime ?: bounds.endTime, bounds.endTime)
+    return bounds.copy(startTime = startTime, endTime = endTime)
+        .takeIf { startTime < endTime }
+}

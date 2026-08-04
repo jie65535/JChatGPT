@@ -116,6 +116,8 @@ contactSnapshotRefreshIntervalMinutes: 1440
 contactSnapshotGroupDelayMillis: 200
 # 每批目标用户消息数、片段软间隔及上下文限制
 profileBatchTargetMessages: 120
+# 全量推进群画像时，至少累计多少条尚未处理的有效群消息才启动
+profileBulkGroupMinPendingMessages: 20
 profileBatchMaxEpisodes: 16
 profileEpisodeGapMinutes: 60
 profileContextBeforeMessages: 30
@@ -234,8 +236,9 @@ searchHistoryMaxRecords: 5000
 模型只使用单次请求内有效的临时编号，不接触画像条目的内部 UUID；不合规建议会被跳过，不阻断其他有效更新。
 临时用户别名不会写入最终画像。`profileCompact` 可独立清理重复或低价值条目，且不推进历史水位线。
 旧历史可通过 `profileAnalyze` 或 `profileAnalyzeGroup` 手动分批推进。执行不带参数的 `profileAnalyzeGroup` 时，
-插件会从画像历史库枚举所有含有效群消息的群，并在启动任务前排除游标已覆盖最新历史快照的群，只并发推进仍有
-历史待处理的群。画像模型通过应用层信号量按 `profileMaxConcurrentRequests` 限制同时执行的请求数，默认 128；
+插件会从画像历史库枚举所有含有效群消息的群，并在启动任务前排除游标已覆盖最新历史快照的群。默认只有尚未
+处理的有效消息累计达到 `profileBulkGroupMinPendingMessages`（默认 20）才启动，避免低活跃群反复触发；显式指定
+群号时不受此门槛限制。画像模型通过应用层信号量按 `profileMaxConcurrentRequests` 限制同时执行的请求数，默认 128；
 等待信号量的时间不计入首块响应超时，OkHttp 使用相同上限兜底。群批次只在读取画像快照和提交结果时短暂
 持有用户锁，模型请求在锁外执行；提交前若发现画像已变化，会按稳定条目 ID 将同一响应的操作重放到最新版，
 已不存在的操作目标会被跳过，不会重新请求模型。显式传入群号时仍只分析指定群。全量模式仅发送启动和最终汇总，

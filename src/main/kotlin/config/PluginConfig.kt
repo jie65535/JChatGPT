@@ -96,6 +96,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("每个画像分析批次最多读取目标用户多少条消息")
     val profileBatchTargetMessages: Int by value(120)
 
+    @ValueDescription("全量推进群画像时，群内至少有多少条尚未处理的消息才启动；显式指定群号不受限制")
+    val profileBulkGroupMinPendingMessages: Int by value(20)
+
     @ValueDescription("每个画像分析批次最多包含多少个离散对话片段；同一秒的消息仍会一起处理")
     val profileBatchMaxEpisodes: Int by value(16)
 
