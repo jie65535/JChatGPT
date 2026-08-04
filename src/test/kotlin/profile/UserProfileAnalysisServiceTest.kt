@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import net.mamoe.mirai.message.data.MessageSourceKind
 import top.jie65535.mirai.data.ChatMessageRecord
+import top.jie65535.mirai.llm.ModelSafetyRejectionException
 import java.io.IOException
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicInteger
@@ -119,6 +120,25 @@ class UserProfileAnalysisServiceTest {
         assertEquals(2, model.calls)
         assertNull(UserProfileStore.load(USER_A))
         assertNull(UserProfileStore.load(USER_B))
+        assertFalse(UserProfileStore.isConversationProcessed(INPUT_HASH))
+    }
+
+    @Test
+    fun safetyRejectionDoesNotRetryOrCommit() = withProfileStore {
+        val model = FakeConversationProfileModel {
+            throw ModelSafetyRejectionException(
+                errorType = "invalid_request_error",
+                errorCode = "cyber_policy",
+                message = "blocked by policy",
+            )
+        }
+
+        assertFailsWith<ModelSafetyRejectionException> {
+            analyze(batch(), model, retryMax = 3)
+        }
+
+        assertEquals(1, model.calls)
+        assertNull(UserProfileStore.load(USER_A))
         assertFalse(UserProfileStore.isConversationProcessed(INPUT_HASH))
     }
 

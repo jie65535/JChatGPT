@@ -8,6 +8,8 @@ import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
 import top.jie65535.mirai.data.ChatHistoryStore
 import top.jie65535.mirai.llm.LargeLanguageModels
+import top.jie65535.mirai.llm.ModelRequestRejectedException
+import top.jie65535.mirai.llm.ModelSafetyRejectionException
 import top.jie65535.mirai.util.RetryBackoff
 import java.io.File
 import java.security.MessageDigest
@@ -334,15 +336,23 @@ object UserProfileAnalysisService {
                 break
             }
 
-            val report = analyzeConversationBatch(
-                batch = batch,
-                minAuthoredTextChars = PluginConfig.profileAutoMinAuthoredTextChars,
-                model = model,
-                retryMax = PluginConfig.profileRetryMax,
-                summaryMaxLength = PluginConfig.profileSummaryMaxLength,
-                onRetryFailure = { message, cause -> JChatGPT.logger.warning(message, cause) },
-                onCommittedOperations = ProfileOperationLogger::log,
-            )
+            val report = try {
+                analyzeConversationBatch(
+                    batch = batch,
+                    minAuthoredTextChars = PluginConfig.profileAutoMinAuthoredTextChars,
+                    model = model,
+                    retryMax = PluginConfig.profileRetryMax,
+                    summaryMaxLength = PluginConfig.profileSummaryMaxLength,
+                    onRetryFailure = { message, cause -> JChatGPT.logger.warning(message, cause) },
+                    onCommittedOperations = ProfileOperationLogger::log,
+                )
+            } catch (cause: ModelSafetyRejectionException) {
+                JChatGPT.logger.warning(
+                    "群 $groupId 会话画像 [${batch.startTime}, ${batch.endTime}) 被模型安全策略拒绝，" +
+                            "已跳过该批并继续后续历史 code=${cause.errorCode ?: "unknown"}"
+                )
+                null
+            }
             cursor = cursor.copy(
                 cursorTime = batch.endTime,
                 updatedAt = System.currentTimeMillis(),
@@ -545,6 +555,14 @@ object UserProfileAnalysisService {
                 return result to reductions
             } catch (cause: Exception) {
                 if (cause is CancellationException) throw cause
+                if (cause is ModelRequestRejectedException) {
+                    onRetryFailure(
+                        "群 ${batch.groupId} 会话画像 [${batch.startTime}, ${batch.endTime}) " +
+                                "被模型拒绝，已停止重试",
+                        cause,
+                    )
+                    throw cause
+                }
                 lastFailure = cause
                 handleRetryFailure(
                     attempt = attempt,
@@ -591,6 +609,14 @@ object UserProfileAnalysisService {
                 return result to reduction
             } catch (cause: Exception) {
                 if (cause is CancellationException) throw cause
+                if (cause is ModelRequestRejectedException) {
+                    JChatGPT.logger.warning(
+                        "用户 ${batch.userId} 画像批次 [${batch.startTime}, ${batch.endTime}) " +
+                                "被模型拒绝，已停止重试",
+                        cause,
+                    )
+                    throw cause
+                }
                 lastFailure = cause
                 handleRetryFailure(
                     attempt = attempt,
@@ -631,6 +657,13 @@ object UserProfileAnalysisService {
                 return result to plan
             } catch (cause: Exception) {
                 if (cause is CancellationException) throw cause
+                if (cause is ModelRequestRejectedException) {
+                    JChatGPT.logger.warning(
+                        "用户 ${profile.userId} 画像压缩被模型拒绝，已停止重试",
+                        cause,
+                    )
+                    throw cause
+                }
                 lastFailure = cause
                 handleRetryFailure(
                     attempt = attempt,
