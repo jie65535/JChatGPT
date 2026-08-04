@@ -5,7 +5,6 @@ import com.aallam.openai.api.core.Parameters
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -50,10 +49,6 @@ class QueryUserProfileAgent : BaseAgent(
                     put("type", "boolean")
                     put("description", "是否返回画像条目明细，默认true")
                 }
-                putJsonObject("limit") {
-                    put("type", "integer")
-                    put("description", "最多返回多少条画像条目，默认20，最大50")
-                }
             }
         }
     )
@@ -73,10 +68,9 @@ class QueryUserProfileAgent : BaseAgent(
         if (profile == null && publicProfile == null) return "用户 $userId 尚无画像，当前联系人也没有可读取的公开资料卡。"
 
         val includeItems = args?.get("includeItems")?.jsonPrimitive?.booleanOrNull ?: true
-        val limit = args?.get("limit")?.jsonPrimitive?.intOrNull?.coerceIn(1, 50) ?: 20
         val displayName = resolveDisplayName(userId, event)
 
-        return formatProfile(userId, profile, publicProfile, displayName, includeItems, limit)
+        return formatProfile(userId, profile, publicProfile, displayName, includeItems)
     }
 
     private fun resolveUserId(args: JsonObject?, event: MessageEvent): Long? {
@@ -148,7 +142,6 @@ class QueryUserProfileAgent : BaseAgent(
         publicProfile: UserProfile?,
         displayName: String,
         includeItems: Boolean,
-        limit: Int,
     ): String = buildString {
         appendLine("用户画像：$displayName($userId)")
         if (profile != null) {
@@ -163,9 +156,7 @@ class QueryUserProfileAgent : BaseAgent(
         publicProfile?.let { appendPublicProfile(it) }
         if (includeItems && profile?.items?.isNotEmpty() == true) {
             appendLine("条目：")
-            profile.items
-                .sortedWith(compareBy<UserProfileItem>({ it.category.ordinal }, { it.firstSeenAt }, { it.id }))
-                .take(limit)
+            selectProfileItems(profile.items)
                 .forEach { item ->
                     append("- ")
                     append(item.category.label()).append('/').append(item.confidence.name.lowercase())
@@ -180,9 +171,6 @@ class QueryUserProfileAgent : BaseAgent(
                         relationship = item.category == ProfileCategory.RELATIONSHIP_NOTE,
                     ))
                 }
-            if (profile.items.size > limit) {
-                appendLine("其余 ${profile.items.size - limit} 条已省略，可提高 limit 继续查询。")
-            }
         }
     }.trim()
 
@@ -252,3 +240,9 @@ class QueryUserProfileAgent : BaseAgent(
 
     private fun String.normalized(): String = trim().replace(Regex("\\s+"), " ")
 }
+
+internal fun selectProfileItems(
+    items: List<UserProfileItem>,
+): List<UserProfileItem> = items.sortedWith(
+        compareBy<UserProfileItem>({ it.category.ordinal }, { it.firstSeenAt }, { it.id })
+    )
