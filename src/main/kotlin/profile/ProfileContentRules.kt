@@ -7,6 +7,7 @@ object ProfileContentRules {
         require(content.length <= MAX_CONTENT_LENGTH) { "$label.content 超过 $MAX_CONTENT_LENGTH 字符" }
         require(!overclaimPattern.containsMatchIn(content)) { "$label.content 包含夸张身份或能力判断" }
         require(!itemReferencePattern.containsMatchIn(content)) { "$label.content 包含临时画像条目编号" }
+        require(!batchScopedPattern.containsMatchIn(content)) { "$label.content 包含批次化处理措辞" }
         return content
     }
 
@@ -14,6 +15,7 @@ object ProfileContentRules {
         val summary = raw.trim()
         require(summary.length <= maxLength) { "画像摘要超过 $maxLength 字符" }
         require(!itemReferencePattern.containsMatchIn(summary)) { "画像摘要包含临时画像条目编号" }
+        require(!batchScopedPattern.containsMatchIn(summary)) { "画像摘要包含批次化处理措辞" }
         return summary
     }
 
@@ -21,7 +23,10 @@ object ProfileContentRules {
         .lowercase()
         .replace(Regex("[\\s\\p{Punct}，。；、！？（）【】‘’“”]+"), "")
 
+    fun containsBatchScopedText(value: String): Boolean = batchScopedPattern.containsMatchIn(value)
+
     private const val MAX_CONTENT_LENGTH = 120
     private val overclaimPattern = Regex("深厚|扎实|精通|专家|导师|领袖|天才|极强|全栈|核心成员|公认")
     private val itemReferencePattern = Regex("(?<![A-Za-z0-9_])P[1-9]\\d*(?![A-Za-z0-9_])")
+    private val batchScopedPattern = Regex("本批|本轮(?:分析|整理|对话|更新)|此次对话|本次对话|这段对话")
 }

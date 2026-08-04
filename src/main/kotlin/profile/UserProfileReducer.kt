@@ -126,7 +126,8 @@ object UserProfileReducer {
                     content = content,
                     confidence = confidence,
                     relatedUserId = relatedUserId,
-                    lastConfirmedAt = evidenceTime,
+                    firstSeenAt = minOf(old.firstSeenAt, firstEvidenceTime),
+                    lastConfirmedAt = maxOf(old.lastConfirmedAt, evidenceTime),
                 )
                 items[old.id] = updated
                 updated.toApplied(operation.action, operation.evidenceRefs)
@@ -136,7 +137,8 @@ object UserProfileReducer {
                 val old = requireExistingItem(index, operation, current, items)
                 val updated = old.copy(
                     confidence = operation.confidence ?: old.confidence,
-                    lastConfirmedAt = evidenceTime,
+                    firstSeenAt = minOf(old.firstSeenAt, firstEvidenceTime),
+                    lastConfirmedAt = maxOf(old.lastConfirmedAt, evidenceTime),
                 )
                 items[old.id] = updated
                 updated.toApplied(operation.action, operation.evidenceRefs)

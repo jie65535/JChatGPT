@@ -33,6 +33,67 @@ class ProfileMessageRendererTest {
         assertEquals("12345678...[截断]", ProfileMessageRenderer.render(record, emptyMap(), 8))
     }
 
+    @Test
+    fun doesNotSplitSurrogatePairsAtTruncationBoundaries() {
+        val emoji = "\uD83D\uDE00"
+        val finalText = "a".repeat(7) + emoji + "tail"
+        assertEquals(
+            "a".repeat(7) + "...[截断]",
+            ProfileMessageRenderer.render(
+                record("""[{"type":"PlainText","content":"$finalText"}]"""),
+                emptyMap(),
+                8,
+            ),
+        )
+
+        val quotedText = "q".repeat(159) + emoji + "tail"
+        assertEquals(
+            "[引用 U1: ${"q".repeat(159)}]",
+            ProfileMessageRenderer.render(
+                record(
+                    """
+                    [{"type":"QuoteReply","source":{"fromId":200,"originalMessage":[
+                      {"type":"PlainText","content":"$quotedText"}
+                    ]}}]
+                    """.trimIndent()
+                ),
+                mapOf(200L to "U1"),
+                1_000,
+            ),
+        )
+
+        val forwardedText = "f".repeat(199) + emoji + "tail"
+        assertEquals(
+            "[转发消息] sender: ${"f".repeat(199)}",
+            ProfileMessageRenderer.render(
+                record(
+                    """
+                    [{"type":"ForwardMessage","nodeList":[{
+                      "senderName":"sender",
+                      "messageChain":[{"type":"PlainText","content":"$forwardedText"}]
+                    }]}]
+                    """.trimIndent()
+                ),
+                emptyMap(),
+                1_000,
+            ),
+        )
+    }
+
+    @Test
+    fun replacesUnpairedSurrogatesBeforeBuildingModelPrompts() {
+        val loneHighSurrogate = "\uD83D"
+
+        assertEquals(
+            "prefix\uFFFDsuffix",
+            ProfileMessageRenderer.render(
+                record("""[{"type":"PlainText","content":"prefix${loneHighSurrogate}suffix"}]"""),
+                emptyMap(),
+                1_000,
+            ),
+        )
+    }
+
     private fun record(code: String) = ChatMessageRecord(
         botId = 1,
         fromId = 100,

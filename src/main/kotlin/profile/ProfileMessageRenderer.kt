@@ -28,10 +28,10 @@ object ProfileMessageRenderer {
             renderChain(record.toMessageChain(), aliases)
         }.getOrElse {
             "[消息内容解析失败]"
-        }.replace(Regex("[\\r\\n]+"), " ").trim()
+        }.replace(Regex("[\\r\\n]+"), " ").trim().replaceUnpairedSurrogates()
 
         if (content.length <= maxChars) return content.ifEmpty { "[无文本消息]" }
-        return content.take(maxChars).trimEnd() + "...[截断]"
+        return content.takeUtf16Safely(maxChars).trimEnd() + "...[截断]"
     }
 
     fun referencedUserIds(record: ChatMessageRecord): Set<Long> = runCatching {
@@ -95,7 +95,7 @@ object ProfileMessageRenderer {
             ?.let { renderJsonMessages(it, aliases) }
             .orEmpty()
             .replace(Regex("[\\r\\n]+"), " ")
-            .take(160)
+            .takeUtf16Safely(160)
         return "[引用 $author: $original]"
     }
 
@@ -107,7 +107,7 @@ object ProfileMessageRenderer {
             val sender = node.string("senderName") ?: "未知用户"
             val chain = node["messageChain"] as? JsonArray
             append(' ').append(sender).append(": ")
-            append(chain?.let { renderJsonMessages(it, aliases) }.orEmpty().take(200))
+            append(chain?.let { renderJsonMessages(it, aliases) }.orEmpty().takeUtf16Safely(200))
         }
         if (nodes.size > 20) append(" ...[转发内容截断]")
     }
@@ -161,17 +161,60 @@ object ProfileMessageRenderer {
             val author = aliases[message.source.fromId] ?: "其他用户"
             val quoted = renderChain(message.source.originalMessage, aliases)
                 .replace(Regex("[\\r\\n]+"), " ")
-                .take(160)
+                .takeUtf16Safely(160)
             "[引用 $author: $quoted]"
         }
         is ForwardMessage -> buildString {
             append("[转发消息]")
             message.nodeList.take(20).forEach { node ->
                 append(" ").append(node.senderName).append(": ")
-                append(renderChain(node.messageChain, aliases).replace(Regex("[\\r\\n]+"), " ").take(200))
+                append(
+                    renderChain(node.messageChain, aliases)
+                        .replace(Regex("[\\r\\n]+"), " ")
+                        .takeUtf16Safely(200)
+                )
             }
             if (message.nodeList.size > 20) append(" ...[转发内容截断]")
         }
         else -> message.content
+    }
+
+    private fun String.takeUtf16Safely(maxLength: Int): String {
+        require(maxLength >= 0) { "maxLength must not be negative" }
+        if (length <= maxLength) return this
+        val endIndex = if (maxLength > 0 &&
+            Character.isHighSurrogate(this[maxLength - 1]) &&
+            Character.isLowSurrogate(this[maxLength])
+        ) {
+            maxLength - 1
+        } else {
+            maxLength
+        }
+        return substring(0, endIndex)
+    }
+
+    private fun String.replaceUnpairedSurrogates(): String {
+        var output: StringBuilder? = null
+        var index = 0
+        while (index < length) {
+            val current = this[index]
+            when {
+                Character.isHighSurrogate(current) &&
+                        index + 1 < length && Character.isLowSurrogate(this[index + 1]) -> {
+                    output?.append(current)?.append(this[index + 1])
+                    index += 2
+                }
+                Character.isSurrogate(current) -> {
+                    if (output == null) output = StringBuilder(length).append(this, 0, index)
+                    output.append('\uFFFD')
+                    index++
+                }
+                else -> {
+                    output?.append(current)
+                    index++
+                }
+            }
+        }
+        return output?.toString() ?: this
     }
 }

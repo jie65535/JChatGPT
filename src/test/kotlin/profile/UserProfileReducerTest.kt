@@ -292,6 +292,69 @@ class UserProfileReducerTest {
     }
 
     @Test
+    fun rejectsBatchScopedPersistentText() {
+        val current = emptyProfile().copy(summary = "原摘要")
+        val batch = batchOf(message(ref = 1, fromId = TARGET, text = "喵喵喵"))
+
+        val reduction = UserProfileReducer.reduce(
+            current = current,
+            batch = batch,
+            response = ProfileModelResponse(
+                operations = listOf(
+                    ProfileModelOperation(
+                        action = ProfileOperationAction.ADD,
+                        category = ProfileCategory.EXPRESSION_STYLE,
+                        content = "本批多次使用拟猫化措辞",
+                        confidence = ProfileConfidence.LOW,
+                        evidenceRefs = listOf(1),
+                    )
+                ),
+                summary = "本批主要使用拟猫化措辞。",
+            ),
+            model = "test-model",
+            promptVersion = "test-prompt",
+            summaryMaxLength = 500,
+        )
+
+        assertTrue(reduction.operations.isEmpty())
+        assertTrue(reduction.skippedOperations.single().contains("批次化"))
+        assertEquals("原摘要", reduction.profile.summary)
+    }
+
+    @Test
+    fun keepsEvidenceRangeMonotonicWhenOlderBatchUpdatesExistingItem() {
+        val old = existingItem().copy(
+            firstSeenAt = 150,
+            lastConfirmedAt = 180,
+        )
+        val current = emptyProfile().copy(items = listOf(old), reliable = true)
+        val batch = batchOf(message(ref = 1, fromId = TARGET, text = "我更早也关注 Kotlin"))
+
+        val reduction = UserProfileReducer.reduce(
+            current = current,
+            batch = batch,
+            response = ProfileModelResponse(
+                operations = listOf(
+                    ProfileModelOperation(
+                        action = ProfileOperationAction.UPDATE,
+                        itemRef = "P1",
+                        content = "关注 Kotlin 开发",
+                        evidenceRefs = listOf(1),
+                    )
+                ),
+                summary = "关注 Kotlin 开发。",
+            ),
+            model = "test-model",
+            promptVersion = "test-prompt",
+            summaryMaxLength = 500,
+        )
+
+        val updated = reduction.profile.items.single()
+        assertEquals(121, updated.firstSeenAt)
+        assertEquals(180, updated.lastConfirmedAt)
+    }
+
+    @Test
     fun removesTemporaryAliasesFromPersistedRelationshipText() {
         val batch = batchOf(message(ref = 1, fromId = TARGET, text = "先找到下家再离职"))
 
