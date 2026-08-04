@@ -56,10 +56,7 @@ class ProfileModelClient(
         profile: UserProfileSnapshot,
         batch: ProfileHistoryBatch,
     ): ProfileModelResult {
-        val content = StringBuilder()
-        var lastUsage: Usage? = null
-        var cacheUsage: ModelService.CacheUsage? = null
-        endpoint.service.chatCompletions(
+        val completion = complete(
             ChatCompletionRequest(
                 model = ModelId(endpoint.model),
                 temperature = endpoint.temperature,
@@ -70,21 +67,13 @@ class ProfileModelClient(
                     ChatMessage.User(ProfilePromptStore.buildUserPrompt(profile, batch)),
                 ),
             )
-        ) { cacheUsage = it }.collect { chunk ->
-            chunk.choices.firstOrNull()?.delta?.content?.let(content::append)
-            chunk.usage?.let { lastUsage = it }
-        }
-
-        val raw = content.toString().replace(THINK_REGEX, "").trim()
+        )
+        val raw = completion.content.replace(THINK_REGEX, "").trim()
         val response = parseResponse(raw)
         return ProfileModelResult(
             response = response,
             rawResponse = raw,
-            usage = ProfileTokenUsage(
-                promptTokens = lastUsage?.promptTokens ?: 0,
-                completionTokens = lastUsage?.completionTokens ?: 0,
-                cachedTokens = cacheUsage?.hitTokens ?: 0,
-            ),
+            usage = completion.usage,
         )
     }
 
@@ -93,10 +82,7 @@ class ProfileModelClient(
         batch: ConversationProfileBatch,
         eligibleUserIds: Set<Long>,
     ): ConversationProfileModelResult {
-        val content = StringBuilder()
-        var lastUsage: Usage? = null
-        var cacheUsage: ModelService.CacheUsage? = null
-        endpoint.service.chatCompletions(
+        val completion = complete(
             ChatCompletionRequest(
                 model = ModelId(endpoint.model),
                 temperature = endpoint.temperature,
@@ -109,20 +95,12 @@ class ProfileModelClient(
                     ),
                 ),
             )
-        ) { cacheUsage = it }.collect { chunk ->
-            chunk.choices.firstOrNull()?.delta?.content?.let(content::append)
-            chunk.usage?.let { lastUsage = it }
-        }
-
-        val raw = content.toString().replace(THINK_REGEX, "").trim()
+        )
+        val raw = completion.content.replace(THINK_REGEX, "").trim()
         return ConversationProfileModelResult(
             response = parseObject(raw),
             rawResponse = raw,
-            usage = ProfileTokenUsage(
-                promptTokens = lastUsage?.promptTokens ?: 0,
-                completionTokens = lastUsage?.completionTokens ?: 0,
-                cachedTokens = cacheUsage?.hitTokens ?: 0,
-            ),
+            usage = completion.usage,
         )
     }
 
@@ -130,10 +108,7 @@ class ProfileModelClient(
         profile: UserProfileSnapshot,
         supportStats: Map<String, ProfileItemSupportStats>,
     ): ProfileCompactionModelResult {
-        val content = StringBuilder()
-        var lastUsage: Usage? = null
-        var cacheUsage: ModelService.CacheUsage? = null
-        endpoint.service.chatCompletions(
+        val completion = complete(
             ChatCompletionRequest(
                 model = ModelId(endpoint.model),
                 temperature = endpoint.temperature,
@@ -144,22 +119,35 @@ class ProfileModelClient(
                     ChatMessage.User(ProfilePromptStore.buildCompactionUserPrompt(profile, supportStats)),
                 ),
             )
-        ) { cacheUsage = it }.collect { chunk ->
-            chunk.choices.firstOrNull()?.delta?.content?.let(content::append)
-            chunk.usage?.let { lastUsage = it }
-        }
-
-        val raw = content.toString().replace(THINK_REGEX, "").trim()
+        )
+        val raw = completion.content.replace(THINK_REGEX, "").trim()
         return ProfileCompactionModelResult(
             response = json.decodeFromString(extractObject(raw)),
             rawResponse = raw,
-            usage = ProfileTokenUsage(
-                promptTokens = lastUsage?.promptTokens ?: 0,
-                completionTokens = lastUsage?.completionTokens ?: 0,
-                cachedTokens = cacheUsage?.hitTokens ?: 0,
-            ),
+            usage = completion.usage,
         )
     }
+
+    private suspend fun complete(request: ChatCompletionRequest): CompletedProfileResponse {
+        val content = StringBuilder()
+        var lastUsage: Usage? = null
+        var cacheUsage: ModelService.CacheUsage? = null
+        endpoint.service.chatCompletions(request) { cacheUsage = it }.collect { chunk ->
+            chunk.choices.firstOrNull()?.delta?.content?.let(content::append)
+            chunk.usage?.let { lastUsage = it }
+        }
+        require(content.isNotBlank()) { "模型流式响应没有文本内容" }
+        return CompletedProfileResponse(
+            content = content.toString(),
+            usage = lastUsage.toProfileUsage(cacheUsage),
+        )
+    }
+
+    private fun Usage?.toProfileUsage(cacheUsage: ModelService.CacheUsage?) = ProfileTokenUsage(
+        promptTokens = this?.promptTokens ?: 0,
+        completionTokens = this?.completionTokens ?: 0,
+        cachedTokens = cacheUsage?.hitTokens ?: 0,
+    )
 
     private fun parseResponse(raw: String): ProfileModelResponse {
         return parseObject(raw)
@@ -186,4 +174,9 @@ class ProfileModelClient(
     companion object {
         private val THINK_REGEX = Regex("<think>[\\s\\S]*?</think>")
     }
+
+    private data class CompletedProfileResponse(
+        val content: String,
+        val usage: ProfileTokenUsage,
+    )
 }
