@@ -177,6 +177,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("Jina API Key")
     val jinaApiKey by value("")
 
+    @ValueDescription("Jina Reader API 地址，默认使用在线服务；自托管示例：http://127.0.0.1:4223/")
+    val jinaReaderUrl: String by value("https://r.jina.ai/")
+
     @ValueDescription("SearXNG 搜索引擎地址，如 http://127.0.0.1:8080/search 必须启用允许json格式返回")
     val searXngUrl: String by value("")
 

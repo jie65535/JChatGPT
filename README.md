@@ -161,6 +161,8 @@ imageWatermark: false
 ttsModel: 'qwen3-tts-instruct-flash'
 # Jina API Key
 jinaApiKey: ''
+# Jina Reader API 地址；自托管 Docker 服务示例：http://127.0.0.1:4223/
+jinaReaderUrl: 'https://r.jina.ai/'
 # SearXNG 搜索引擎地址，如 http://127.0.0.1:8080/search 必须启用允许json格式返回
 searXngUrl: ''
 # 在线运行代码 glot.io 的 api token，在官网注册账号即可获取。
