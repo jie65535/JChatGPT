@@ -2,6 +2,7 @@ package top.jie65535.mirai.llm
 
 import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
+import com.aallam.openai.api.chat.ToolChoice
 import com.aallam.openai.api.model.ModelId
 import com.sun.net.httpserver.HttpServer
 import io.ktor.utils.io.ByteReadChannel
@@ -93,6 +94,23 @@ class ModelServiceTest {
         assertEquals(
             true,
             Json.parseToJsonElement(body).jsonObject.getValue("stream").jsonPrimitive.content.toBoolean(),
+        )
+    }
+
+    @Test
+    fun serializesRequiredToolChoice() {
+        val body = service.buildRequestBody(
+            request = ChatCompletionRequest(
+                model = ModelId("test-model"),
+                messages = listOf(ChatMessage.User("hello")),
+                toolChoice = ToolChoice.Required,
+            ),
+            stream = true,
+        )
+
+        assertEquals(
+            "required",
+            Json.parseToJsonElement(body).jsonObject.getValue("tool_choice").jsonPrimitive.content,
         )
     }
 

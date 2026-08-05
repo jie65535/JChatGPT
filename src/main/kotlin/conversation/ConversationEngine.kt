@@ -5,6 +5,7 @@ import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.ChatRole
 import com.aallam.openai.api.chat.ToolCall
+import com.aallam.openai.api.chat.ToolChoice
 import com.aallam.openai.api.core.Usage
 import com.aallam.openai.api.model.ModelId
 import io.ktor.util.collections.ConcurrentSet
@@ -284,6 +285,7 @@ internal object ConversationEngine {
             temperature = endpoint.temperature,
             messages = history,
             tools = availableTools,
+            toolChoice = ToolChoice.Required,
         )
         JChatGPT.logger.info("API Requesting... Model=${endpoint.model} [${endpoint.label}]")
         return endpoint.service.chatCompletions(request, onCacheUsage)
