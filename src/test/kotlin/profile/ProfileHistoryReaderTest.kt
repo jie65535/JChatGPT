@@ -312,6 +312,89 @@ class ProfileHistoryReaderTest {
         }
     }
 
+    @Test
+    fun loadsLatestContinuousConversationAcrossFormerMessageLimit() {
+        val directory = Files.createTempDirectory("jchatgpt-profile-latest-conversation-test-")
+        val database = directory.resolve("history.sqlite")
+        try {
+            DriverManager.getConnection("jdbc:sqlite:${database.absolutePathString()}").use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeUpdate(
+                        """
+                        CREATE TABLE message_record(
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            bot_id INTEGER NOT NULL,
+                            from_id INTEGER NOT NULL,
+                            target_id INTEGER NOT NULL,
+                            ids TEXT,
+                            internal_ids TEXT,
+                            time INTEGER NOT NULL,
+                            kind INTEGER NOT NULL,
+                            code TEXT NOT NULL,
+                            recalled INTEGER NOT NULL DEFAULT 0
+                        )
+                        """.trimIndent()
+                    )
+                }
+                connection.prepareStatement(
+                    "INSERT INTO message_record(" +
+                            "bot_id, from_id, target_id, time, kind, code, recalled" +
+                            ") VALUES (1, ?, 50, ?, ?, ?, 0)"
+                ).use { statement ->
+                    fun insert(time: Int, text: String) {
+                        statement.setLong(1, TARGET)
+                        statement.setInt(2, time)
+                        statement.setInt(3, MessageSourceKind.GROUP.ordinal)
+                        statement.setString(4, """[{"type":"PlainText","content":"$text"}]""")
+                        statement.executeUpdate()
+                    }
+
+                    insert(100, "空窗前的旧消息")
+                    repeat(160) { index -> insert(2_000 + index, "连续会话消息 $index") }
+                    repeat(4) { index -> insert(2_159, "同秒高频消息 $index") }
+                }
+            }
+
+            val reader = ProfileHistoryReader(database.toFile())
+            val conversation = assertNotNull(
+                reader.loadLatestConversationBatch(
+                    botId = 1,
+                    groupId = 50,
+                    startTime = 0,
+                    endTime = 3_000,
+                    maxMessageChars = 200,
+                    idleGapSeconds = 30,
+                    maxMessages = 800,
+                    maxContentChars = 100_000,
+                    maxSpanSeconds = 5_000,
+                )
+            )
+            assertEquals(164, conversation.messages.size)
+            assertEquals(2_000, conversation.startTime)
+            assertEquals(2_000, conversation.messages.first().record.time)
+            assertEquals(2_159, conversation.messages.last().record.time)
+            assertTrue(conversation.messages.all { it.episodeIndex == 1 })
+
+            val hardLimited = assertNotNull(
+                reader.loadLatestConversationBatch(
+                    botId = 1,
+                    groupId = 50,
+                    startTime = 0,
+                    endTime = 3_000,
+                    maxMessageChars = 200,
+                    idleGapSeconds = 30,
+                    maxMessages = 3,
+                    maxContentChars = 100_000,
+                    maxSpanSeconds = 5_000,
+                )
+            )
+            assertEquals(3, hardLimited.messages.size)
+            assertEquals(listOf(2_159, 2_159, 2_159), hardLimited.messages.map { it.record.time })
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
     companion object {
         private const val TARGET = 100L
         private const val OTHER = 200L

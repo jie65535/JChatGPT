@@ -21,6 +21,7 @@ import top.jie65535.mirai.config.PluginConfig
 import top.jie65535.mirai.data.ContactSnapshotStore
 import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.profile.ProfileCategory
+import top.jie65535.mirai.profile.ProfileConfidence
 import top.jie65535.mirai.profile.ProfileItemSupportStats
 import top.jie65535.mirai.profile.ProfilePersistentText
 import top.jie65535.mirai.profile.UserProfileItem
@@ -163,22 +164,24 @@ class QueryUserProfileAgent : BaseAgent(
             appendLine("条目：")
             selectProfileItems(profile.items)
                 .forEach { item ->
-                    append("- ")
-                    append(item.category.label()).append('/').append(item.confidence.name.lowercase())
-                    append(" · ").append(formatDate(item.firstSeenAt))
-                    if (item.lastConfirmedAt != item.firstSeenAt) {
-                        append("~").append(formatDate(item.lastConfirmedAt))
-                    }
-                    append(" · ").append(formatSupportStats(supportStats[item.id]))
-                    item.relatedUserId?.let { append(" · related=").append(it) }
-                    append("：")
-                    appendLine(ProfilePersistentText.itemForDisplay(
-                        item.content,
-                        relationship = item.category == ProfileCategory.RELATIONSHIP_NOTE,
-                    ))
+                    append("- ").appendLine(formatProfileItem(item, supportStats[item.id]))
                 }
         }
     }.trim()
+
+    internal fun formatProfileItem(
+        item: UserProfileItem,
+        supportStats: ProfileItemSupportStats?,
+    ): String = buildString {
+        item.relatedUserId?.let { append("与用户 ").append(it).append("：") }
+        append(ProfilePersistentText.itemForDisplay(
+            item.content,
+            relationship = item.category == ProfileCategory.RELATIONSHIP_NOTE,
+        ))
+        append("〔").append(item.category.label()).append('，').append(item.confidence.label())
+            .append('；').append(formatSupportStats(supportStats))
+            .append("；最近确认于 ").append(formatDate(item.lastConfirmedAt)).append("〕")
+    }
 
     private suspend fun loadPublicProfile(userId: Long, event: MessageEvent): UserProfile? {
         val key = "${event.bot.id}:$userId"
@@ -221,7 +224,22 @@ class QueryUserProfileAgent : BaseAgent(
         if (fields.isNotEmpty()) appendLine("公开资料卡：${fields.joinToString("；")}")
     }
 
-    private fun ProfileCategory.label(): String = name.lowercase()
+    private fun ProfileCategory.label(): String = when (this) {
+        ProfileCategory.NOTABLE_FACT -> "事实"
+        ProfileCategory.INTEREST -> "兴趣"
+        ProfileCategory.EXPERTISE_SIGNAL -> "能力"
+        ProfileCategory.THINKING_STYLE -> "思考"
+        ProfileCategory.EXPRESSION_STYLE -> "表达"
+        ProfileCategory.SOCIAL_MODE -> "社交"
+        ProfileCategory.PREFERENCE -> "偏好"
+        ProfileCategory.RELATIONSHIP_NOTE -> "关系"
+    }
+
+    private fun ProfileConfidence.label(): String = when (this) {
+        ProfileConfidence.LOW -> "低置信"
+        ProfileConfidence.MEDIUM -> "中置信"
+        ProfileConfidence.HIGH -> "高置信"
+    }
 
     private fun formatTime(epochSecond: Int): String =
         TIME_FORMATTER.format(Instant.ofEpochSecond(epochSecond.toLong()))
@@ -229,16 +247,8 @@ class QueryUserProfileAgent : BaseAgent(
     private fun formatDate(epochSecond: Int): String =
         DATE_FORMATTER.format(Instant.ofEpochSecond(epochSecond.toLong()))
 
-    internal fun formatSupportStats(stats: ProfileItemSupportStats?): String = buildString {
-        append("支持=").append(stats?.count ?: 0).append("次")
-        stats?.takeIf { it.count > 0 }?.let {
-            append("（").append(formatDate(it.firstSupportedAt))
-            if (it.lastSupportedAt != it.firstSupportedAt) {
-                append("~").append(formatDate(it.lastSupportedAt))
-            }
-            append("）")
-        }
-    }
+    internal fun formatSupportStats(stats: ProfileItemSupportStats?): String =
+        "${stats?.count ?: 0}次支持"
 
     companion object {
         private const val PUBLIC_PROFILE_TIMEOUT_MS = 5_000L

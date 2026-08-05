@@ -434,12 +434,11 @@ object UserProfileAnalysisService {
         val model: ConversationProfileModel = ProfileModelClient(endpoint)
         val reader = withContext(Dispatchers.IO) { ProfileHistoryReader(resolveLiveHistoryFile()) }
         val batch = withContext(Dispatchers.IO) {
-            reader.loadConversationBatch(
+            reader.loadLatestConversationBatch(
                 botId = botId,
                 groupId = groupId,
                 startTime = startTime,
                 endTime = endTime,
-                messageLimit = PluginConfig.profileAutoConversationMessageLimit.coerceIn(20, 500),
                 maxMessageChars = PluginConfig.profileMaxMessageChars.coerceAtLeast(80),
             )
         } ?: return null

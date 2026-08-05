@@ -135,7 +135,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("是否在群聊会话结束后静默自动维护相关用户画像")
     val profileAutoUpdateEnabled: Boolean by value(true)
 
-    @ValueDescription("自动画像分析一次闭合会话最多读取多少条最近消息")
+    @ValueDescription("群画像历史推进的目标消息数；实时自动维护改按自然空窗读取完整连续会话")
     val profileAutoConversationMessageLimit: Int by value(150)
 
     @ValueDescription("用户在会话中至少包含多少个本人文本字符才调用画像模型")

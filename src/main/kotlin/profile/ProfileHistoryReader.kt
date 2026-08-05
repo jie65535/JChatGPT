@@ -328,6 +328,49 @@ class ProfileHistoryReader(private val databaseFile: File) {
         }
     }
 
+    fun loadLatestConversationBatch(
+        botId: Long,
+        groupId: Long,
+        startTime: Int,
+        endTime: Int,
+        maxMessageChars: Int,
+        idleGapSeconds: Int = ProfileConversationWindowDefaults.IDLE_GAP_SECONDS,
+        maxMessages: Int = ProfileConversationWindowDefaults.MAX_MESSAGES,
+        maxContentChars: Int = ProfileConversationWindowDefaults.MAX_CONTENT_CHARS,
+        maxSpanSeconds: Int = ProfileConversationWindowDefaults.MAX_PACKED_SPAN_SECONDS,
+    ): ConversationProfileBatch? {
+        require(startTime < endTime) { "startTime must be before endTime" }
+        val hardMessageLimit = maxMessages.coerceAtLeast(1)
+        return openReadConnection().use { connection ->
+            val recentRecords = queryConversationMessages(
+                connection = connection,
+                botId = botId,
+                groupId = groupId,
+                startTime = startTime,
+                endTime = endTime,
+                limit = hardMessageLimit.safeIncrement(),
+            )
+            val records = selectLatestContinuousConversation(
+                records = recentRecords,
+                idleGapSeconds = idleGapSeconds.coerceAtLeast(0),
+                maxMessages = hardMessageLimit,
+                maxContentChars = maxContentChars.coerceAtLeast(1),
+                maxSpanSeconds = maxSpanSeconds.coerceAtLeast(1),
+                maxMessageChars = maxMessageChars,
+            )
+            if (records.isEmpty()) return@use null
+            createConversationBatch(
+                botId = botId,
+                groupId = groupId,
+                startTime = records.first().time,
+                endTime = endTime,
+                records = records,
+                maxMessageChars = maxMessageChars,
+                episodeGapSeconds = idleGapSeconds.coerceAtLeast(0),
+            )
+        }
+    }
+
     fun loadNextConversationBatch(
         botId: Long,
         groupId: Long,
@@ -427,6 +470,40 @@ class ProfileHistoryReader(private val databaseFile: File) {
             previousTime = record.time
         }
         return records.last().time.safeNextSecond()
+    }
+
+    private fun selectLatestContinuousConversation(
+        records: List<ChatMessageRecord>,
+        idleGapSeconds: Int,
+        maxMessages: Int,
+        maxContentChars: Int,
+        maxSpanSeconds: Int,
+        maxMessageChars: Int,
+    ): List<ChatMessageRecord> {
+        if (records.isEmpty()) return emptyList()
+
+        val latestTime = records.last().time
+        var newerTime = latestTime
+        var startIndex = records.lastIndex
+        var selectedMessages = 0
+        var selectedChars = 0L
+
+        for (index in records.lastIndex downTo 0) {
+            val record = records[index]
+            if (selectedMessages > 0) {
+                val startsEarlierConversation = newerTime.toLong() - record.time > idleGapSeconds
+                val exceedsHardSize = selectedMessages >= maxMessages ||
+                        selectedChars + estimatePromptChars(record, maxMessageChars) > maxContentChars.toLong()
+                val exceedsSpan = latestTime.toLong() - record.time > maxSpanSeconds
+                if (startsEarlierConversation || exceedsHardSize || exceedsSpan) break
+            }
+
+            startIndex = index
+            selectedMessages++
+            selectedChars += estimatePromptChars(record, maxMessageChars)
+            newerTime = record.time
+        }
+        return records.subList(startIndex, records.size)
     }
 
     private fun estimatePromptChars(record: ChatMessageRecord, maxMessageChars: Int): Int =
