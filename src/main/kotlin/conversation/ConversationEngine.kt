@@ -50,8 +50,6 @@ import top.jie65535.mirai.tools.WebSearch
 import top.jie65535.mirai.util.RetryBackoff
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -129,11 +127,12 @@ internal object ConversationEngine {
             if (endpoints.isEmpty()) error("OpenAI Token 未设置，无法开始")
             var endpointIndex = 0
             var done: Boolean
-            var retry = max(PluginConfig.retryMax, 3)
+            val maxRounds = PluginConfig.retryMax.coerceAtLeast(2)
+            var completedRounds = 0
             val retryBackoff = RetryBackoff.fromConfig()
             var consecutiveFailures = 0
             do {
-                val endpoint = endpoints[min(endpointIndex, endpoints.lastIndex)]
+                val endpoint = endpoints[endpointIndex]
                 var streamingOk = false
                 try {
                     val startedAt = OffsetDateTime.now().toEpochSecond().toInt()
@@ -197,6 +196,7 @@ internal object ConversationEngine {
                         reasoningContent = if (responseToolCalls.isNotEmpty()) reasoningContent?.toString() else null,
                     )
                     recordUsage(event, lastTokenUsage, lastCacheUsage)
+                    completedRounds++
 
                     if (responseToolCalls.size > toolCallTasks.size) {
                         val finalToolResult = responseToolCalls.last().toResultMessage(event)
@@ -208,7 +208,9 @@ internal object ConversationEngine {
                     }
 
                     if (!done) {
-                        history += ChatMessage.User(buildContinuationPrompt(retry, startedAt, event))
+                        history += ChatMessage.User(
+                            buildContinuationPrompt(maxRounds - completedRounds, startedAt, event)
+                        )
                     } else {
                         if (PluginConfig.enableContextCache) {
                             ConversationContext.saveCache(
@@ -223,31 +225,40 @@ internal object ConversationEngine {
                     }
                 } catch (cause: Exception) {
                     if (cause is CancellationException) throw cause
-                    val failureMessage = if (!streamingOk) {
-                        LargeLanguageModels.reportFailure(endpoint)
-                        if (endpointIndex < endpoints.lastIndex) {
-                            endpointIndex++
-                            "接入点[${endpoint.label}]调用失败，将切换备用接入点[${endpoints[endpointIndex].label}]"
-                        } else {
-                            "接入点[${endpoint.label}]调用失败，无更多备用接入点"
-                        }
-                    } else {
-                        "调用llm后处理时发生异常"
-                    }
-                    if (retry <= 1) {
-                        JChatGPT.logger.warning("$failureMessage，已无剩余尝试", cause)
+                    if (streamingOk) {
+                        JChatGPT.logger.warning("调用llm后处理时发生异常，不再重试模型请求", cause)
                         throw cause
                     }
+                    LargeLanguageModels.reportFailure(endpoint)
                     consecutiveFailures++
+                    val nextEndpointIndex = nextChatEndpointIndex(
+                        endpointCount = endpoints.size,
+                        currentIndex = endpointIndex,
+                        failureCount = consecutiveFailures,
+                    )
+                    if (nextEndpointIndex == null) {
+                        JChatGPT.logger.warning(
+                            "接入点[${endpoint.label}]调用失败，已无剩余接入点或重试次数",
+                            cause,
+                        )
+                        throw cause
+                    }
+                    val nextEndpoint = endpoints[nextEndpointIndex]
                     val retryDelayMillis = retryBackoff.delayMillis(consecutiveFailures)
+                    val retryMessage = if (nextEndpointIndex == endpointIndex) {
+                        "接入点[${endpoint.label}]调用失败，将重试一次"
+                    } else {
+                        "接入点[${endpoint.label}]调用失败，将切换备用接入点[${nextEndpoint.label}]"
+                    }
                     JChatGPT.logger.warning(
-                        "$failureMessage，将在 ${retryDelayMillis}ms 后重试",
+                        "$retryMessage，将在 ${retryDelayMillis}ms 后重试",
                         cause,
                     )
+                    endpointIndex = nextEndpointIndex
                     if (retryDelayMillis > 0) delay(retryDelayMillis)
                     done = false
                 }
-            } while (!done && 0 < --retry)
+            } while (!done && completedRounds < maxRounds)
         } catch (cause: CancellationException) {
             throw cause
         } catch (cause: Throwable) {
@@ -323,9 +334,9 @@ internal object ConversationEngine {
         return truncated
     }
 
-    private fun buildContinuationPrompt(retry: Int, startedAt: Int, event: MessageEvent): String = buildString {
+    private fun buildContinuationPrompt(remainingRounds: Int, startedAt: Int, event: MessageEvent): String = buildString {
         appendLine("## 系统提示")
-        append("本次运行最多还剩").append(retry - 1).appendLine("轮。")
+        append("本次运行最多还剩").append(remainingRounds).appendLine("轮。")
         appendLine("如果要多次发言，可以一次性调用多次发言工具。")
         appendLine("如果没有什么要做的，可以提前结束。")
         appendLine("当前时间：${dateTimeFormatter.format(OffsetDateTime.now())}")
@@ -357,5 +368,16 @@ internal object ConversationEngine {
         val maxLength = PluginConfig.maxToolOutputLength
         return if (content.length <= maxLength) content
         else content.take(maxLength) + "\n\n[系统提示：因内容过长，部分内容已被省略]"
+    }
+}
+
+internal fun nextChatEndpointIndex(endpointCount: Int, currentIndex: Int, failureCount: Int): Int? {
+    require(endpointCount > 0) { "endpointCount must be positive" }
+    require(currentIndex in 0 until endpointCount) { "currentIndex must reference an endpoint" }
+    require(failureCount > 0) { "failureCount must be positive" }
+    return when {
+        endpointCount == 1 && failureCount == 1 -> currentIndex
+        currentIndex < endpointCount - 1 -> currentIndex + 1
+        else -> null
     }
 }

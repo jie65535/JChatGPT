@@ -259,8 +259,8 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("达到需要合并转发消息的阈值")
     val messageMergeThreshold by value(150)
 
-    @ValueDescription("最大循环次数，至少2次")
-    val retryMax: Int by value(5)
+    @ValueDescription("单次对话正常调用模型的最大循环轮数，至少2轮；失败重试不占用此轮数")
+    val retryMax: Int by value(10)
 
     @ValueDescription("关键字呼叫，支持正则表达式")
     val callKeyword by value("[小筱][林淋月玥]")
