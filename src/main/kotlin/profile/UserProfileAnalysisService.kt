@@ -54,6 +54,25 @@ object UserProfileAnalysisService {
         }
     }
 
+    suspend fun listRecentPendingHistoryGroupIds(oldestAllowedMessageTime: Int): List<Long> {
+        require(oldestAllowedMessageTime >= 0) { "oldestAllowedMessageTime must not be negative" }
+        check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
+        check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
+        return withContext(Dispatchers.IO) {
+            val reader = ProfileHistoryReader(resolveHistoryFile())
+            val historyBounds = reader.listGroupTimeBounds()
+            val cursors = UserProfileStore.loadGroupCursors()
+                .associateBy { cursor -> cursor.botId to cursor.groupId }
+            val pendingRanges = historyBounds.mapNotNull { bounds ->
+                pendingGroupAnalysisRange(bounds, cursors[bounds.botId to bounds.groupId])
+            }
+            reader.filterGroupRangesByOldestPendingMessageTime(
+                ranges = pendingRanges,
+                oldestAllowedTime = oldestAllowedMessageTime,
+            ).map(ProfileHistoryReader.GroupTimeBounds::groupId)
+        }
+    }
+
     suspend fun analyze(
         userId: Long,
         maxBatches: Int,

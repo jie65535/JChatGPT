@@ -62,6 +62,8 @@ class ProfileHistoryReaderTest {
                     insert(1, 20, 110, kind = MessageSourceKind.FRIEND)
                     insert(2, 30, 100)
                     insert(2, 30, 110)
+                    insert(1, 40, 100)
+                    insert(1, 40, 1_000)
                 }
             }
 
@@ -79,6 +81,13 @@ class ProfileHistoryReaderTest {
             assertEquals(
                 listOf(10L, 20L),
                 reader.filterGroupRangesByMinimumMessageCount(ranges, 1).map { it.groupId },
+            )
+            assertEquals(
+                listOf(10L, 30L),
+                reader.filterGroupRangesByOldestPendingMessageTime(
+                    ranges = ranges + ProfileHistoryReader.GroupTimeBounds(1, 40, 90, 1_001),
+                    oldestAllowedTime = 115,
+                ).map { it.groupId },
             )
         } finally {
             directory.toFile().deleteRecursively()

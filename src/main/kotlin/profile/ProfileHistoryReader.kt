@@ -181,6 +181,37 @@ class ProfileHistoryReader(private val databaseFile: File) {
         }
     }
 
+    fun filterGroupRangesByOldestPendingMessageTime(
+        ranges: List<GroupTimeBounds>,
+        oldestAllowedTime: Int,
+    ): List<GroupTimeBounds> {
+        if (ranges.isEmpty()) return emptyList()
+        require(oldestAllowedTime >= 0) { "oldestAllowedTime must not be negative" }
+        return openReadConnection().use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT MIN(time) AS oldest_time
+                FROM message_record
+                WHERE bot_id = ? AND target_id = ? AND kind = ? AND recalled = 0
+                  AND time >= ? AND time < ?
+                """.trimIndent()
+            ).use { statement ->
+                ranges.filter { range ->
+                    statement.setLong(1, range.botId)
+                    statement.setLong(2, range.groupId)
+                    statement.setInt(3, MessageSourceKind.GROUP.ordinal)
+                    statement.setInt(4, range.startTime)
+                    statement.setInt(5, range.endTime)
+                    statement.executeQuery().use { results ->
+                        check(results.next()) { "读取群 ${range.groupId} 最早待处理消息失败" }
+                        val oldestTime = results.getInt("oldest_time")
+                        results.wasNull() || oldestTime >= oldestAllowedTime
+                    }
+                }
+            }
+        }
+    }
+
     fun loadNextBatch(
         userId: Long,
         startTime: Int,

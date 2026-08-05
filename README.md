@@ -118,6 +118,11 @@ contactSnapshotGroupDelayMillis: 200
 profileBatchTargetMessages: 120
 # 全量推进群画像时，至少累计多少条尚未处理的有效群消息才启动
 profileBulkGroupMinPendingMessages: 20
+# 每天按服务器本地时间自动追平近期群画像；默认关闭
+profileDailyGroupUpdateEnabled: false
+profileDailyGroupUpdateTime: '04:30'
+# 最早待处理消息距今不超过该天数的群才允许自动推进
+profileDailyGroupUpdateMaxPendingAgeDays: 7
 profileBatchMaxEpisodes: 16
 profileEpisodeGapMinutes: 60
 profileContextBeforeMessages: 30
@@ -245,6 +250,13 @@ searchHistoryMaxRecords: 5000
 持有用户锁，模型请求在锁外执行；提交前若发现画像已变化，会按稳定条目 ID 将同一响应的操作重放到最新版，
 已不存在的操作目标会被跳过，不会重新请求模型。显式传入群号时仍只分析指定群。全量模式仅发送启动和最终汇总，
 逐群进度与结果写入日志，避免回执刷屏。
+
+启用 `profileDailyGroupUpdateEnabled` 后，插件会在服务器本地时间每天按 `profileDailyGroupUpdateTime`（默认 `04:30`）
+自动推进群画像。没有群游标时从该群最早历史开始判断，因此新安装后积累的近期历史可直接进入每日维护；已经追平后
+长期沉寂的群不会因游标时间较旧而被误判。准入依据是游标之后最早一条未撤回群消息，只有它距今不超过
+`profileDailyGroupUpdateMaxPendingAgeDays`（默认 7 天）才自动处理，所以旧积压不会被后来的一两条新消息掩盖。
+每日任务不使用 20 条的人工全量启动门槛，会把合格群推进到本轮固定历史快照；内容不足门槛的参与者不会调用模型。
+它与人工全量共用现有的每群运行锁：仍在推进的群会跳过，已经失败并释放锁的群可以从已保存水位继续处理。
 
 下一次正常群聊会自动携带触发者和最近发言者的认识。现有好感度、Bot 代号、标签和主观印象会与证据驱动的
 长期画像按同一个人合并渲染，并明确给出长期画像条目数；私聊也会携带对方的可靠画像摘要和条目数。

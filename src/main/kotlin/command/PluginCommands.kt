@@ -26,6 +26,7 @@ import top.jie65535.mirai.profile.ProfileAnalysisReport
 import top.jie65535.mirai.profile.ProfileAutoMaintenance
 import top.jie65535.mirai.profile.ProfileCategory
 import top.jie65535.mirai.profile.ProfileCompactionReport
+import top.jie65535.mirai.profile.ProfileDailyMaintenance
 import top.jie65535.mirai.profile.ProfilePersistentText
 import top.jie65535.mirai.profile.UserProfileAnalysisService
 import top.jie65535.mirai.profile.UserProfileSnapshot
@@ -46,6 +47,7 @@ object PluginCommands : CompositeCommand(
         PluginConfig.reload()
         PluginData.reload()
         LargeLanguageModels.reload()
+        ProfileDailyMaintenance.reload()
         if (!PluginConfig.profileEnabled || !PluginConfig.profileAutoUpdateEnabled) {
             ProfileAutoMaintenance.clear()
         }

@@ -34,6 +34,7 @@ import top.jie65535.mirai.data.SkillStore
 import top.jie65535.mirai.data.TokenUsageStore
 import top.jie65535.mirai.llm.LargeLanguageModels
 import top.jie65535.mirai.profile.ProfileAutoMaintenance
+import top.jie65535.mirai.profile.ProfileDailyMaintenance
 import top.jie65535.mirai.profile.UserProfileStore
 import kotlin.random.Random
 
@@ -77,6 +78,7 @@ object JChatGPT : KotlinPlugin(
             .onFailure { logger.error("初始化用户画像数据库失败，画像分析将暂时禁用", it) }
 
         LargeLanguageModels.reload()
+        ProfileDailyMaintenance.reload()
         PluginCommands.register()
         keyword = PluginConfig.callKeyword.takeIf(String::isNotEmpty)?.let(::Regex)
 
@@ -104,6 +106,7 @@ object JChatGPT : KotlinPlugin(
         ConversationEngine.clear()
         ConversationContext.clearAll()
         ProfileAutoMaintenance.clear()
+        ProfileDailyMaintenance.clear()
         ContactSnapshotRefresher.clear()
         UserProfileStore.close()
         ContactSnapshotStore.close()

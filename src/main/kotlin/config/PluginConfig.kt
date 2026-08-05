@@ -99,6 +99,15 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("全量推进群画像时，群内至少有多少条尚未处理的消息才启动；显式指定群号不受限制")
     val profileBulkGroupMinPendingMessages: Int by value(20)
 
+    @ValueDescription("是否每天定时推进已接近历史水位线的群画像")
+    val profileDailyGroupUpdateEnabled: Boolean by value(false)
+
+    @ValueDescription("每日群画像推进时间，使用服务器本地时区，格式 HH:mm")
+    val profileDailyGroupUpdateTime: String by value("04:30")
+
+    @ValueDescription("每日群画像只自动推进最早待处理消息距今不超过多少天的群，必须为正数")
+    val profileDailyGroupUpdateMaxPendingAgeDays: Int by value(7)
+
     @ValueDescription("每个画像分析批次最多包含多少个离散对话片段；同一秒的消息仍会一起处理")
     val profileBatchMaxEpisodes: Int by value(16)
 
