@@ -244,7 +244,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("创建Prompt时取最近多少分钟内的消息")
     val historyWindowMin: Int by value(10)
 
-    @ValueDescription("创建Prompt时取最多几条消息")
+    @ValueDescription("初次创建Prompt时最多读取几条近期消息；模型运行期间的增量消息不受此限制")
     val historyMessageLimit: Int by value(20)
 
     @ValueDescription("启用对话上下文内存缓存，允许在短时间内保持上下文连续")

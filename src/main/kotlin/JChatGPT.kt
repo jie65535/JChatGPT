@@ -131,6 +131,12 @@ object JChatGPT : KotlinPlugin(
 
     private suspend fun onMessage(event: MessageEvent) {
         if (LargeLanguageModels.chat == null) return
+
+        if (ConversationEngine.isExpectedUser(event)) {
+            if (shouldIgnoreBecauseMuted(event)) return
+            if (ConversationEngine.resumeObserved(event)) return
+        }
+
         if (!event.toCommandSender().hasPermission(chatPermission)) {
             if (event is GroupMessageEvent) {
                 if (!PluginConfig.groupOpHasChatPermission || !event.sender.isOperator()) {
@@ -145,16 +151,21 @@ object JChatGPT : KotlinPlugin(
                 event.message[QuoteReply]?.source?.fromId == event.bot.id
         if (!triggered) return
 
-        if (event is GroupMessageEvent && event.group.botMuteRemaining > 0) {
-            logger.info(
-                "bot 在群 ${event.group.name}(${event.group.id}) 被禁言，" +
-                        "剩余 ${event.group.botMuteRemaining} 秒，忽略消息"
-            )
-            return
-        }
+        if (shouldIgnoreBecauseMuted(event)) return
 
         if (PluginConfig.enableFavorabilitySystem && shouldIgnoreForFavorability(event)) return
         ConversationEngine.start(event)
+    }
+
+    private fun shouldIgnoreBecauseMuted(event: MessageEvent): Boolean {
+        if (event !is GroupMessageEvent) return false
+        val remainingSeconds = event.group.botMuteRemaining
+        if (remainingSeconds <= 0) return false
+        logger.info(
+            "bot 在群 ${event.group.name}(${event.group.id}) 被禁言，" +
+                    "剩余 $remainingSeconds 秒，忽略消息"
+        )
+        return true
     }
 
     private suspend fun shouldIgnoreForFavorability(event: MessageEvent): Boolean {

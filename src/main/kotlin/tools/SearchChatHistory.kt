@@ -98,7 +98,7 @@ class SearchChatHistory : BaseAgent(
                 end = endEpoch,
                 limit = maxRecords,
                 fromId = senderQq,
-            ).sortedBy { it.time }
+            ).sortedWith(compareBy<ChatMessageRecord> { it.time }.thenBy { it.id })
         } catch (e: Throwable) {
             JChatGPT.logger.warning("查询消息历史失败", e)
             return "查询消息历史失败: ${e.message}"

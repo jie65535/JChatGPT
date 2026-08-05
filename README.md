@@ -24,6 +24,11 @@ JChatGPT 是一个基于 Kotlin 的 Mirai Console 插件，它将大型语言模
 - 通过引用群友消息 + @bot 让 Bot 识别引用消息的内容
 - 回复 bot 的消息即可引用对应的上下文对话（包括这个回复的历史对话）
 - 使用关键字触发（默认为 "[小筱][林淋月玥]"，可在配置中修改）
+- Bot 处理期间出现的新触发会合并到当前会话，并在本轮工具结算后继续处理，不再因忙碌而直接丢弃
+- Bot 可以通过 `endConversation.waitForFollowUp` 短暂等待同一会话中指定用户的下一条消息；等待超时只会关闭观察状态，不会调用模型或发送消息
+
+初次触发时，Bot 按 `historyWindowMin` 和 `historyMessageLimit` 读取有限的近期历史。模型运行期间以及缓存会话再次
+激活时，会按时间水位补充自上次运行以来的全部增量消息，不受 `historyMessageLimit` 限制。
 
 ### 工具调用
 AI 可以自动调用多种工具来完成复杂任务：
@@ -201,6 +206,7 @@ promptFile: 'SystemPrompt.md'
 # 创建Prompt时取最近多少分钟内的消息
 historyWindowMin: 10
 # 创建Prompt时取最多几条消息
+# 仅限制初次触发时读取的近期历史；模型运行期间的增量消息会全部补充
 historyMessageLimit: 20
 # 是否打印Prompt便于调试
 logPrompt: false
@@ -351,7 +357,7 @@ JChatGPT 使用系统提示词来定义 AI 的行为和个性。提示词文件�
 - sendCompositeMessage - 发送组合消息（适用于长内容或代码）
 
 交互规则：
-1. 只有当用户@你或在消息中包含你的名字时才会响应
+1. 通常只有当用户@你或在消息中包含你的名字时才会响应；你通过 endConversation 明确等待的用户回复除外
 2. 回复应简洁明了，避免长篇大论
 3. 对于复杂内容，使用组合消息功能发送
 4. 不主动参与与你无关的对话
@@ -361,7 +367,8 @@ JChatGPT 使用系统提示词来定义 AI 的行为和个性。提示词文件�
 - 只在必要时使用工具
 - 深度思考工具仅用于复杂问题
 - 代码执行工具用于验证技术问题
-- **每次对话结束时必须调用 endConversation 工具来结束对话**
+- **每次对话结束时必须调用唯一的 endConversation 工具来结束当前运行**
+- 通常无参数结束；只有刚明确要求指定用户提供会影响后续处理的反馈时，才使用 waitForFollowUp 短暂等待
 - **要发送消息给用户必须使用 sendSingleMessage 或 sendCompositeMessage 工具**
 
 <memory>

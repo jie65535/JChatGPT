@@ -72,6 +72,8 @@ internal class ReplyIndex {
 }
 
 internal object ConversationContext {
+    private val chronologicalRecordOrder = compareBy<ChatMessageRecord> { it.time }
+        .thenBy { if (it.id == 0L) Long.MAX_VALUE else it.id }
     private val contextCache = mutableMapOf<Long, ConversationCache>()
     private val replyIndexes = mutableMapOf<Long, ReplyIndex>()
     private val imageIndexes = mutableMapOf<Long, ImageIndex>()
@@ -160,18 +162,18 @@ internal object ConversationContext {
             .minusMinutes(PluginConfig.historyWindowMin.toLong())
             .toEpochSecond()
             .toInt()
-        return getAfterHistory(beforeTimestamp, event)
+        return getAfterHistory(beforeTimestamp, event, PluginConfig.historyMessageLimit)
     }
 
-    fun getAfterHistory(time: Int, event: MessageEvent): String {
+    fun getAfterHistory(time: Int, event: MessageEvent, limit: Int? = null): String {
         if (!JChatGPT.includeHistory) return ""
         val history = try {
             ChatHistoryStore.query(
                 contact = event.subject,
                 start = time,
                 end = OffsetDateTime.now().toEpochSecond().toInt(),
-                limit = PluginConfig.historyMessageLimit,
-            ).sortedBy { it.time }.toMutableList()
+                limit = limit,
+            ).sortedWith(chronologicalRecordOrder).toMutableList()
         } catch (cause: Throwable) {
             JChatGPT.logger.warning("查询 SQLite 消息历史失败", cause)
             mutableListOf()
@@ -180,6 +182,7 @@ internal object ConversationContext {
         val messageIds = event.message.ids.joinToString(",")
         if (history.none { it.ids == messageIds }) {
             history += ChatMessageRecord.fromSuccess(event.message.source, event.message)
+            history.sortWith(chronologicalRecordOrder)
         }
 
         val result = StringBuilder()

@@ -163,7 +163,7 @@ object ChatHistoryStore {
         contact: Contact,
         start: Int,
         end: Int,
-        limit: Int,
+        limit: Int? = null,
         fromId: Long? = null,
     ): List<ChatMessageRecord> {
         check(initialized) { "聊天记录数据库尚未初始化" }
@@ -227,7 +227,8 @@ object ChatHistoryStore {
             )
             append(' ')
             append(conditions.joinToString(" AND "))
-            append(" ORDER BY time DESC, id DESC LIMIT ?")
+            append(" ORDER BY time DESC, id DESC")
+            if (limit != null) append(" LIMIT ?")
         }
 
         return openReadConnection().use { connection ->
@@ -239,7 +240,9 @@ object ChatHistoryStore {
                         else -> error("不支持的查询参数类型 ${value::class}")
                     }
                 }
-                statement.setInt(parameters.size + 1, limit.coerceAtLeast(1))
+                if (limit != null) {
+                    statement.setInt(parameters.size + 1, limit.coerceAtLeast(1))
+                }
                 statement.executeQuery().use { results ->
                     buildList {
                         while (results.next()) {
