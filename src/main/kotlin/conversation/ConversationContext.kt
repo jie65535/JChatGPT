@@ -48,6 +48,7 @@ internal data class ConversationCache(
     val lastActivityAt: Int,
     val replyIndex: ReplyIndex,
     val imageIndex: ImageIndex,
+    val profileInjectionState: UserProfileInjectionState,
 ) {
     fun isExpired(ttlSeconds: Int): Boolean =
         OffsetDateTime.now().toEpochSecond().toInt() - lastActivityAt > ttlSeconds
@@ -153,7 +154,7 @@ internal object ConversationContext {
         return prompt.toString()
     }
 
-    fun getHistory(event: MessageEvent): String {
+    fun getHistory(event: MessageEvent, profileInjectionState: UserProfileInjectionState): String {
         val imageIndex = activeImageIndex(event.subject.id)
         if (!JChatGPT.includeHistory) {
             return formatRecordContent(event.message, event.subject, imageIndex)
@@ -162,10 +163,20 @@ internal object ConversationContext {
             .minusMinutes(PluginConfig.historyWindowMin.toLong())
             .toEpochSecond()
             .toInt()
-        return getAfterHistory(beforeTimestamp, event, PluginConfig.historyMessageLimit)
+        return getAfterHistory(
+            time = beforeTimestamp,
+            event = event,
+            profileInjectionState = profileInjectionState,
+            limit = PluginConfig.historyMessageLimit,
+        )
     }
 
-    fun getAfterHistory(time: Int, event: MessageEvent, limit: Int? = null): String {
+    fun getAfterHistory(
+        time: Int,
+        event: MessageEvent,
+        profileInjectionState: UserProfileInjectionState,
+        limit: Int? = null,
+    ): String {
         if (!JChatGPT.includeHistory) return ""
         val history = try {
             ChatHistoryStore.query(
@@ -191,7 +202,7 @@ internal object ConversationContext {
         val replyIndex = activeReplyIndex(event.subject.id)
         val imageIndex = activeImageIndex(event.subject.id)
         if (event is GroupMessageEvent) {
-            appendUserProfileContext(result, history, event)
+            appendUserProfileContext(result, history, event, profileInjectionState)
             result.appendLine("## 近期群消息（更早已隐藏，行首[n]为消息编号；正文[图片n]/[表情包n]中的n为识图或图片编辑编号）")
             history.forEach { record ->
                 val showSender = lastUserId != record.fromId
@@ -201,7 +212,7 @@ internal object ConversationContext {
                 lastTime = record.time.toLong()
             }
         } else {
-            appendPrivateUserContext(result, event)
+            appendPrivateUserContext(result, event, profileInjectionState)
             result.appendLine("## 近期对话（更早已隐藏，行首[n]为消息编号；正文[图片n]/[表情包n]中的n为识图或图片编辑编号）")
             history.forEach { record ->
                 val showSender = lastUserId != record.fromId
@@ -273,6 +284,7 @@ internal object ConversationContext {
         target: StringBuilder,
         history: List<ChatMessageRecord>,
         event: GroupMessageEvent,
+        profileInjectionState: UserProfileInjectionState,
     ) {
         if (!PluginConfig.profileAutoInjectEnabled && !PluginConfig.enableFavorabilitySystem) return
         val candidateIds = buildList {
@@ -283,15 +295,21 @@ internal object ConversationContext {
             .distinct()
             .take(PluginConfig.profileAutoInjectMaxUsers.coerceIn(1, 10))
             .toList()
-        val profiles = if (PluginConfig.profileEnabled && PluginConfig.profileAutoInjectEnabled &&
-            UserProfileStore.isAvailable
-        ) {
+        val shouldLoadProfiles = PluginConfig.profileEnabled && PluginConfig.profileAutoInjectEnabled
+        val uncertainProfileIds = mutableSetOf<Long>()
+        val profiles = if (shouldLoadProfiles && UserProfileStore.isAvailable) {
             candidateIds.mapNotNull { userId ->
                 runCatching { UserProfileStore.load(userId) }
-                    .onFailure { JChatGPT.logger.warning("读取用户画像失败: user=$userId", it) }
+                    .onFailure {
+                        uncertainProfileIds += userId
+                        JChatGPT.logger.warning("读取用户画像失败: user=$userId", it)
+                    }
                     .getOrNull()
             }
-        } else emptyList()
+        } else {
+            if (shouldLoadProfiles) uncertainProfileIds += candidateIds
+            emptyList()
+        }
         val favorability = if (PluginConfig.enableFavorabilitySystem) {
             candidateIds.mapNotNull { id -> PluginData.userFavorability[id]?.let { id to it } }.toMap()
         } else emptyMap()
@@ -301,26 +319,41 @@ internal object ConversationContext {
         val names = candidateIds.associateWith { id ->
             event.group[id]?.nameCardOrNick ?: snapshotNames[id] ?: id.toString()
         }
+        val renderedEntries = UserProfileContextRenderer.renderEntries(
+            profiles = profiles,
+            favorabilityByUserId = favorability,
+            displayNames = names,
+            activeUserIds = candidateIds.toSet(),
+            summaryMaxChars = PluginConfig.profileAutoInjectSummaryMaxChars,
+        )
+        val comparableCandidateIds = candidateIds.filter { userId ->
+            userId !in uncertainProfileIds || !profileInjectionState.hasSeen(userId)
+        }
         target.append(
-            UserProfileContextRenderer.render(
-                profiles = profiles,
-                favorabilityByUserId = favorability,
-                displayNames = names,
-                activeUserIds = candidateIds.toSet(),
-                summaryMaxChars = PluginConfig.profileAutoInjectSummaryMaxChars,
+            profileInjectionState.renderChanges(
+                candidateUserIds = comparableCandidateIds,
+                renderedEntries = renderedEntries,
+                sectionTitle = "你对相关群友的认识",
             )
         )
     }
 
-    private fun appendPrivateUserContext(target: StringBuilder, event: MessageEvent) {
+    private fun appendPrivateUserContext(
+        target: StringBuilder,
+        event: MessageEvent,
+        profileInjectionState: UserProfileInjectionState,
+    ) {
         if (!PluginConfig.profileAutoInjectEnabled && !PluginConfig.enableFavorabilitySystem) return
         val userId = event.sender.id
-        val profiles = if (PluginConfig.profileEnabled && PluginConfig.profileAutoInjectEnabled &&
-            UserProfileStore.isAvailable
-        ) {
+        val shouldLoadProfile = PluginConfig.profileEnabled && PluginConfig.profileAutoInjectEnabled
+        var profileReadUncertain = shouldLoadProfile && !UserProfileStore.isAvailable
+        val profiles = if (shouldLoadProfile && UserProfileStore.isAvailable) {
             listOfNotNull(
                 runCatching { UserProfileStore.load(userId) }
-                    .onFailure { JChatGPT.logger.warning("读取用户画像失败: user=$userId", it) }
+                    .onFailure {
+                        profileReadUncertain = true
+                        JChatGPT.logger.warning("读取用户画像失败: user=$userId", it)
+                    }
                     .getOrNull()
             )
         } else emptyList()
@@ -330,13 +363,21 @@ internal object ConversationContext {
         val snapshotName = runCatching {
             ContactSnapshotStore.loadDisplayName(event.bot.id, null, userId)
         }.getOrNull()
+        val renderedEntries = UserProfileContextRenderer.renderEntries(
+            profiles = profiles,
+            favorabilityByUserId = favorability,
+            displayNames = mapOf(userId to (snapshotName ?: event.senderName)),
+            activeUserIds = setOf(userId),
+            summaryMaxChars = PluginConfig.profileAutoInjectSummaryMaxChars,
+        )
         target.append(
-            UserProfileContextRenderer.render(
-                profiles = profiles,
-                favorabilityByUserId = favorability,
-                displayNames = mapOf(userId to (snapshotName ?: event.senderName)),
-                activeUserIds = setOf(userId),
-                summaryMaxChars = PluginConfig.profileAutoInjectSummaryMaxChars,
+            profileInjectionState.renderChanges(
+                candidateUserIds = if (profileReadUncertain && profileInjectionState.hasSeen(userId)) {
+                    emptyList()
+                } else {
+                    listOf(userId)
+                },
+                renderedEntries = renderedEntries,
                 sectionTitle = "你对对方的认识",
             )
         )

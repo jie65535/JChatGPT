@@ -146,16 +146,22 @@ internal object ConversationEngine {
                 JChatGPT.logger.info("使用缓存的对话上下文，包含 ${cache.history.size} 条互动消息")
                 cache.history
             } else mutableListOf()
+            val profileInjectionState = cache?.profileInjectionState?.takeIf { reuseCache }
+                ?: UserProfileInjectionState()
 
             if (history.isEmpty() || cache == null) {
                 val prompt = ConversationContext.getSystemPrompt(currentEvent)
                 if (PluginConfig.logPrompt) JChatGPT.logger.info("Prompt: $prompt")
                 history += ChatMessage(ChatRole.System, prompt)
-                val historyText = ConversationContext.getHistory(currentEvent)
+                val historyText = ConversationContext.getHistory(currentEvent, profileInjectionState)
                 JChatGPT.logger.info("注入聊天记录：\n$historyText")
                 history += ChatMessage.User(historyText)
             } else {
-                val newMessages = ConversationContext.getAfterHistory(cache.lastActivityAt, currentEvent)
+                val newMessages = ConversationContext.getAfterHistory(
+                    time = cache.lastActivityAt,
+                    event = currentEvent,
+                    profileInjectionState = profileInjectionState,
+                )
                 JChatGPT.logger.info("补充聊天记录：\n$newMessages")
                 history += ChatMessage.User(
                     if (resumedWait == null) {
@@ -281,6 +287,7 @@ internal object ConversationEngine {
                                 startedAt = startedAt,
                                 event = currentEvent,
                                 pendingTrigger = pendingEvent != null,
+                                profileInjectionState = profileInjectionState,
                             )
                         )
                         done = false
@@ -288,7 +295,13 @@ internal object ConversationEngine {
                         if (PluginConfig.enableContextCache) {
                             ConversationContext.saveCache(
                                 subjectId,
-                                ConversationCache(history, startedAt, replyIndex, imageIndex),
+                                ConversationCache(
+                                    history = history,
+                                    lastActivityAt = startedAt,
+                                    replyIndex = replyIndex,
+                                    imageIndex = imageIndex,
+                                    profileInjectionState = profileInjectionState,
+                                ),
                             )
                             JChatGPT.logger.debug("已保存对话上下文到缓存")
                         }
@@ -311,6 +324,7 @@ internal object ConversationEngine {
                                         startedAt = startedAt,
                                         event = currentEvent,
                                         pendingTrigger = true,
+                                        profileInjectionState = profileInjectionState,
                                     )
                                 )
                                 done = false
@@ -492,6 +506,7 @@ internal object ConversationEngine {
         startedAt: Int,
         event: MessageEvent,
         pendingTrigger: Boolean,
+        profileInjectionState: UserProfileInjectionState,
     ): String = buildString {
         appendLine("## 系统提示")
         append("本次运行最多还剩").append(remainingRounds).appendLine("轮。")
@@ -499,8 +514,16 @@ internal object ConversationEngine {
         appendLine("如果没有什么要做的，可以提前结束。")
         if (pendingTrigger) appendLine("运行期间收到了新的显式触发，请优先处理水位后的新消息。")
         appendLine("当前时间：${dateTimeFormatter.format(OffsetDateTime.now())}")
-        val messages = ConversationContext.getAfterHistory(startedAt, event).ifEmpty {
-            if (pendingTrigger && !JChatGPT.includeHistory) ConversationContext.getHistory(event) else ""
+        val messages = ConversationContext.getAfterHistory(
+            time = startedAt,
+            event = event,
+            profileInjectionState = profileInjectionState,
+        ).ifEmpty {
+            if (pendingTrigger && !JChatGPT.includeHistory) {
+                ConversationContext.getHistory(event, profileInjectionState)
+            } else {
+                ""
+            }
         }
         if (messages.isNotEmpty()) append("## 以下是上次运行至今的新消息\n\n$messages")
     }

@@ -3,6 +3,7 @@ package top.jie65535.mirai.profile
 import top.jie65535.mirai.data.FavorabilityInfo
 import kotlin.test.Test
 import kotlin.test.assertContains
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 
 class UserProfileContextRendererTest {
@@ -78,6 +79,21 @@ class UserProfileContextRendererTest {
         assertContains(rendered, "小明(100)")
         assertContains(rendered, "好感度+0")
         assertContains(rendered, "主观印象：长期活跃的老群友")
+    }
+
+    @Test
+    fun perUserEntriesIgnoreFavorabilityFieldsHiddenFromTheModel() {
+        fun render(reasons: List<String>) = UserProfileContextRenderer.renderEntries(
+            profiles = emptyList(),
+            favorabilityByUserId = mapOf(
+                100L to FavorabilityInfo(userId = 100, value = 5, reasons = reasons)
+            ),
+            displayNames = mapOf(100L to "小明"),
+            activeUserIds = setOf(100L),
+            summaryMaxChars = 300,
+        )
+
+        assertEquals(render(listOf("旧原因")), render(listOf("更新但不展示的原因")))
     }
 
     private fun relationship(id: String, relatedUserId: Long, content: String) = UserProfileItem(
