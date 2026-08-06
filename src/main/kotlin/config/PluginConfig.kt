@@ -292,9 +292,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("单个工具调用返回内容的最大字符数，超过将被截断并标注")
     val maxToolOutputLength: Int by value(15000)
 
-    @ValueDescription("聊天记录搜索最大天数")
+    @ValueDescription("未指定起始时间时聊天记录搜索默认回溯天数；明确指定时间时不限制历史跨度")
     val searchHistoryMaxDays: Int by value(30)
 
-    @ValueDescription("聊天记录搜索最大查询条数，防止内存溢出")
+    @ValueDescription("聊天记录搜索单页消息数上限；工具硬上限为200，保留此配置键以兼容旧配置")
     val searchHistoryMaxRecords: Int by value(5000)
 }

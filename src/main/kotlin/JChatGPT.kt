@@ -1,5 +1,10 @@
 package top.jie65535.mirai
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import net.mamoe.mirai.console.command.CommandManager.INSTANCE.register
 import net.mamoe.mirai.console.command.CommandSender.Companion.toCommandSender
 import net.mamoe.mirai.console.permission.PermissionId
@@ -48,6 +53,7 @@ object JChatGPT : KotlinPlugin(
     }
 ) {
     internal var includeHistory: Boolean = false
+    private var historyIndexJob: Job? = null
 
     val chatPermission = PermissionId("JChatGPT", "Chat")
 
@@ -68,6 +74,27 @@ object JChatGPT : KotlinPlugin(
         } catch (cause: Throwable) {
             logger.error("初始化 SQLite 聊天记录失败，历史上下文与搜索将暂时禁用", cause)
             false
+        }
+        if (includeHistory && ChatHistoryStore.isSearchIndexAvailable && !ChatHistoryStore.isSearchIndexReady) {
+            historyIndexJob = launch(Dispatchers.IO) {
+                try {
+                    val processed = ChatHistoryStore.backfillSearchIndex(
+                        shouldContinue = { isActive },
+                        onProgress = { count ->
+                            if (count % 10_000 == 0) {
+                                logger.info("聊天记录全文索引回填进度: 已处理 $count 条")
+                            }
+                        },
+                    )
+                    if (isActive && processed > 0) {
+                        logger.info("聊天记录全文索引回填完成: 共处理 $processed 条")
+                    }
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (cause: Throwable) {
+                    logger.warning("聊天记录全文索引回填失败，后续启动将继续尝试", cause)
+                }
+            }
         }
         if (includeHistory) {
             runCatching { ContactSnapshotStore.init(dataFolder) }
@@ -103,6 +130,8 @@ object JChatGPT : KotlinPlugin(
     }
 
     override fun onDisable() {
+        historyIndexJob?.cancel()
+        historyIndexJob = null
         ConversationEngine.clear()
         ConversationContext.clearAll()
         ProfileAutoMaintenance.clear()

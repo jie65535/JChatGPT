@@ -37,15 +37,7 @@ data class ChatMessageRecord(
     }
 
     fun toMessageChain(): MessageChain {
-        return try {
-            MessageChain.deserializeFromJsonString(code)
-        } catch (cause: SerializationException) {
-            try {
-                MiraiCode.deserializeMiraiCode(code)
-            } catch (_: Throwable) {
-                throw cause
-            }
-        }
+        return decodeMessageCode(code)
     }
 
     companion object {
@@ -66,6 +58,18 @@ data class ChatMessageRecord(
             } else {
                 split(',').map { it.trim().toInt() }.toIntArray()
             }
+        }
+    }
+}
+
+internal fun decodeMessageCode(code: String): MessageChain {
+    return try {
+        MessageChain.deserializeFromJsonString(code)
+    } catch (cause: SerializationException) {
+        try {
+            MiraiCode.deserializeMiraiCode(code)
+        } catch (_: Throwable) {
+            throw cause
         }
     }
 }

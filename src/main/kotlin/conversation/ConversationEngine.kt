@@ -29,6 +29,7 @@ import top.jie65535.mirai.tools.AdjustUserFavorabilityAgent
 import top.jie65535.mirai.tools.BaseAgent
 import top.jie65535.mirai.tools.DeleteSkill
 import top.jie65535.mirai.tools.GroupManageAgent
+import top.jie65535.mirai.tools.GetChatHistoryContext
 import top.jie65535.mirai.tools.GithubAgent
 import top.jie65535.mirai.tools.ImageAgent
 import top.jie65535.mirai.tools.LoadSkill
@@ -70,6 +71,7 @@ internal object ConversationEngine {
         SaveSkill(),
         DeleteSkill(),
         SearchChatHistory(),
+        GetChatHistoryContext(),
         QueryUserProfileAgent(),
         WebSearch(),
         GithubAgent(),

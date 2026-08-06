@@ -229,14 +229,20 @@ memoryEnabled: true
 skillsEnabled: true
 # 是否启用好感度系统
 enableFavorabilitySystem: true
-# 聊天记录搜索最大天数
+# 未指定起始时间时聊天记录搜索默认回溯天数；明确指定时间时不限制历史跨度
 searchHistoryMaxDays: 30
-# 聊天记录搜索最大查询条数，防止内存溢出
+# 聊天记录搜索单页消息数上限，工具硬上限为200（兼容旧配置键）
 searchHistoryMaxRecords: 5000
 ```
 
 聊天记录与联系人快照保存在插件数据目录的 `chat-history.sqlite` 中，并使用 SQLite WAL 模式支持记录与查询并行进行。
 数据库由插件在首次启动时自动创建和维护，无需安装额外的聊天记录插件。
+
+聊天记录搜索使用 SQLite FTS5 中文三元索引。升级已有数据库时只会新增独立的派生搜索文本表和索引表，
+不会改列、重建或删除 `message_record` 原始记录；旧记录的搜索文本会在插件启动后分批后台回填。回填期间新消息仍会正常保存，
+搜索结果会明确标注索引尚未完成。搜索工具默认只查询当前群聊或当前私聊，明确指定 `from` 和 `to` 后可以跨越任意历史时间范围，
+并通过 `nextCursor` 分页。升级后新收到的消息还会记录发送者在该会话中使用过的名称，名称搜索不依赖对方仍是当前群成员；
+`getChatHistoryContext` 可按 `messageId` 获取命中消息前后的对话上下文。
 
 联系人刷新在后台通过 Overflow 的公开 `RemoteBot.executeAction` 调用 OneBot
 `get_friend_list`、`get_group_list` 和 `get_group_member_list`，不使用反射，也不依赖 Overflow 的 internal
@@ -496,8 +502,12 @@ fallbackCooldownMinutes: 5
 10. **SendVoiceMessage** - 发送语音消息
 11. **ImageAgent** - 图像生成与编辑（文生图、单图编辑、多图融合）
 12. **WeatherService** - 天气查询
-13. **SearchChatHistory** - 按关键词、发送者、时间范围搜索插件内置 SQLite 聊天历史
-14. **QueryUserProfile** - 按当前发送者、QQ 号、群名片、昵称或好友备注读取长期画像，并针对该联系人按需读取公开资料卡
+13. **SearchChatHistory** - 在当前群聊或私聊中使用 SQLite 全文索引搜索聊天历史，支持发送者、时间范围和游标翻页
+14. **GetChatHistoryContext** - 根据历史消息 ID 获取目标消息前后的对话上下文
+15. **QueryUserProfile** - 按当前发送者、QQ 号、群名片、昵称或好友备注读取长期画像，并针对该联系人按需读取公开资料卡
+
+`SearchChatHistory` 的常用参数只有消息内容、发送者、时间范围和翻页游标；结果默认按最近消息返回，
+单页大小和匹配策略由插件控制。`senderId` 与 `senderName` 可以同时提供，此时 QQ 号作为精确筛选条件；有 QQ 号时名称不参与筛选。
 
 ### GitHub 查询工具
 
