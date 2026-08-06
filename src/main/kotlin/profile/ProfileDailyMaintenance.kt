@@ -107,13 +107,30 @@ object ProfileDailyMaintenance {
 
         JChatGPT.logger.info("每日群画像推进开始: groups=${groupIds.size} maxPendingAgeDays=$maxPendingAgeDays")
         val runToken = UserProfileAnalysisService.newRunToken()
+        val requestController = ProfileDailyRequestController(
+            maxConcurrentRequests = PluginConfig.profileMaxConcurrentRequests,
+            maxAttempts = PluginConfig.profileRetryMax.coerceIn(0, 3) + 1,
+        )
         val outcomes = coroutineScope {
             groupIds.map { groupId ->
-                async { analyzeGroup(groupId, runToken) }
+                async { analyzeGroup(groupId, runToken, requestController) }
             }.awaitAll()
         }
+        val requestStats = requestController.snapshot()
 
         val reports = outcomes.mapNotNull(DailyGroupOutcome::report)
+        outcomes.firstNotNullOfOrNull(DailyGroupOutcome::cause)?.let { cause ->
+            JChatGPT.logger.error("每日群画像推进存在失败群，本轮仅输出一次代表性异常", cause)
+        }
+        if (requestStats.countedFailures > 0) {
+            val message = "每日群画像请求控制: attempts=${requestStats.totalAttempts} " +
+                    "failures=${requestStats.countedFailures} probes=${requestStats.probeAttempts} " +
+                    "incidents=${requestStats.pauseIncidents} recovered=${requestStats.recoveredIncidents} " +
+                    "exhausted=${requestStats.exhaustedTasks} " +
+                    "peak=${requestStats.peakActive}/${requestStats.peakLimit} " +
+                    "stopped=${requestStats.stopped}"
+            if (requestStats.stopped) JChatGPT.logger.warning(message) else JChatGPT.logger.info(message)
+        }
         JChatGPT.logger.info(
             "每日群画像推进完成: selected=${groupIds.size} " +
                     "success=${outcomes.count { it.status == DailyGroupStatus.SUCCESS }} " +
@@ -132,12 +149,14 @@ object ProfileDailyMaintenance {
     private suspend fun analyzeGroup(
         groupId: Long,
         runToken: ProfileAnalysisRunToken,
+        requestController: ProfileDailyRequestController,
     ): DailyGroupOutcome {
         return try {
-            val report = UserProfileAnalysisService.analyzeGroup(
+            val report = UserProfileAnalysisService.analyzeGroupControlled(
                 groupId = groupId,
                 maxBatches = Int.MAX_VALUE,
                 runToken = runToken,
+                requestController = requestController,
             ) { progress ->
                 JChatGPT.logger.info(
                     "PROFILE_DAILY_BATCH group=$groupId batch=${progress.batchIndex} " +
@@ -155,17 +174,19 @@ object ProfileDailyMaintenance {
                 else -> DailyGroupStatus.SUCCESS
             }
             DailyGroupOutcome(status, report.takeUnless { report.alreadyRunning || report.botId == null })
+        } catch (cause: ProfileDailyRunStoppedException) {
+            DailyGroupOutcome(DailyGroupStatus.STOPPED)
         } catch (cause: CancellationException) {
             throw cause
         } catch (cause: Exception) {
-            JChatGPT.logger.error("群 $groupId 每日画像推进失败", cause)
-            DailyGroupOutcome(DailyGroupStatus.FAILED)
+            DailyGroupOutcome(DailyGroupStatus.FAILED, cause = cause)
         }
     }
 
     private data class DailyGroupOutcome(
         val status: DailyGroupStatus,
         val report: GroupProfileAnalysisReport? = null,
+        val cause: Throwable? = null,
     )
 
     private enum class DailyGroupStatus {

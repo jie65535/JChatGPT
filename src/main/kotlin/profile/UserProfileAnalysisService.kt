@@ -170,6 +170,34 @@ object UserProfileAnalysisService {
         maxBatches: Int,
         runToken: ProfileAnalysisRunToken = newRunToken(),
         onProgress: suspend (GroupProfileAnalysisProgress) -> Unit = {},
+    ): GroupProfileAnalysisReport = analyzeGroupInternal(
+        groupId = groupId,
+        maxBatches = maxBatches,
+        runToken = runToken,
+        requestController = null,
+        onProgress = onProgress,
+    )
+
+    internal suspend fun analyzeGroupControlled(
+        groupId: Long,
+        maxBatches: Int,
+        runToken: ProfileAnalysisRunToken,
+        requestController: ProfileDailyRequestController,
+        onProgress: suspend (GroupProfileAnalysisProgress) -> Unit = {},
+    ): GroupProfileAnalysisReport = analyzeGroupInternal(
+        groupId = groupId,
+        maxBatches = maxBatches,
+        runToken = runToken,
+        requestController = requestController,
+        onProgress = onProgress,
+    )
+
+    private suspend fun analyzeGroupInternal(
+        groupId: Long,
+        maxBatches: Int,
+        runToken: ProfileAnalysisRunToken,
+        requestController: ProfileDailyRequestController?,
+        onProgress: suspend (GroupProfileAnalysisProgress) -> Unit,
     ): GroupProfileAnalysisReport {
         require(groupId > 0) { "groupId 必须是正数" }
         require(maxBatches > 0) { "maxBatches 必须是正数" }
@@ -194,7 +222,7 @@ object UserProfileAnalysisService {
         }
 
         try {
-            return analyzeGroupExclusive(groupId, maxBatches, runToken, onProgress)
+            return analyzeGroupExclusive(groupId, maxBatches, runToken, requestController, onProgress)
         } finally {
             runningGroups.remove(groupId)
         }
@@ -306,6 +334,7 @@ object UserProfileAnalysisService {
         groupId: Long,
         maxBatches: Int,
         runToken: ProfileAnalysisRunToken,
+        requestController: ProfileDailyRequestController?,
         onProgress: suspend (GroupProfileAnalysisProgress) -> Unit,
     ): GroupProfileAnalysisReport {
         val reader = withContext(Dispatchers.IO) { ProfileHistoryReader(resolveHistoryFile()) }
@@ -367,6 +396,7 @@ object UserProfileAnalysisService {
                     summaryMaxLength = PluginConfig.profileSummaryMaxLength,
                     onRetryFailure = { message, cause -> JChatGPT.logger.warning(message, cause) },
                     onCommittedOperations = ProfileOperationLogger::log,
+                    requestController = requestController,
                 )
             } catch (cause: ModelSafetyRejectionException) {
                 JChatGPT.logger.warning(
@@ -461,6 +491,7 @@ object UserProfileAnalysisService {
         summaryMaxLength: Int,
         onRetryFailure: (String, Throwable) -> Unit = { _, _ -> },
         onCommittedOperations: (String, Collection<ProfileReduction>) -> Unit = { _, _ -> },
+        requestController: ProfileDailyRequestController? = null,
     ): ConversationProfileAnalysisReport? {
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
         val eligibleUserIds = batch.authoredTextCharsByUser
@@ -486,6 +517,7 @@ object UserProfileAnalysisService {
             retryMax = retryMax,
             summaryMaxLength = summaryMaxLength,
             onRetryFailure = onRetryFailure,
+            requestController = requestController,
         )
         val totalUsage = result.usage
         val commitOutcome = userLocks.withUserLocks(eligibleUserIds) {
@@ -569,36 +601,57 @@ object UserProfileAnalysisService {
         retryMax: Int,
         summaryMaxLength: Int,
         onRetryFailure: (String, Throwable) -> Unit,
+        requestController: ProfileDailyRequestController?,
     ): Pair<ConversationProfileModelResult, List<ProfileReduction>> {
         val attempts = retryMax.coerceIn(0, 3) + 1
         val retryBackoff = RetryBackoff.fromConfig()
+        val requestKey = ProfileDailyRequestKey(
+            groupId = batch.groupId,
+            startTime = batch.startTime,
+            endTime = batch.endTime,
+        )
         var lastFailure: Throwable? = null
         repeat(attempts) { attempt ->
             try {
-                val result = model.analyzeConversation(
-                    profiles,
-                    batch,
-                    eligibleUserIds,
-                    supportStatsByUserId,
-                )
-                val reductions = ConversationProfileReducer.reduce(
-                    profiles = profiles,
-                    batch = batch,
-                    eligibleUserIds = eligibleUserIds,
-                    response = result.response,
-                    model = model.modelName,
-                    promptVersion = ProfilePromptStore.PROMPT_VERSION,
-                    summaryMaxLength = summaryMaxLength.coerceAtLeast(100),
-                )
-                return result to reductions
+                val analyzeAttempt: suspend () -> Pair<ConversationProfileModelResult, List<ProfileReduction>> = {
+                    val result = model.analyzeConversation(
+                        profiles,
+                        batch,
+                        eligibleUserIds,
+                        supportStatsByUserId,
+                    )
+                    val reductions = ConversationProfileReducer.reduce(
+                        profiles = profiles,
+                        batch = batch,
+                        eligibleUserIds = eligibleUserIds,
+                        response = result.response,
+                        model = model.modelName,
+                        promptVersion = ProfilePromptStore.PROMPT_VERSION,
+                        summaryMaxLength = summaryMaxLength.coerceAtLeast(100),
+                    )
+                    result to reductions
+                }
+                return if (requestController == null) {
+                    analyzeAttempt()
+                } else {
+                    requestController.execute(
+                        key = requestKey,
+                        attempt = attempt + 1,
+                        countFailure = { cause -> cause !is ModelRequestRejectedException },
+                        block = analyzeAttempt,
+                    )
+                }
             } catch (cause: Exception) {
+                if (cause is ProfileDailyRunStoppedException) throw cause
                 if (cause is CancellationException) throw cause
                 if (cause is ModelRequestRejectedException) {
-                    onRetryFailure(
-                        "群 ${batch.groupId} 会话画像 [${batch.startTime}, ${batch.endTime}) " +
-                                "被模型拒绝，已停止重试",
-                        cause,
-                    )
+                    if (requestController == null) {
+                        onRetryFailure(
+                            "群 ${batch.groupId} 会话画像 [${batch.startTime}, ${batch.endTime}) " +
+                                    "被模型拒绝，已停止重试",
+                            cause,
+                        )
+                    }
                     throw cause
                 }
                 lastFailure = cause
@@ -609,7 +662,7 @@ object UserProfileAnalysisService {
                             "第 ${attempt + 1}/$attempts 次分析失败",
                     cause = cause,
                     retryBackoff = retryBackoff,
-                    logFailure = onRetryFailure,
+                    logFailure = if (requestController == null) onRetryFailure else { _, _ -> },
                 )
             }
         }

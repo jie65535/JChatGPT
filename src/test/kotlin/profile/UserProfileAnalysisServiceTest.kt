@@ -143,6 +143,31 @@ class UserProfileAnalysisServiceTest {
     }
 
     @Test
+    fun dailyControllerDoesNotCountSafetyRejectionAsAnOutage() = withProfileStore {
+        val controller = ProfileDailyRequestController(
+            maxConcurrentRequests = 128,
+            maxAttempts = 3,
+        )
+        val model = FakeConversationProfileModel {
+            throw ModelSafetyRejectionException(
+                errorType = "invalid_request_error",
+                errorCode = "cyber_policy",
+                message = "blocked by policy",
+            )
+        }
+
+        assertFailsWith<ModelSafetyRejectionException> {
+            analyze(batch(), model, retryMax = 2, requestController = controller)
+        }
+
+        val stats = controller.snapshot()
+        assertEquals(1, stats.totalAttempts)
+        assertEquals(0, stats.countedFailures)
+        assertEquals(0, stats.pauseIncidents)
+        assertFalse(stats.stopped)
+    }
+
+    @Test
     fun skipsConversationAlreadyProcessedByAnEarlierCall() = withProfileStore {
         val model = FakeConversationProfileModel { successfulResult() }
 
@@ -250,12 +275,14 @@ class UserProfileAnalysisServiceTest {
         model: ConversationProfileModel,
         minAuthoredTextChars: Int = 1,
         retryMax: Int = 0,
+        requestController: ProfileDailyRequestController? = null,
     ): ConversationProfileAnalysisReport? = UserProfileAnalysisService.analyzeConversationBatch(
         batch = batch,
         minAuthoredTextChars = minAuthoredTextChars,
         model = model,
         retryMax = retryMax,
         summaryMaxLength = 500,
+        requestController = requestController,
     )
 
     private fun successfulResult() = result(
