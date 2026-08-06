@@ -62,15 +62,16 @@ class ChatHistoryStoreTest {
                         "SELECT value FROM chat_history_meta WHERE key = 'schema_version'"
                     ).use { results ->
                         assertTrue(results.next())
-                        assertEquals("3", results.getString(1))
+                        assertEquals("4", results.getString(1))
                     }
                     statement.executeQuery(
                         "SELECT COUNT(*) FROM sqlite_master " +
                                 "WHERE type = 'table' AND name IN " +
-                                "('message_record_search', 'message_record_fts', 'chat_history_sender_alias')"
+                                "('message_record_search', 'message_record_fts', 'message_record_bigram_fts', " +
+                                        "'chat_history_sender_alias')"
                     ).use { results ->
                         assertTrue(results.next())
-                        assertEquals(3, results.getInt(1))
+                        assertEquals(4, results.getInt(1))
                     }
                 }
             }
@@ -136,6 +137,33 @@ class ChatHistoryStoreTest {
             )
             assertEquals(2L, shortQuery.totalMatches)
             assertEquals(listOf(first, third), shortQuery.records.map { it.id })
+
+            val mention = insert(
+                directory,
+                time = 103,
+                fromId = 11,
+                text = "",
+                code = buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", "At")
+                        put("target", 2180487691L)
+                    })
+                }.toString(),
+            )
+            val literal = insert(directory, 104, 11, "筱玥检查一下")
+            val mentionQuery = ChatHistoryStore.search(
+                ChatHistorySearchRequest(
+                    subject = subject,
+                    query = "筱玥",
+                    atTargetIds = setOf(2180487691L),
+                    fromId = 11,
+                    start = 0,
+                    end = 200,
+                    limit = 10,
+                )
+            )
+            assertEquals(2L, mentionQuery.totalMatches)
+            assertEquals(listOf(literal, mention), mentionQuery.records.map { it.id })
 
             val aliases = ChatHistoryStore.findSenderAliases(subject, "旧名")
             assertEquals(listOf(ChatHistorySenderAliasMatch(11, "旧名张三", 1)), aliases)
@@ -245,12 +273,81 @@ class ChatHistoryStoreTest {
         }
     }
 
+    @Test
+    fun migratesCompletedTrigramIndexAndBackfillsBigramIndex() {
+        val directory = Files.createTempDirectory("jchatgpt-history-bigram-migration-test-")
+        val database = directory.resolve("chat-history.sqlite")
+        try {
+            ChatHistoryStore.init(directory.toFile())
+            val messageId = insert(directory, 100, 11, "部署完成")
+            ChatHistoryStore.close()
+
+            DriverManager.getConnection("jdbc:sqlite:${database.absolutePathString()}").use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeUpdate("DROP TABLE message_record_bigram_fts")
+                    statement.executeUpdate(
+                        "DELETE FROM chat_history_meta WHERE key = 'search_bigram_version'"
+                    )
+                    statement.executeUpdate(
+                        "UPDATE chat_history_meta SET value = '3' WHERE key = 'schema_version'"
+                    )
+                    statement.executeUpdate(
+                        "UPDATE chat_history_meta SET value = '1' WHERE key = 'search_index_complete'"
+                    )
+                    statement.executeUpdate(
+                        "UPDATE chat_history_meta SET value = '$messageId' WHERE key = 'search_backfill_cursor'"
+                    )
+                }
+            }
+
+            ChatHistoryStore.init(directory.toFile())
+            assertFalse(ChatHistoryStore.isSearchIndexReady)
+            assertEquals(1, ChatHistoryStore.backfillSearchIndex(batchSize = 1))
+            assertTrue(ChatHistoryStore.isSearchIndexReady)
+
+            val search = ChatHistoryStore.search(
+                ChatHistorySearchRequest(
+                    subject = ChatHistorySubject(1, MessageSourceKind.GROUP, 1000),
+                    query = "部署",
+                    start = 0,
+                    end = 200,
+                )
+            )
+            assertEquals(listOf(messageId), search.records.map { it.id })
+
+            DriverManager.getConnection("jdbc:sqlite:${database.absolutePathString()}").use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery(
+                        "SELECT search_text FROM message_record_search WHERE message_id = $messageId"
+                    ).use { results ->
+                        assertTrue(results.next())
+                        assertEquals("部署完成", results.getString(1))
+                    }
+                    statement.executeQuery(
+                        "SELECT rowid FROM message_record_bigram_fts WHERE rowid = $messageId"
+                    ).use { results ->
+                        assertTrue(results.next())
+                    }
+                }
+            }
+        } finally {
+            ChatHistoryStore.close()
+            directory.toFile().deleteRecursively()
+        }
+    }
+
     private fun insert(
         directory: java.nio.file.Path,
         time: Int,
         fromId: Long,
         text: String,
         senderName: String = "",
+        code: String = buildJsonArray {
+            add(buildJsonObject {
+                put("type", "PlainText")
+                put("content", text)
+            })
+        }.toString(),
     ): Long {
         val record = ChatMessageRecord(
             botId = 1,
@@ -260,12 +357,7 @@ class ChatHistoryStoreTest {
             internalIds = "$time",
             time = time,
             kind = MessageSourceKind.GROUP,
-            code = buildJsonArray {
-                add(buildJsonObject {
-                    put("type", "PlainText")
-                    put("content", text)
-                })
-            }.toString(),
+            code = code,
         )
         ChatHistoryStore.insertRecord(record, senderName)
         DriverManager.getConnection("jdbc:sqlite:${directory.resolve("chat-history.sqlite").absolutePathString()}").use {

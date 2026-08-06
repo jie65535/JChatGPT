@@ -24,13 +24,16 @@ import java.sql.ResultSet
  * 写连接由 [writeLock] 串行保护；SQLite 使用 WAL + NORMAL synchronous，允许并发读取。
  */
 object ChatHistoryStore {
-    private const val SCHEMA_VERSION = 3
+    private const val SCHEMA_VERSION = 4
     private const val BUSY_TIMEOUT_MS = 30_000
     private const val SEARCH_FTS_TABLE = "message_record_fts"
+    private const val SEARCH_BIGRAM_FTS_TABLE = "message_record_bigram_fts"
     private const val SEARCH_TEXT_TABLE = "message_record_search"
     private const val SENDER_ALIAS_TABLE = "chat_history_sender_alias"
     private const val SEARCH_BACKFILL_CURSOR_KEY = "search_backfill_cursor"
     private const val SEARCH_INDEX_COMPLETE_KEY = "search_index_complete"
+    private const val SEARCH_BIGRAM_VERSION_KEY = "search_bigram_version"
+    private const val SEARCH_BIGRAM_VERSION = "1"
     private const val DEFAULT_BACKFILL_BATCH_SIZE = 250
     private const val MAX_PAGE_SIZE = 200
     private const val MAX_CONTEXT_MESSAGES = 100
@@ -42,6 +45,8 @@ object ChatHistoryStore {
     private var initialized = false
     @Volatile
     private var searchIndexAvailable = false
+    @Volatile
+    private var bigramIndexAvailable = false
     @Volatile
     private var searchIndexReady = false
     private lateinit var databaseFile: File
@@ -79,6 +84,7 @@ object ChatHistoryStore {
                 writeConnection = connection
                 initialized = true
                 searchIndexAvailable = hasSearchIndex(connection)
+                bigramIndexAvailable = hasBigramSearchIndex(connection)
                 searchIndexReady = searchIndexAvailable && readMeta(connection, SEARCH_INDEX_COMPLETE_KEY) == "1"
             } catch (cause: Throwable) {
                 connection.close()
@@ -102,6 +108,7 @@ object ChatHistoryStore {
                 writeConnection = null
                 initialized = false
                 searchIndexAvailable = false
+                bigramIndexAvailable = false
                 searchIndexReady = false
                 warningLogger = null
             }
@@ -299,16 +306,16 @@ object ChatHistoryStore {
         }
 
         val query = request.query?.trim().orEmpty()
-        val textPredicate = buildTextPredicate(query, request.matchMode, parameters)
+        val textPredicate = buildTextPredicate(query, request.matchMode, request.atTargetIds, parameters)
         if ((textPredicate.usesFts || textPredicate.usesSearchText) && !isSearchIndexAvailable) {
             error("聊天记录全文索引尚未就绪")
+        }
+        if (textPredicate.usesBigram && !bigramIndexAvailable) {
+            error("聊天记录二元索引尚未就绪")
         }
         val joins = buildString {
             if (textPredicate.usesSearchText) {
                 append("JOIN $SEARCH_TEXT_TABLE search ON search.message_id = mr.id ")
-            }
-            if (textPredicate.usesFts) {
-                append("JOIN $SEARCH_FTS_TABLE ON $SEARCH_FTS_TABLE.rowid = mr.id")
             }
         }
         textPredicate.sql?.let(conditions::add)
@@ -499,16 +506,24 @@ object ChatHistoryStore {
         var cursor = withWriteConnectionResult { connection ->
             readMeta(connection, SEARCH_BACKFILL_CURSOR_KEY)?.toLongOrNull() ?: 0L
         }
+        val hasBigramIndex = bigramIndexAvailable
         while (shouldContinue()) {
             val batch = openReadConnection().use { connection ->
+                val missingBigramExpression = if (hasBigramIndex) {
+                    "NOT EXISTS (SELECT 1 FROM $SEARCH_BIGRAM_FTS_TABLE bigram WHERE bigram.rowid = mr.id)"
+                } else {
+                    "0"
+                }
+                val missingBigramCondition = if (hasBigramIndex) "OR $missingBigramExpression" else ""
                 connection.prepareStatement(
                     """
-                    SELECT mr.id, mr.code
+                    SELECT mr.id, mr.code,
+                           search.message_id IS NULL AS missing_search,
+                           $missingBigramExpression AS missing_bigram
                     FROM message_record mr
+                    LEFT JOIN $SEARCH_TEXT_TABLE search ON search.message_id = mr.id
                     WHERE mr.id > ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM $SEARCH_TEXT_TABLE search WHERE search.message_id = mr.id
-                      )
+                      AND (search.message_id IS NULL $missingBigramCondition)
                     ORDER BY mr.id
                     LIMIT ?
                     """.trimIndent()
@@ -518,7 +533,14 @@ object ChatHistoryStore {
                     statement.executeQuery().use { results ->
                         buildList {
                             while (results.next()) {
-                                add(results.getLong("id") to results.getString("code"))
+                                add(
+                                    SearchBackfillRow(
+                                        id = results.getLong("id"),
+                                        code = results.getString("code"),
+                                        missingSearch = results.getBoolean("missing_search"),
+                                        missingBigram = results.getBoolean("missing_bigram"),
+                                    )
+                                )
                             }
                         }
                     }
@@ -541,20 +563,39 @@ object ChatHistoryStore {
                         connection.prepareStatement(
                             "INSERT INTO $SEARCH_FTS_TABLE(rowid, search_text) VALUES (?, ?)"
                         ).use { insertFts ->
-                            batch.forEach { (id, code) ->
-                                val text = ChatHistorySearchText.extract(code)
-                                insertText.setLong(1, id)
-                                insertText.setString(2, text)
-                                insertText.addBatch()
-                                insertFts.setLong(1, id)
-                                insertFts.setString(2, text)
-                                insertFts.addBatch()
+                            val insertBigram = if (hasBigramIndex) {
+                                connection.prepareStatement(
+                                    "INSERT INTO $SEARCH_BIGRAM_FTS_TABLE(rowid, bigram_text) VALUES (?, ?)"
+                                )
+                            } else {
+                                null
                             }
-                            insertText.executeBatch()
-                            insertFts.executeBatch()
+                            try {
+                                batch.forEach { row ->
+                                    val text = ChatHistorySearchText.extract(row.code)
+                                    if (row.missingSearch) {
+                                        insertText.setLong(1, row.id)
+                                        insertText.setString(2, text)
+                                        insertText.addBatch()
+                                        insertFts.setLong(1, row.id)
+                                        insertFts.setString(2, text)
+                                        insertFts.addBatch()
+                                    }
+                                    if (row.missingBigram) {
+                                        insertBigram?.setLong(1, row.id)
+                                        insertBigram?.setString(2, ChatHistorySearchText.bigrams(text))
+                                        insertBigram?.addBatch()
+                                    }
+                                }
+                                insertText.executeBatch()
+                                insertFts.executeBatch()
+                                insertBigram?.executeBatch()
+                            } finally {
+                                insertBigram?.close()
+                            }
                         }
                     }
-                    cursor = batch.last().first
+                    cursor = batch.last().id
                     writeMeta(connection, SEARCH_BACKFILL_CURSOR_KEY, cursor.toString())
                     writeMeta(connection, SEARCH_INDEX_COMPLETE_KEY, "0")
                     connection.commit()
@@ -570,6 +611,13 @@ object ChatHistoryStore {
         }
         return processed
     }
+
+    private data class SearchBackfillRow(
+        val id: Long,
+        val code: String,
+        val missingSearch: Boolean,
+        val missingBigram: Boolean,
+    )
 
     internal fun insertRecord(record: ChatMessageRecord, senderName: String = "") {
         var recordId = 0L
@@ -638,6 +686,15 @@ object ChatHistoryStore {
                 statement.setLong(1, recordId)
                 statement.setString(2, searchText)
                 statement.executeUpdate()
+            }
+            if (bigramIndexAvailable) {
+                connection.prepareStatement(
+                    "INSERT INTO $SEARCH_BIGRAM_FTS_TABLE(rowid, bigram_text) VALUES (?, ?)"
+                ).use { statement ->
+                    statement.setLong(1, recordId)
+                    statement.setString(2, ChatHistorySearchText.bigrams(searchText))
+                    statement.executeUpdate()
+                }
             }
             connection.commit()
         } catch (cause: Throwable) {
@@ -810,6 +867,20 @@ object ChatHistoryStore {
             }
         }.onFailure { warn("初始化 SQLite FTS5 聊天记录索引失败，消息记录仍会继续保存", it) }
 
+        runCatching {
+            connection.createStatement().use { statement ->
+                statement.executeUpdate(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS $SEARCH_BIGRAM_FTS_TABLE USING fts5(
+                        bigram_text,
+                        content='',
+                        tokenize='unicode61'
+                    )
+                    """.trimIndent()
+                )
+            }
+        }.onFailure { warn("初始化 SQLite FTS5 聊天记录二元索引失败，将回退到短词扫描", it) }
+
         if (hasSearchIndex(connection)) {
             val hasMessages = connection.createStatement().use { statement ->
                 statement.executeQuery("SELECT 1 FROM message_record LIMIT 1").use(ResultSet::next)
@@ -823,6 +894,27 @@ object ChatHistoryStore {
                 statement.setString(1, SEARCH_INDEX_COMPLETE_KEY)
                 statement.setString(2, if (hasMessages) "0" else "1")
                 statement.executeUpdate()
+            }
+        }
+
+        if (hasBigramSearchIndex(connection) &&
+            readMeta(connection, SEARCH_BIGRAM_VERSION_KEY) != SEARCH_BIGRAM_VERSION
+        ) {
+            val hasMessages = connection.createStatement().use { statement ->
+                statement.executeQuery("SELECT 1 FROM message_record LIMIT 1").use(ResultSet::next)
+            }
+            val oldAutoCommitForMigration = connection.autoCommit
+            connection.autoCommit = false
+            try {
+                writeMeta(connection, SEARCH_BACKFILL_CURSOR_KEY, "0")
+                writeMeta(connection, SEARCH_INDEX_COMPLETE_KEY, if (hasMessages) "0" else "1")
+                writeMeta(connection, SEARCH_BIGRAM_VERSION_KEY, SEARCH_BIGRAM_VERSION)
+                connection.commit()
+            } catch (cause: Throwable) {
+                connection.rollback()
+                throw cause
+            } finally {
+                connection.autoCommit = oldAutoCommitForMigration
             }
         }
     }
@@ -852,9 +944,40 @@ object ChatHistoryStore {
         val sql: String?,
         val usesFts: Boolean,
         val usesSearchText: Boolean,
+        val usesBigram: Boolean = false,
     )
 
     private fun buildTextPredicate(
+        query: String,
+        mode: ChatHistoryMatchMode,
+        atTargetIds: Set<Long>,
+        parameters: MutableList<Any>,
+    ): TextPredicate {
+        if (query.isBlank() && atTargetIds.isEmpty()) return TextPredicate(null, false, false)
+        val contentPredicate = if (query.isBlank()) {
+            TextPredicate(null, false, false)
+        } else {
+            buildContentTextPredicate(query, mode, parameters)
+        }
+        if (atTargetIds.isEmpty()) return contentPredicate
+
+        val mentionPredicate = atTargetIds.sorted().joinToString(" OR ", prefix = "(", postfix = ")") {
+            parameters += quoteFtsTerm("@$it")
+            ftsRowPredicate(SEARCH_FTS_TABLE)
+        }
+        val sql = when {
+            contentPredicate.sql == null -> mentionPredicate
+            else -> "(${contentPredicate.sql} OR $mentionPredicate)"
+        }
+        return TextPredicate(
+            sql = sql,
+            usesFts = true,
+            usesSearchText = contentPredicate.usesSearchText,
+            usesBigram = contentPredicate.usesBigram,
+        )
+    }
+
+    private fun buildContentTextPredicate(
         query: String,
         mode: ChatHistoryMatchMode,
         parameters: MutableList<Any>,
@@ -862,48 +985,77 @@ object ChatHistoryStore {
         if (query.isBlank()) return TextPredicate(null, false, false)
         val normalized = query.lowercase()
         val terms = normalized.split(Regex("\\s+")).filter(String::isNotBlank)
-        val hasShortTerm = terms.any { it.codePointCount(0, it.length) < 3 }
-        if (mode == ChatHistoryMatchMode.ANY && hasShortTerm) {
-            val predicates = terms.map {
-                parameters += it
-                "instr(lower(search.search_text), ?) > 0"
+        if (mode == ChatHistoryMatchMode.PHRASE) {
+            val codePointCount = normalized.codePointCount(0, normalized.length)
+            return when {
+                codePointCount >= 3 -> {
+                    parameters += quoteFtsTerm(normalized)
+                    TextPredicate(ftsRowPredicate(SEARCH_FTS_TABLE), usesFts = true, usesSearchText = false)
+                }
+                codePointCount == 2 && bigramIndexAvailable -> {
+                    parameters += quoteFtsTerm(normalized)
+                    TextPredicate(
+                        ftsRowPredicate(SEARCH_BIGRAM_FTS_TABLE),
+                        usesFts = false,
+                        usesSearchText = false,
+                        usesBigram = true,
+                    )
+                }
+                else -> {
+                    parameters += normalized
+                    TextPredicate("instr(lower(search.search_text), ?) > 0", false, true)
+                }
             }
-            return TextPredicate(predicates.joinToString(" OR ", prefix = "(", postfix = ")"), false, true)
         }
-        val ftsTerms = if (mode == ChatHistoryMatchMode.PHRASE) {
-            listOf(normalized)
-        } else {
-            terms
+
+        val longTerms = terms.filter { it.codePointCount(0, it.length) >= 3 }
+        val bigramTerms = terms.filter { it.codePointCount(0, it.length) == 2 }
+        val shortTerms = terms.filter { it.codePointCount(0, it.length) < 2 }
+        val predicates = mutableListOf<String>()
+        var usesFts = false
+        var usesBigram = false
+        var usesSearchText = false
+
+        if (longTerms.isNotEmpty()) {
+            parameters += longTerms.joinToString(
+                if (mode == ChatHistoryMatchMode.ANY) " OR " else " AND ",
+                transform = ::quoteFtsTerm,
+            )
+            predicates += ftsRowPredicate(SEARCH_FTS_TABLE)
+            usesFts = true
         }
-        val ftsOnly = ftsTerms.filter { it.codePointCount(0, it.length) >= 3 }
-        if (ftsOnly.isEmpty()) {
-            val predicates = terms.map {
-                parameters += it
-                "instr(lower(search.search_text), ?) > 0"
+        if (bigramTerms.isNotEmpty()) {
+            if (bigramIndexAvailable) {
+                parameters += bigramTerms.joinToString(
+                    if (mode == ChatHistoryMatchMode.ANY) " OR " else " AND ",
+                    transform = ::quoteFtsTerm,
+                )
+                predicates += ftsRowPredicate(SEARCH_BIGRAM_FTS_TABLE)
+                usesBigram = true
+            } else {
+                bigramTerms.forEach {
+                    parameters += it
+                    predicates += "instr(lower(search.search_text), ?) > 0"
+                }
+                usesSearchText = true
             }
-            val joiner = if (mode == ChatHistoryMatchMode.ANY) " OR " else " AND "
-            return TextPredicate(predicates.joinToString(joiner, prefix = "(", postfix = ")"), false, true)
         }
-        val ftsQuery = when (mode) {
-            ChatHistoryMatchMode.PHRASE -> quoteFtsTerm(normalized)
-            ChatHistoryMatchMode.ALL -> ftsOnly.joinToString(" AND ", transform = ::quoteFtsTerm)
-            ChatHistoryMatchMode.ANY -> ftsOnly.joinToString(" OR ", transform = ::quoteFtsTerm)
-        }
-        parameters += ftsQuery
-        val ftsPredicate = "$SEARCH_FTS_TABLE MATCH ?"
-        if (mode != ChatHistoryMatchMode.ALL || !hasShortTerm) {
-            return TextPredicate(ftsPredicate, true, false)
-        }
-        val shortPredicates = terms.filter { it.codePointCount(0, it.length) < 3 }.map {
+        shortTerms.forEach {
             parameters += it
-            "instr(lower(search.search_text), ?) > 0"
+            predicates += "instr(lower(search.search_text), ?) > 0"
+            usesSearchText = true
         }
+        val joiner = if (mode == ChatHistoryMatchMode.ANY) " OR " else " AND "
         return TextPredicate(
-            (listOf(ftsPredicate) + shortPredicates).joinToString(" AND ", prefix = "(", postfix = ")"),
-            true,
-            true,
+            predicates.joinToString(joiner, prefix = "(", postfix = ")"),
+            usesFts,
+            usesSearchText,
+            usesBigram,
         )
     }
+
+    private fun ftsRowPredicate(table: String): String =
+        "mr.id IN (SELECT rowid FROM $table WHERE $table MATCH ?)"
 
     private fun quoteFtsTerm(term: String): String =
         "\"${term.replace("\"", "\"\"")}\""
@@ -942,6 +1094,17 @@ object ChatHistoryStore {
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1"
         ).use { statement ->
             statement.setString(1, SEARCH_FTS_TABLE)
+            statement.executeQuery().use { results ->
+                return results.next()
+            }
+        }
+    }
+
+    private fun hasBigramSearchIndex(connection: Connection): Boolean {
+        connection.prepareStatement(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1"
+        ).use { statement ->
+            statement.setString(1, SEARCH_BIGRAM_FTS_TABLE)
             statement.executeQuery().use { results ->
                 return results.next()
             }

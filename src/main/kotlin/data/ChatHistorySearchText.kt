@@ -18,28 +18,49 @@ object ChatHistorySearchText {
     private val json = Json { ignoreUnknownKeys = true }
     private val whitespace = Regex("\\s+")
 
-    fun extract(code: String): String {
-        val rendered = runCatching { renderJsonCode(code) }
+    fun extract(code: String, atNames: Map<Long, String> = emptyMap()): String {
+        val rendered = runCatching { renderJsonCode(code, atNames) }
             .recoverCatching { decodeMessageCode(code).content }
             .getOrDefault("")
         return rendered.normalize().takeUtf16Safely(MAX_INDEXED_CHARS)
     }
 
-    private fun renderJsonCode(code: String): String {
-        val messages = json.parseToJsonElement(code) as? JsonArray
-            ?: throw IllegalArgumentException("消息记录不是 JSON array")
-        return renderMessages(messages)
+    fun extractAtTargets(code: String): Set<Long> = runCatching {
+        val messages = json.parseToJsonElement(code) as? JsonArray ?: return@runCatching emptySet()
+        buildSet { collectAtTargets(messages, this) }
+    }.getOrDefault(emptySet())
+
+    fun bigrams(text: String): String {
+        val codePoints = text.lowercase().codePoints().toArray()
+        if (codePoints.size < 2) return ""
+        return buildString(codePoints.size * 3) {
+            var tokenCount = 0
+            for (index in 0 until codePoints.lastIndex) {
+                if (Character.isWhitespace(codePoints[index]) || Character.isWhitespace(codePoints[index + 1])) {
+                    continue
+                }
+                if (tokenCount++ > 0) append(' ')
+                appendCodePoint(codePoints[index])
+                appendCodePoint(codePoints[index + 1])
+            }
+        }
     }
 
-    private fun renderMessages(messages: JsonArray): String = messages.joinToString("") { element ->
+    private fun renderJsonCode(code: String, atNames: Map<Long, String>): String {
+        val messages = json.parseToJsonElement(code) as? JsonArray
+            ?: throw IllegalArgumentException("消息记录不是 JSON array")
+        return renderMessages(messages, atNames)
+    }
+
+    private fun renderMessages(messages: JsonArray, atNames: Map<Long, String>): String = messages.joinToString("") { element ->
         val message = element as? JsonObject ?: return@joinToString ""
         when (val type = message.string("type")) {
             "PlainText" -> message.string("content").orEmpty()
-            "At" -> message.long("target")?.let { "@$it" }.orEmpty()
+            "At" -> message.long("target")?.let { target -> "@${atNames[target] ?: target}" }.orEmpty()
             "AtAll" -> "@全体成员"
             "Image", "FlashImage" -> if (message.boolean("isEmoji") == true) "[表情包]" else "[图片]"
-            "QuoteReply" -> renderQuote(message)
-            "ForwardMessage" -> renderForward(message)
+            "QuoteReply" -> renderQuote(message, atNames)
+            "ForwardMessage" -> renderForward(message, atNames)
             "MessageOrigin", "MessageSource", "ShowImageFlag" -> ""
             "Face", "MarketFace", "VipFace" -> "[表情]"
             "Audio" -> "[语音]"
@@ -51,18 +72,18 @@ object ChatHistorySearchText {
         }
     }
 
-    private fun renderQuote(message: JsonObject): String {
+    private fun renderQuote(message: JsonObject, atNames: Map<Long, String>): String {
         val source = message["source"] as? JsonObject ?: return "[引用消息]"
         val author = source.long("fromId")?.toString() ?: "其他用户"
         val original = (source["originalMessage"] as? JsonArray)
-            ?.let(::renderMessages)
+            ?.let { renderMessages(it, atNames) }
             .orEmpty()
             .normalize()
             .takeUtf16Safely(MAX_QUOTED_CHARS)
         return "[引用 $author: $original]"
     }
 
-    private fun renderForward(message: JsonObject): String = buildString {
+    private fun renderForward(message: JsonObject, atNames: Map<Long, String>): String = buildString {
         append("[转发消息]")
         val nodes = message["nodeList"] as? JsonArray ?: return@buildString
         nodes.take(MAX_FORWARD_NODES).forEach { element ->
@@ -71,13 +92,31 @@ object ChatHistorySearchText {
             val chain = node["messageChain"] as? JsonArray
             append(' ').append(sender).append(": ")
             append(
-                chain?.let(::renderMessages)
+                chain?.let { renderMessages(it, atNames) }
                     .orEmpty()
                     .normalize()
                     .takeUtf16Safely(MAX_FORWARD_NODE_CHARS)
             )
         }
         if (nodes.size > MAX_FORWARD_NODES) append(" ...[转发内容截断]")
+    }
+
+    private fun collectAtTargets(messages: JsonArray, targets: MutableSet<Long>) {
+        messages.forEach { element ->
+            val message = element as? JsonObject ?: return@forEach
+            when (message.string("type")) {
+                "At" -> message.long("target")?.let(targets::add)
+                "QuoteReply" -> {
+                    val original = (message["source"] as? JsonObject)
+                        ?.get("originalMessage") as? JsonArray
+                    original?.let { collectAtTargets(it, targets) }
+                }
+                "ForwardMessage" -> (message["nodeList"] as? JsonArray).orEmpty().forEach { node ->
+                    ((node as? JsonObject)?.get("messageChain") as? JsonArray)
+                        ?.let { collectAtTargets(it, targets) }
+                }
+            }
+        }
     }
 
     private fun String.normalize(): String = whitespace.replace(this, " ")

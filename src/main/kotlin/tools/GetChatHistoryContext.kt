@@ -18,22 +18,21 @@ import top.jie65535.mirai.data.ChatHistorySubject
 class GetChatHistoryContext : BaseAgent(
     tool = Tool.function(
         name = "getChatHistoryContext",
-        description = "根据 searchChatHistory 返回的 messageId，读取该消息在当前群聊或私聊中的前后文。" +
-                "结果按时间顺序排列，并用 >>> 标记目标消息。",
+        description = "读取某条聊天记录前后的消息。",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
                 putJsonObject("messageId") {
                     put("type", "integer")
-                    put("description", "searchChatHistory 返回的稳定消息 ID")
+                    put("description", "搜索结果中的 messageId")
                 }
                 putJsonObject("before") {
                     put("type", "integer")
-                    put("description", "目标消息之前的消息数，默认8，最大15")
+                    put("description", "前文条数，默认8，最大15")
                 }
                 putJsonObject("after") {
                     put("type", "integer")
-                    put("description", "目标消息之后的消息数，默认8，最大15")
+                    put("description", "后文条数，默认8，最大15")
                 }
             }
             putJsonArray("required") { add(JsonPrimitive("messageId")) }

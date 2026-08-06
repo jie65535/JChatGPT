@@ -33,35 +33,33 @@ import java.util.Base64
 class SearchChatHistory : BaseAgent(
     tool = Tool.function(
         name = "searchChatHistory",
-        description = "在当前群聊或私聊的 SQLite 历史中搜索消息，可按内容、发送者和时间筛选。" +
-                "默认返回最近匹配并在结果过多时提供 cursor；需要查看命中消息前后讨论时调用 getChatHistoryContext。" +
-                "未指定 from 时默认搜索配置的近期天数，明确指定时间时可以搜索任意历史跨度。",
+        description = "搜索当前聊天的历史消息，支持文本、发送者、时间和分页；普通文本与可解析的 @ 目标会一起匹配。",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
                 putJsonObject("query") {
                     put("type", "string")
-                    put("description", "要搜索的消息文本；省略时按其他条件浏览时间线")
+                    put("description", "消息文本；也会匹配名称对应的 @ 目标")
                 }
                 putJsonObject("senderId") {
                     put("type", "integer")
-                    put("description", "发送者 QQ 号；仅在用户明确给出或上下文可靠提供 QQ 号时使用，不要根据昵称猜测")
+                    put("description", "发送者 QQ 号；用户明确给出时使用")
                 }
                 putJsonObject("senderName") {
                     put("type", "string")
-                    put("description", "用户用名称指代发送者时优先原样传入群名片、昵称或好友备注；可与 senderId 同时提供，没有 senderId 时解析发送者，有重名时返回候选 QQ 号")
+                    put("description", "发送者名称；用户按昵称或群名片称呼时使用")
                 }
                 putJsonObject("from") {
                     put("type", "string")
-                    put("description", "起始时间，格式 yyyy-MM-dd HH:mm 或 yyyy-MM-dd")
+                    put("description", "起始时间：yyyy-MM-dd HH:mm 或 yyyy-MM-dd")
                 }
                 putJsonObject("to") {
                     put("type", "string")
-                    put("description", "结束时间，格式 yyyy-MM-dd HH:mm 或 yyyy-MM-dd；仅日期表示当天结束")
+                    put("description", "结束时间：yyyy-MM-dd HH:mm 或 yyyy-MM-dd")
                 }
                 putJsonObject("cursor") {
                     put("type", "string")
-                    put("description", "上一页返回的 nextCursor；继续同一搜索时原样传回")
+                    put("description", "上一页的 nextCursor")
                 }
             }
         },
@@ -119,9 +117,11 @@ class SearchChatHistory : BaseAgent(
             return "聊天记录全文索引当前不可用，无法执行关键词搜索"
         }
 
+        val atTargetIds = query?.let { resolveMentionTargets(it, event) }.orEmpty()
         val request = ChatHistorySearchRequest(
             subject = ChatHistorySubject.from(event.subject),
             query = query,
+            atTargetIds = atTargetIds,
             matchMode = matchMode,
             fromId = resolvedSenderId,
             start = start.toEpochSecond().toInt(),
@@ -182,6 +182,20 @@ class SearchChatHistory : BaseAgent(
     }
 
     private fun resolveSender(name: String, event: MessageEvent): SenderResolution {
+        val sorted = findNameMatches(name, event)
+        val first = sorted.firstOrNull() ?: return SenderResolution.NotFound
+        val second = sorted.getOrNull(1)
+        return if (second == null || first.matchRank < second.matchRank) {
+            SenderResolution.Found(first.userId)
+        } else {
+            SenderResolution.Ambiguous(sorted)
+        }
+    }
+
+    private fun resolveMentionTargets(name: String, event: MessageEvent): Set<Long> =
+        findNameMatches(name, event).mapTo(linkedSetOf(), ContactNameMatch::userId)
+
+    private fun findNameMatches(name: String, event: MessageEvent): List<ContactNameMatch> {
         val groupId = (event as? GroupMessageEvent)?.group?.id
         val matches = runCatching {
             ContactSnapshotStore.findUsersByName(event.bot.id, groupId, name, limit = 6)
@@ -202,14 +216,8 @@ class SearchChatHistory : BaseAgent(
                     }
                 }
         }
-        val sorted = matches.sortedWith(compareBy({ it.matchRank }, { it.userId }))
-        val first = sorted.firstOrNull() ?: return SenderResolution.NotFound
-        val second = sorted.getOrNull(1)
-        return if (second == null || first.matchRank < second.matchRank) {
-            SenderResolution.Found(first.userId)
-        } else {
-            SenderResolution.Ambiguous(sorted)
-        }
+        return matches.sortedWith(compareBy({ it.matchRank }, { it.userId }))
+            .take(MAX_NAME_MATCHES)
     }
 
     private sealed interface SenderResolution {
@@ -221,6 +229,7 @@ class SearchChatHistory : BaseAgent(
     companion object {
         private const val DEFAULT_PAGE_SIZE = 20
         private const val DIAGNOSTIC_PAGE_SIZE = 6
+        private const val MAX_NAME_MATCHES = 12
         private const val MAX_PAGE_SIZE = 200
         private const val OUTPUT_RESERVE_CHARS = 1_000
         private const val APPROXIMATE_RECORD_CHARS = 450

@@ -26,6 +26,16 @@ internal object ChatHistoryToolFormatter {
         val snapshotNames = runCatching {
             ContactSnapshotStore.loadDisplayNames(event.bot.id, group?.id, userIds)
         }.getOrDefault(emptyMap())
+        val atNames = if (group != null) {
+            val targetIds = records.asSequence()
+                .flatMap { ChatHistorySearchText.extractAtTargets(it.code).asSequence() }
+                .toSet()
+            runCatching {
+                ContactSnapshotStore.loadDisplayNames(event.bot.id, group.id, targetIds)
+            }.getOrDefault(emptyMap())
+        } else {
+            emptyMap()
+        }
 
         records.forEach { record ->
             val marker = if (record.id == targetId) ">>> " else ""
@@ -40,7 +50,7 @@ internal object ChatHistoryToolFormatter {
             val time = timeFormatter.format(
                 Instant.ofEpochSecond(record.time.toLong()).atZone(ZoneId.systemDefault())
             )
-            val content = buildSnippet(ChatHistorySearchText.extract(record.code), query)
+            val content = buildSnippet(ChatHistorySearchText.extract(record.code, atNames), query)
             output.append(marker)
                 .append("[messageId=").append(record.id).append("] ")
                 .append(time).append(' ')

@@ -42,6 +42,7 @@ data class ChatHistoryCursor(
 data class ChatHistorySearchRequest(
     val subject: ChatHistorySubject,
     val query: String? = null,
+    val atTargetIds: Set<Long> = emptySet(),
     val matchMode: ChatHistoryMatchMode = ChatHistoryMatchMode.ALL,
     val fromId: Long? = null,
     val start: Int? = null,
