@@ -33,6 +33,7 @@ JChatGPT 是一个基于 Kotlin 的 Mirai Console 插件，它将大型语言模
 ### 工具调用
 AI 可以自动调用多种工具来完成复杂任务：
 - 网络搜索（需要配置 SearXNG）
+- GitHub 仓库、代码、Issue 和 PR 搜索（需要安装 `gh` 并配置只读 Token）
 - 代码执行（支持多种语言，需要配置 glot.io token）
 - 图像识别（需要配置视觉模型）
 - 推理思考（需要配置推理模型）
@@ -175,6 +176,10 @@ jinaApiKey: ''
 jinaReaderUrl: 'https://r.jina.ai/'
 # SearXNG 搜索引擎地址，如 http://127.0.0.1:8080/search 必须启用允许json格式返回
 searXngUrl: ''
+# GitHub CLI 可执行文件路径；默认从系统 PATH 查找 gh
+githubCliPath: 'gh'
+# GitHub fine-grained 只读 Token；留空时禁用 GitHub 工具
+githubToken: ''
 # 在线运行代码 glot.io 的 api token，在官网注册账号即可获取。
 glotToken: ''
 # 和风天气专属 API Host，可在和风天气控制台的设置页面查看
@@ -480,18 +485,31 @@ fallbackCooldownMinutes: 5
 插件内置了丰富的工具供 AI 调用：
 
 1. **WebSearch** - 使用 SearXNG 进行网络搜索
-2. **RunCode** - 在 glot.io 上执行多种编程语言代码
-3. **VisualAgent** - 图像识别和理解
-4. **ReasoningAgent** - 深度思考和推理
-5. **MemoryAppend/Replace** - 对话记忆管理
-6. **LoadSkill/SaveSkill/DeleteSkill** - 技能管理（加载、沉淀/迭代、删除全局技能）
-7. **GroupManageAgent** - 群管理功能（如禁言）
-8. **SendSingleMessage/CompositeMessage** - 发送消息
-9. **SendVoiceMessage** - 发送语音消息
-10. **ImageAgent** - 图像生成与编辑（文生图、单图编辑、多图融合）
-11. **WeatherService** - 天气查询
-12. **SearchChatHistory** - 按关键词、发送者、时间范围搜索插件内置 SQLite 聊天历史
-13. **QueryUserProfile** - 按当前发送者、QQ 号、群名片、昵称或好友备注读取长期画像，并针对该联系人按需读取公开资料卡
+2. **GithubAgent** - 使用认证的 `gh` 搜索和只读访问 GitHub 仓库、代码、Issue 与 PR
+3. **RunCode** - 在 glot.io 上执行多种编程语言代码
+4. **VisualAgent** - 图像识别和理解
+5. **ReasoningAgent** - 深度思考和推理
+6. **MemoryAppend/Replace** - 对话记忆管理
+7. **LoadSkill/SaveSkill/DeleteSkill** - 技能管理（加载、沉淀/迭代、删除全局技能）
+8. **GroupManageAgent** - 群管理功能（如禁言）
+9. **SendSingleMessage/CompositeMessage** - 发送消息
+10. **SendVoiceMessage** - 发送语音消息
+11. **ImageAgent** - 图像生成与编辑（文生图、单图编辑、多图融合）
+12. **WeatherService** - 天气查询
+13. **SearchChatHistory** - 按关键词、发送者、时间范围搜索插件内置 SQLite 聊天历史
+14. **QueryUserProfile** - 按当前发送者、QQ 号、群名片、昵称或好友备注读取长期画像，并针对该联系人按需读取公开资料卡
+
+### GitHub 查询工具
+
+在机器人运行环境安装 [GitHub CLI](https://cli.github.com/)，并在 `githubToken` 中配置 fine-grained PAT。
+建议只授予所需仓库的 `Metadata: Read`、`Contents: Read`、`Issues: Read` 和
+`Pull requests: Read` 权限。插件通过子进程环境变量 `GH_TOKEN` 传递 Token，不需要执行 `gh auth login`，
+也不会把 Token 放进命令参数或日志。
+
+模型通过统一的 `github` 工具多轮调用 `gh`，可使用 `search repos/code/issues/prs/commits`、
+`repo view`、`issue list/view`、`pr list/view/diff/checks`、`release list/view` 和只读 REST `api`。
+插件不提供 Shell，并拒绝写操作、登录、扩展、本地仓库操作、非 GitHub endpoint、超大查询和长时间运行。
+认证请求仍受 GitHub API、Search API 和 secondary rate limit 限制。
 
 ## 用户画像系统
 

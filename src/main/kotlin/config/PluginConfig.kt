@@ -192,6 +192,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("SearXNG 搜索引擎地址，如 http://127.0.0.1:8080/search 必须启用允许json格式返回")
     val searXngUrl: String by value("")
 
+    @ValueDescription("GitHub CLI 可执行文件路径；默认从系统 PATH 查找 gh")
+    val githubCliPath: String by value("gh")
+
+    @ValueDescription("GitHub fine-grained 只读 Token；留空时禁用 GitHub 工具，不会写入 GitHub 数据")
+    val githubToken: String by value("")
+
     @ValueDescription("在线运行代码 glot.io 的 api token，在官网注册账号即可获取。")
     val glotToken: String by value("")
 
