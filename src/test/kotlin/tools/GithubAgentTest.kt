@@ -22,6 +22,19 @@ class GithubAgentTest {
                 listOf("api", "repos/owner/repo/pulls/123/files", "--jq", ".[].[filename,status]")
             )
         )
+        assertNull(
+            GithubAgent.validateReadOnlyArgs(
+                listOf("api", "users/ZhengHe000", "--jq", "{login,name,followers,public_repos}")
+            )
+        )
+        assertNull(
+            GithubAgent.validateReadOnlyArgs(
+                listOf("api", "orgs/github/repos?per_page=50", "--paginate", "--slurp")
+            )
+        )
+        assertNull(GithubAgent.validateReadOnlyArgs(listOf("repo", "list", "github", "--limit", "20")))
+        assertNull(GithubAgent.validateReadOnlyArgs(listOf("run", "view", "123", "--repo", "owner/repo")))
+        assertNull(GithubAgent.validateReadOnlyArgs(listOf("workflow", "list", "--repo", "owner/repo")))
     }
 
     @Test
@@ -34,19 +47,20 @@ class GithubAgentTest {
     }
 
     @Test
-    fun `api remains read only and limited to github rest endpoints`() {
+    fun `api remains read only and limited to relative github rest endpoints`() {
         assertNotNull(GithubAgent.validateReadOnlyArgs(listOf("api", "graphql")))
+        assertNotNull(GithubAgent.validateReadOnlyArgs(listOf("api", "graphql?query=viewer")))
         assertNotNull(GithubAgent.validateReadOnlyArgs(listOf("api", "https://example.com/private")))
+        assertNotNull(GithubAgent.validateReadOnlyArgs(listOf("api", "//example.com/private")))
+        assertNotNull(GithubAgent.validateReadOnlyArgs(listOf("api", "/repos/owner/repo")))
+        assertNotNull(GithubAgent.validateReadOnlyArgs(listOf("api", "repos/../user")))
+        assertNull(GithubAgent.validateReadOnlyArgs(listOf("api", "search/issues?q=url:https://example.com")))
         assertNotNull(
             GithubAgent.validateReadOnlyArgs(
                 listOf("api", "repos/owner/repo/issues", "--method", "POST")
             )
         )
-        assertNotNull(
-            GithubAgent.validateReadOnlyArgs(
-                listOf("api", "orgs/owner/repos")
-            )
-        )
+        assertNotNull(GithubAgent.validateReadOnlyArgs(listOf("api", "repos/owner/repo/issues", "-f", "state=open")))
     }
 
     @Test

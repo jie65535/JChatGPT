@@ -517,9 +517,9 @@ fallbackCooldownMinutes: 5
 `Pull requests: Read` 权限。插件通过子进程环境变量 `GH_TOKEN` 传递 Token，不需要执行 `gh auth login`，
 也不会把 Token 放进命令参数或日志。
 
-模型通过统一的 `github` 工具多轮调用 `gh`，可使用 `search repos/code/issues/prs/commits`、
-`repo view`、`issue list/view`、`pr list/view/diff/checks`、`release list/view` 和只读 REST `api`。
-插件不提供 Shell，并拒绝写操作、登录、扩展、本地仓库操作、非 GitHub endpoint、超大查询和长时间运行。
+模型通过统一的 `github` 工具多轮调用 `gh`，可搜索并读取用户、仓库、代码、Issue、PR、Release 和
+GitHub Actions，也可对相对 GitHub REST endpoint 执行只读 `api` 请求。插件不提供 Shell，并拒绝写操作、
+登录、扩展、本地仓库操作、切换 GitHub 主机、超大查询和长时间运行。
 认证请求仍受 GitHub API、Search API 和 secondary rate limit 限制。
 
 ## 用户画像系统
