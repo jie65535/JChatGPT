@@ -69,9 +69,6 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("画像分析模型。留空时继承聊天模型")
     val profileModel: String by value("")
 
-    @ValueDescription("画像分析模型温度。留空时继承聊天模型温度")
-    val profileModelTemperature: Double? by value(null)
-
     @ValueDescription("画像分析模型额外请求体JSON。留空时继承聊天模型额外请求体")
     val profileModelExtraBody: String by value("")
 
@@ -197,9 +194,6 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("网页摘要模型名称")
     val webSummaryModel: String by value("")
-
-    @ValueDescription("网页摘要模型温度，默认为0.1")
-    val webSummaryModelTemperature: Double? by value(0.1)
 
     @ValueDescription("网页摘要模型额外请求体JSON，会合并到请求体中")
     val webSummaryModelExtraBody: String by value("")

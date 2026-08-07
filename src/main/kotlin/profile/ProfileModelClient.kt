@@ -78,7 +78,6 @@ class ProfileModelClient(
         val completion = complete(
             ChatCompletionRequest(
                 model = ModelId(endpoint.model),
-                temperature = endpoint.temperature,
                 responseFormat = ChatResponseFormat.JsonObject,
                 streamOptions = StreamOptions(includeUsage = true),
                 messages = listOf(
@@ -111,7 +110,6 @@ class ProfileModelClient(
         val completion = complete(
             ChatCompletionRequest(
                 model = ModelId(endpoint.model),
-                temperature = endpoint.temperature,
                 responseFormat = ChatResponseFormat.JsonObject,
                 streamOptions = StreamOptions(includeUsage = true),
                 messages = listOf(
@@ -142,7 +140,6 @@ class ProfileModelClient(
         val completion = complete(
             ChatCompletionRequest(
                 model = ModelId(endpoint.model),
-                temperature = endpoint.temperature,
                 responseFormat = ChatResponseFormat.JsonObject,
                 streamOptions = StreamOptions(includeUsage = true),
                 messages = listOf(

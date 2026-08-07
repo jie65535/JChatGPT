@@ -211,7 +211,6 @@ class VisitWeb : BaseAgent(
             endpoint.service.chatCompletions(
                 ChatCompletionRequest(
                     model = ModelId(endpoint.model),
-                    temperature = endpoint.temperature,
                     messages = listOf(
                         ChatMessage.System(WEB_SUMMARY_SYSTEM_PROMPT),
                         ChatMessage.User(prompt),

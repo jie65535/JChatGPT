@@ -51,7 +51,7 @@ class ConversationProfileLiveExperiment {
         )
         try {
             val client = ProfileModelClient(
-                LargeLanguageModels.ProfileEndpoint(service, modelName, temperature = 0.1)
+                LargeLanguageModels.ProfileEndpoint(service, modelName)
             )
             val result = client.analyzeConversation(profiles, batch, eligible)
             val reductions = ConversationProfileReducer.reduce(

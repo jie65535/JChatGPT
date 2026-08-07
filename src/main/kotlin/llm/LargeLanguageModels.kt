@@ -30,13 +30,11 @@ object LargeLanguageModels {
     data class ProfileEndpoint(
         val service: ModelService,
         val model: String,
-        val temperature: Double?,
     )
 
     data class WebSummaryEndpoint(
         val service: ModelService,
         val model: String,
-        val temperature: Double?,
     )
 
     /**
@@ -182,10 +180,9 @@ object LargeLanguageModels {
                         firstChunkTimeout = profileFirstChunk,
                         extraBody = parseExtraBody(extraBody),
                         maxConcurrentRequests = PluginConfig.profileMaxConcurrentRequests,
-                    ),
-                    model = model,
-                    temperature = PluginConfig.profileModelTemperature ?: PluginConfig.chatTemperature,
-                )
+                ),
+                model = model,
+            )
             }
         }
 
@@ -204,7 +201,6 @@ object LargeLanguageModels {
                     extraBody = parseExtraBody(PluginConfig.webSummaryModelExtraBody),
                 ),
                 model = PluginConfig.webSummaryModel,
-                temperature = PluginConfig.webSummaryModelTemperature,
             )
         }
 
