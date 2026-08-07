@@ -189,6 +189,30 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("Jina Reader API 地址，默认使用在线服务；自托管示例：http://127.0.0.1:4223/")
     val jinaReaderUrl: String by value("https://r.jina.ai/")
 
+    @ValueDescription("网页摘要模型API；留空时网页工具只返回受限正文摘录")
+    val webSummaryModelApi: String by value("")
+
+    @ValueDescription("网页摘要模型Token")
+    val webSummaryModelToken: String by value("")
+
+    @ValueDescription("网页摘要模型名称")
+    val webSummaryModel: String by value("")
+
+    @ValueDescription("网页摘要模型温度，默认为0.1")
+    val webSummaryModelTemperature: Double? by value(0.1)
+
+    @ValueDescription("网页摘要模型额外请求体JSON，会合并到请求体中")
+    val webSummaryModelExtraBody: String by value("")
+
+    @ValueDescription("网页摘要模型首块响应超时时间，单位毫秒，默认120秒")
+    val webSummaryFirstChunkTimeout: Long by value(120000L)
+
+    @ValueDescription("送入网页摘要模型的正文最大字符数，默认100万；超出部分保留首尾")
+    val webSummaryMaxInputChars: Int by value(1_000_000)
+
+    @ValueDescription("网页摘要返回给主模型的最大字符数，默认6000")
+    val webSummaryMaxOutputChars: Int by value(6000)
+
     @ValueDescription("SearXNG 搜索引擎地址，如 http://127.0.0.1:8080/search 必须启用允许json格式返回")
     val searXngUrl: String by value("")
 

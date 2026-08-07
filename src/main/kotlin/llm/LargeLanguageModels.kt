@@ -33,6 +33,12 @@ object LargeLanguageModels {
         val temperature: Double?,
     )
 
+    data class WebSummaryEndpoint(
+        val service: ModelService,
+        val model: String,
+        val temperature: Double?,
+    )
+
     /**
      * 聊天接入点列表：index 0 为主接入点，其余按配置顺序为备用接入点。
      */
@@ -57,6 +63,10 @@ object LargeLanguageModels {
 
     /** 历史用户画像分析模型。 */
     var profile: ProfileEndpoint? = null
+        private set
+
+    /** 网页正文提炼模型。 */
+    var webSummary: WebSummaryEndpoint? = null
         private set
 
     /**
@@ -177,6 +187,25 @@ object LargeLanguageModels {
                     temperature = PluginConfig.profileModelTemperature ?: PluginConfig.chatTemperature,
                 )
             }
+        }
+
+        webSummary = null
+        if (PluginConfig.webSummaryModelApi.isNotBlank() &&
+            PluginConfig.webSummaryModelToken.isNotBlank() &&
+            PluginConfig.webSummaryModel.isNotBlank()
+        ) {
+            val webSummaryFirstChunk = PluginConfig.webSummaryFirstChunkTimeout.milliseconds
+            webSummary = WebSummaryEndpoint(
+                service = ModelService(
+                    baseUrl = PluginConfig.webSummaryModelApi,
+                    token = PluginConfig.webSummaryModelToken,
+                    timeout = maxOf(timeout, webSummaryFirstChunk),
+                    firstChunkTimeout = webSummaryFirstChunk,
+                    extraBody = parseExtraBody(PluginConfig.webSummaryModelExtraBody),
+                ),
+                model = PluginConfig.webSummaryModel,
+                temperature = PluginConfig.webSummaryModelTemperature,
+            )
         }
 
         // 初始化推理模型
