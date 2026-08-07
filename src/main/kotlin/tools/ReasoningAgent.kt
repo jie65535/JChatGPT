@@ -2,12 +2,16 @@ package top.jie65535.mirai.tools
 
 import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
+import com.aallam.openai.api.chat.StreamOptions
 import com.aallam.openai.api.chat.Tool
 import com.aallam.openai.api.core.Parameters
+import com.aallam.openai.api.core.Usage
 import com.aallam.openai.api.model.ModelId
 import kotlinx.serialization.json.*
-import top.jie65535.mirai.config.PluginConfig
+import net.mamoe.mirai.event.events.MessageEvent
+import top.jie65535.mirai.data.ModelUsageRecorder
 import top.jie65535.mirai.llm.LargeLanguageModels
+import top.jie65535.mirai.llm.ModelService
 
 class ReasoningAgent : BaseAgent(
     tool = Tool.function(
@@ -33,17 +37,23 @@ class ReasoningAgent : BaseAgent(
     override val isEnabled: Boolean
         get() = LargeLanguageModels.reasoning != null
 
-    override suspend fun execute(args: JsonObject?): String {
+    override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         requireNotNull(args)
-        val llm = LargeLanguageModels.reasoning ?: return "未配置llm，无法进行推理。"
+        val endpoint = LargeLanguageModels.reasoning ?: return "未配置llm，无法进行推理。"
 
         val prompt = args.getValue("prompt").jsonPrimitive.content
         val answerContent = StringBuilder()
         val reasoningContent = StringBuilder()
-        llm.chatCompletions(ChatCompletionRequest(
-            model = ModelId(PluginConfig.reasoningModel),
-            messages = listOf(ChatMessage.User(prompt))
-        )).collect {
+        var lastUsage: Usage? = null
+        var cacheUsage: ModelService.CacheUsage? = null
+        endpoint.service.chatCompletions(
+            ChatCompletionRequest(
+                model = ModelId(endpoint.model),
+                messages = listOf(ChatMessage.User(prompt)),
+                streamOptions = StreamOptions(includeUsage = true),
+            )
+        ) { cacheUsage = it }.collect {
+            it.usage?.let { usage -> lastUsage = usage }
             if (it.choices.isNotEmpty()) {
                 val delta = it.choices[0].delta ?: return@collect
                 if (!delta.reasoningContent.isNullOrEmpty()) {
@@ -57,10 +67,21 @@ class ReasoningAgent : BaseAgent(
 
         val result = answerContent.toString()
         val reasoning = reasoningContent.toString()
-        return when {
+        ModelUsageRecorder.recordTokens(
+            event = event,
+            endpointLabel = "reasoning",
+            modelAlias = endpoint.alias,
+            provider = endpoint.provider,
+            model = endpoint.model,
+            usageKind = "reasoning",
+            usage = lastUsage,
+            cacheUsage = cacheUsage,
+        )
+        val output = when {
             result.isNotEmpty() -> result
             reasoning.isNotEmpty() -> reasoning
             else -> "推理出错，结果为空"
         }
+        return output
     }
 }

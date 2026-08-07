@@ -33,6 +33,12 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("Chat模型温度，默认为null")
     var chatTemperature: Double? by value(null)
 
+    @ValueDescription("主聊天模型别名；填写后优先从 Models.yml 解析，留空时兼容旧的 openAiApi/openAiToken/chatModel")
+    var chatModelAlias: String by value("")
+
+    @ValueDescription("聊天备用模型别名列表；主模型失败时按顺序切换")
+    var chatFallbackModelAliases: List<String> by value()
+
     @ValueDescription("推理模型API")
     var reasoningModelApi: String by value("https://dashscope.aliyuncs.com/compatible-mode/v1/")
 
@@ -42,6 +48,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("推理模型")
     var reasoningModel: String by value("qwq-plus")
 
+    @ValueDescription("推理模型别名；留空时兼容旧的推理模型配置")
+    var reasoningModelAlias: String by value("")
+
     @ValueDescription("视觉模型API")
     var visualModelApi: String by value("https://dashscope.aliyuncs.com/compatible-mode/v1/")
 
@@ -50,6 +59,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("视觉模型")
     var visualModel: String by value("qwen-vl-plus")
+
+    @ValueDescription("视觉模型别名；留空时兼容旧的视觉模型配置")
+    var visualModelAlias: String by value("")
 
     @ValueDescription("聊天模型额外请求体JSON，会合并到请求体中。例如DeepSeek关闭思维: {\"thinking\": {\"type\": \"disabled\"}}")
     val chatModelExtraBody: String by value("")
@@ -68,6 +80,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("画像分析模型。留空时继承聊天模型")
     val profileModel: String by value("")
+
+    @ValueDescription("画像分析模型别名；留空时继承主聊天模型别名或兼容旧配置")
+    var profileModelAlias: String by value("")
 
     @ValueDescription("画像分析模型额外请求体JSON。留空时继承聊天模型额外请求体")
     val profileModelExtraBody: String by value("")
@@ -174,11 +189,17 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("百炼平台图像模型，支持文生图与图像编辑。可选：qwen-image-2.0 / qwen-image-2.0-pro / qwen-image-edit-max / qwen-image-edit-plus 等")
     val imageModel: String by value("qwen-image-2.0")
 
+    @ValueDescription("图像模型别名；留空时兼容旧的 dashScopeApiKey/imageModel")
+    var imageModelAlias: String by value("")
+
     @ValueDescription("是否在生成的图片右下角添加 Qwen-Image 水印")
     val imageWatermark: Boolean by value(false)
 
     @ValueDescription("百炼平台TTS模型。qwen3-tts-instruct-flash 支持 instructions 指令控制；纯发音可用 qwen3-tts-flash 或 qwen-tts")
     val ttsModel: String by value("qwen3-tts-instruct-flash")
+
+    @ValueDescription("TTS 模型别名；留空时兼容旧的 dashScopeApiKey/ttsModel")
+    var ttsModelAlias: String by value("")
 
     @ValueDescription("Jina API Key")
     val jinaApiKey by value("")
@@ -194,6 +215,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
 
     @ValueDescription("网页摘要模型名称")
     val webSummaryModel: String by value("")
+
+    @ValueDescription("网页摘要模型别名；留空时兼容旧的网页摘要模型配置")
+    var webSummaryModelAlias: String by value("")
 
     @ValueDescription("网页摘要模型额外请求体JSON，会合并到请求体中")
     val webSummaryModelExtraBody: String by value("")

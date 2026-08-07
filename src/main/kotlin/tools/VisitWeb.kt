@@ -2,8 +2,10 @@ package top.jie65535.mirai.tools
 
 import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
+import com.aallam.openai.api.chat.StreamOptions
 import com.aallam.openai.api.chat.Tool
 import com.aallam.openai.api.core.Parameters
+import com.aallam.openai.api.core.Usage
 import com.aallam.openai.api.model.ModelId
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -16,9 +18,12 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
+import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.data.ModelUsageRecorder
 import top.jie65535.mirai.llm.LargeLanguageModels
+import top.jie65535.mirai.llm.ModelService
 import java.net.InetAddress
 import java.net.URI
 import java.net.UnknownHostException
@@ -142,7 +147,7 @@ class VisitWeb : BaseAgent(
     override val loadingMessage: String
         get() = "上网中..."
 
-    override suspend fun execute(args: JsonObject?): String {
+    override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         requireNotNull(args)
         val urlJson = args.getValue("url")
         val instruction = args["instruction"]
@@ -162,12 +167,17 @@ class VisitWeb : BaseAgent(
 
         return coroutineScope {
             urls.map { url ->
-                async(Dispatchers.IO) { jinaReadPage(url, instruction, outputLimit) }
+                async(Dispatchers.IO) { jinaReadPage(url, instruction, outputLimit, event) }
             }.awaitAll().joinToString("\n\n---\n\n")
         }
     }
 
-    private suspend fun jinaReadPage(url: String, instruction: String, outputLimit: Int): String {
+    private suspend fun jinaReadPage(
+        url: String,
+        instruction: String,
+        outputLimit: Int,
+        event: MessageEvent,
+    ): String {
         return try {
             val request = withContext(Dispatchers.IO) {
                 createReaderRequest(
@@ -182,7 +192,7 @@ class VisitWeb : BaseAgent(
             }
             val body = response.bodyAsText()
             if (response.status.isSuccess()) {
-                summarizeOrExcerpt(url, body, instruction, outputLimit)
+                summarizeOrExcerpt(url, body, instruction, outputLimit, event)
             } else {
                 "Error fetching \"$url\": HTTP ${response.status.value} ${body.take(500)}"
             }
@@ -198,6 +208,7 @@ class VisitWeb : BaseAgent(
         body: String,
         instruction: String,
         outputLimit: Int,
+        event: MessageEvent,
     ): String {
         val endpoint = LargeLanguageModels.webSummary
         if (endpoint == null) {
@@ -207,6 +218,8 @@ class VisitWeb : BaseAgent(
         val input = prepareWebContent(body, PluginConfig.webSummaryMaxInputChars)
         val prompt = buildSummaryUserPrompt(url, instruction, input)
         val rawSummary = StringBuilder()
+        var lastUsage: Usage? = null
+        var cacheUsage: ModelService.CacheUsage? = null
         return try {
             endpoint.service.chatCompletions(
                 ChatCompletionRequest(
@@ -215,14 +228,26 @@ class VisitWeb : BaseAgent(
                         ChatMessage.System(WEB_SUMMARY_SYSTEM_PROMPT),
                         ChatMessage.User(prompt),
                     ),
+                    streamOptions = StreamOptions(includeUsage = true),
                 )
-            ).collect { chunk ->
+            ) { cacheUsage = it }.collect { chunk ->
+                chunk.usage?.let { usage -> lastUsage = usage }
                 chunk.choices.firstOrNull()?.delta?.content?.let { content ->
                     if (rawSummary.length < MAX_RAW_SUMMARY_CHARS) {
                         rawSummary.append(content.take(MAX_RAW_SUMMARY_CHARS - rawSummary.length))
                     }
                 }
             }
+            ModelUsageRecorder.recordTokens(
+                event = event,
+                endpointLabel = "web-summary",
+                modelAlias = endpoint.alias,
+                provider = endpoint.provider,
+                model = endpoint.model,
+                usageKind = "web_summary",
+                usage = lastUsage,
+                cacheUsage = cacheUsage,
+            )
             val summary = limitSummaryOutput(cleanSummary(rawSummary.toString()), outputLimit)
             if (summary.isBlank()) {
                 logSummaryFallback(url, body.length, "模型返回为空")

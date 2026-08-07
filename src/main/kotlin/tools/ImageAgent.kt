@@ -17,12 +17,15 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.data.ModelUsageRecorder
+import top.jie65535.mirai.llm.ModelCatalog
 
 class ImageAgent : BaseAgent(
     tool = Tool.function(
@@ -59,13 +62,15 @@ class ImageAgent : BaseAgent(
     }
 
     override val isEnabled: Boolean
-        get() = PluginConfig.dashScopeApiKey.isNotEmpty()
+        get() = ModelCatalog.resolveImage() != null
 
     override val loadingMessage: String
         get() = "作图中..."
 
     override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         requireNotNull(args)
+        val modelDefinition = ModelCatalog.resolveImage()
+            ?: return "未配置图像模型，无法生成图片。"
         val prompt = args.getValue("prompt").jsonPrimitive.content
         val imageIndices = args["image_indices"]?.jsonArray
             ?.map { it.jsonPrimitive.int }
@@ -76,11 +81,11 @@ class ImageAgent : BaseAgent(
                 ?: throw IllegalArgumentException("图片编号[$imageIndex]不存在或已失效")
         }
 
-        val response = httpClient.post(API_URL) {
+        val response = httpClient.post(modelDefinition.api.ifBlank { API_URL }) {
             contentType(ContentType("application", "json"))
-            header("Authorization", "Bearer " + PluginConfig.dashScopeApiKey)
+            header("Authorization", "Bearer " + modelDefinition.token)
             setBody(buildJsonObject {
-                put("model", PluginConfig.imageModel)
+                put("model", modelDefinition.model)
                 putJsonObject("input") {
                     putJsonArray("messages") {
                         addJsonObject {
@@ -115,6 +120,21 @@ class ImageAgent : BaseAgent(
                 .getValue("message").jsonObject
                 .getValue("content").jsonArray[0].jsonObject
                 .getValue("image").jsonPrimitive.content
+            val outputImages = (responseObject["usage"] as? JsonObject)
+                ?.get("image_count")?.jsonPrimitive?.longOrNull
+                ?.coerceAtLeast(1)
+                ?: 1L
+            ModelUsageRecorder.recordUnits(
+                event = event,
+                endpointLabel = "image",
+                modelAlias = modelDefinition.alias,
+                provider = modelDefinition.provider,
+                model = modelDefinition.model,
+                usageKind = "image",
+                unit = "images",
+                inputUnits = imageUrls.size.toLong(),
+                outputUnits = outputImages,
+            )
             "图片已生成，发送时请务必包含完整的url和查询参数，因为下载地址存在鉴权：![图片]($url)"
         } catch (e: Throwable) {
             JChatGPT.logger.error("图像生成结果解析异常", e)

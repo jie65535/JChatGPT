@@ -28,6 +28,8 @@ import net.mamoe.mirai.message.data.content
 import net.mamoe.mirai.utils.info
 import top.jie65535.mirai.command.PluginCommands
 import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.config.ModelConfig
+import top.jie65535.mirai.config.ModelConfigMigration
 import top.jie65535.mirai.conversation.ConversationContext
 import top.jie65535.mirai.conversation.ConversationEngine
 import top.jie65535.mirai.data.ChatHistoryStore
@@ -62,8 +64,19 @@ object JChatGPT : KotlinPlugin(
     override fun onEnable() {
         PermissionService.INSTANCE.register(chatPermission, "JChatGPT Chat Permission")
         PluginConfig.reload()
+        ModelConfig.reload()
+        ModelConfigMigration.migrateLoadedConfig().takeIf { it.changed }?.let { migration ->
+            logger.info(
+                "已将旧模型配置自动迁移到 Models.yml：新增 ${migration.addedProviders} 个提供商、" +
+                        "${migration.addedModels} 个模型别名"
+            )
+        }
         PluginData.reload()
-        TokenUsageStore.init(dataFolder)
+        runCatching {
+            TokenUsageStore.init(dataFolder) { message, cause ->
+                if (cause == null) logger.warning(message) else logger.warning(message, cause)
+            }
+        }.onFailure { logger.error("初始化 SQLite 模型用量记录失败，用量统计将暂时禁用", it) }
         SkillStore.init(dataFolder)
 
         includeHistory = try {
@@ -139,6 +152,7 @@ object JChatGPT : KotlinPlugin(
         ContactSnapshotRefresher.clear()
         UserProfileStore.close()
         ContactSnapshotStore.close()
+        TokenUsageStore.close()
         ChatHistoryStore.close()
     }
 

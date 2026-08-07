@@ -16,6 +16,8 @@ import net.mamoe.mirai.contact.User
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.JChatGPT.reload
 import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.config.ModelConfig
+import top.jie65535.mirai.config.ModelConfigMigration
 import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.data.SkillStore
 import top.jie65535.mirai.data.TokenUsageStore
@@ -45,6 +47,8 @@ object PluginCommands : CompositeCommand(
     @SubCommand
     suspend fun CommandSender.reload() {
         PluginConfig.reload()
+        ModelConfig.reload()
+        ModelConfigMigration.migrateLoadedConfig()
         PluginData.reload()
         LargeLanguageModels.reload()
         ProfileDailyMaintenance.reload()
@@ -371,89 +375,93 @@ object PluginCommands : CompositeCommand(
     suspend fun CommandSender.tokens(days: Int = 7) {
         validateDays(days)
 
-        if (TokenUsageStore.all.isEmpty()) {
-            sendMessage("暂无 Token 使用记录")
+        if (!TokenUsageStore.isAvailable) {
+            sendMessage("Token SQLite 尚未初始化")
             return
         }
 
         val cutoff = calculateCutoffDate(days)
-        val today = LocalDate.now().toString()
-
-        val windowed = TokenUsageStore.all.filter { it.date >= cutoff }
-        if (windowed.isEmpty()) {
-            sendMessage("最近 $days 天无 Token 使用记录")
+        val summary = runCatching { TokenUsageStore.summary(cutoff, rankingLimit = 100) }
+            .getOrElse {
+                sendMessage("读取 Token 使用记录失败：${it.message ?: it::class.simpleName}")
+                return
+            }
+        if (!TokenUsageStore.hasAny(cutoff)) {
+            sendMessage("暂无 Token 使用记录")
             return
         }
 
-        // 窗口汇总
-        var prompt = 0L; var completion = 0L; var total = 0L; var cached = 0L
-        var calls = 0; var todayTotal = 0L
-        val users = HashSet<Long>()
-        for (r in windowed) {
-            prompt += r.promptTokens
-            completion += r.completionTokens
-            total += r.totalTokens
-            cached += r.cachedTokens
-            calls += r.callCount
-            users.add(r.userId)
-            if (r.date == today) todayTotal += r.totalTokens
-        }
-        val hitRate = if (prompt > 0) cached * 100.0 / prompt else 0.0
-
-        // 每日趋势
-        val daily = windowed.groupBy { it.date }
-            .mapValues { (_, rs) -> rs.sumOf { it.totalTokens } }
-            .toSortedMap()
-
-        // Top 用户
-        val topUsers = windowed.groupBy { it.userId }
-            .map { (_, rs) ->
-                val name = rs.maxByOrNull { it.date }!!.userNickname
-                name to rs.sumOf { it.totalTokens }
-            }
-            .sortedByDescending { it.second }
-            .take(TOP_LIMIT)
-
-        // Top 群组：只显示群名，绝不暴露群号（避免被误判宣群）
-        val topGroups = windowed.filter { it.groupId != null }
-            .groupBy { it.groupId!! }
-            .map { (gid, rs) ->
-                val name = rs.firstNotNullOfOrNull { r -> r.groupName?.takeIf { it.isNotBlank() } }
-                    ?: resolveGroupName(gid)
-                name to rs.sumOf { it.totalTokens }
-            }
-            .sortedByDescending { it.second }
-            .take(TOP_LIMIT)
+        val hitRate = if (summary.promptTokens > 0) {
+            summary.cachedTokens * 100.0 / summary.promptTokens
+        } else 0.0
 
         val response = buildString {
             appendLine("📊 Token 简报 · 最近 $days 天")
             appendLine()
-            appendLine("输入 ${formatCompact(prompt)}（缓存命中 ${"%.1f".format(hitRate)}%，省 ${formatCompact(cached)}）")
-            appendLine("输出 ${formatCompact(completion)}")
-            appendLine("总计 ${formatCompact(total)} ｜ 调用 ${formatNumber(calls)} 次 ｜ 活跃 ${users.size} 人")
-            appendLine("今日 ${formatCompact(todayTotal)}")
+            appendLine("输入 ${formatCompact(summary.promptTokens)}（缓存命中 ${"%.1f".format(hitRate)}%，省 ${formatCompact(summary.cachedTokens)}）")
+            appendLine("输出 ${formatCompact(summary.completionTokens)}")
+            appendLine("总计 ${formatCompact(summary.totalTokens)} ｜ 调用 ${formatNumber(summary.callCount)} 次 ｜ 活跃 ${summary.activeUsers} 人")
+            if (summary.allCallCount != summary.callCount) {
+                appendLine("全部模型调用 ${formatNumber(summary.allCallCount)} 次")
+            }
+            appendLine("今日 ${formatCompact(summary.todayTotal)}")
 
-            if (daily.size > 1) {
+            if (summary.daily.size > 1) {
                 appendLine()
                 appendLine("📈 每日趋势")
-                daily.forEach { (date, t) ->
-                    appendLine("  ${date.substring(5)}  ${formatCompact(t)}")
+                summary.daily.forEach { daily ->
+                    appendLine("  ${daily.date.substring(5)}  ${formatCompact(daily.totalTokens)}")
                 }
             }
 
-            if (topUsers.isNotEmpty()) {
+            if (summary.topUsers.isNotEmpty()) {
                 appendLine()
                 appendLine("👤 Top 用户")
-                topUsers.forEachIndexed { i, (name, t) ->
-                    appendLine("  ${i + 1}. $name  ${formatCompact(t)}")
+                summary.topUsers.forEachIndexed { i, ranking ->
+                    appendLine("  ${i + 1}. ${ranking.name.ifBlank { ranking.id.toString() }}  ${formatCompact(ranking.totalTokens)}")
                 }
             }
 
-            if (topGroups.isNotEmpty()) {
+            if (summary.topGroups.isNotEmpty()) {
                 appendLine()
                 appendLine("👥 Top 群组")
-                topGroups.forEachIndexed { i, (name, t) ->
-                    appendLine("  ${i + 1}. $name  ${formatCompact(t)}")
+                summary.topGroups.forEachIndexed { i, ranking ->
+                    val name = ranking.name.ifBlank { resolveGroupName(ranking.id) }
+                    appendLine("  ${i + 1}. $name  ${formatCompact(ranking.totalTokens)}")
+                }
+            }
+
+            if (summary.models.size > 1) {
+                appendLine()
+                appendLine("🤖 模型")
+                summary.models.take(TOP_LIMIT).forEach { model ->
+                    appendLine("  ${model.provider}/${model.model}  ${formatCompact(model.totalTokens)}")
+                }
+            }
+
+            val tokenUsageByKind = summary.breakdown.asSequence()
+                .filter { it.unit == "tokens" }
+                .groupBy { it.usageKind }
+                .mapValues { (_, usage) -> usage.sumOf { it.totalUnits } }
+                .entries
+                .sortedByDescending { it.value }
+            if (tokenUsageByKind.size > 1 || tokenUsageByKind.firstOrNull()?.key != "chat") {
+                appendLine()
+                appendLine("Token 用途")
+                tokenUsageByKind.take(TOP_LIMIT).forEach { (kind, total) ->
+                    appendLine("  $kind  ${formatCompact(total)}")
+                }
+            }
+
+            val otherUsage = summary.breakdown.filter { it.unit != "tokens" }
+            if (otherUsage.isNotEmpty()) {
+                appendLine()
+                appendLine("其他模型用量")
+                otherUsage.take(TOP_LIMIT).forEach { usage ->
+                    appendLine(
+                        "  ${usage.provider}/${usage.model} ${usage.usageKind}  " +
+                                "${formatCompact(usage.totalUnits)} ${usage.unit}"
+                    )
                 }
             }
         }

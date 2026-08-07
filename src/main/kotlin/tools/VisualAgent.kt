@@ -4,9 +4,11 @@ import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.ContentPart
 import com.aallam.openai.api.chat.ImagePart
+import com.aallam.openai.api.chat.StreamOptions
 import com.aallam.openai.api.chat.TextPart
 import com.aallam.openai.api.chat.Tool
 import com.aallam.openai.api.core.Parameters
+import com.aallam.openai.api.core.Usage
 import com.aallam.openai.api.model.ModelId
 import io.ktor.client.plugins.ClientRequestException
 import kotlinx.serialization.json.JsonObject
@@ -24,7 +26,9 @@ import kotlinx.coroutines.sync.withPermit
 import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.data.ModelUsageRecorder
 import top.jie65535.mirai.llm.LargeLanguageModels
+import top.jie65535.mirai.llm.ModelService
 import top.jie65535.mirai.util.RetryBackoff
 import java.net.URI
 
@@ -68,7 +72,7 @@ class VisualAgent : BaseAgent(
 
     override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         requireNotNull(args)
-        val llm = LargeLanguageModels.visual ?: return "未配置llm，无法进行识别。"
+        val endpoint = LargeLanguageModels.visual ?: return "未配置llm，无法进行识别。"
         val imageIndices = args["image_indices"]?.jsonArray
             ?.map { it.jsonPrimitive.int }
             ?.ifEmpty { null }
@@ -124,16 +128,20 @@ class VisualAgent : BaseAgent(
             repeat(maxAttempts) { attempt ->
                 try {
                     val answerContent = StringBuilder()
-                    llm.chatCompletions(
+                    var lastUsage: Usage? = null
+                    var cacheUsage: ModelService.CacheUsage? = null
+                    endpoint.service.chatCompletions(
                         ChatCompletionRequest(
-                            model = ModelId(PluginConfig.visualModel),
+                            model = ModelId(endpoint.model),
                             messages = listOf(
                                 ChatMessage.User(
                                     content = messageContent
                                 )
-                            )
+                            ),
+                            streamOptions = StreamOptions(includeUsage = true),
                         )
-                    ).collect {
+                    ) { cacheUsage = it }.collect {
+                        it.usage?.let { usage -> lastUsage = usage }
                         if (it.choices.isNotEmpty()) {
                             val delta = it.choices[0].delta ?: return@collect
                             if (!delta.content.isNullOrEmpty()) {
@@ -142,6 +150,16 @@ class VisualAgent : BaseAgent(
                         }
                     }
 
+                    ModelUsageRecorder.recordTokens(
+                        event = event,
+                        endpointLabel = "visual",
+                        modelAlias = endpoint.alias,
+                        provider = endpoint.provider,
+                        model = endpoint.model,
+                        usageKind = "visual",
+                        usage = lastUsage,
+                        cacheUsage = cacheUsage,
+                    )
                     if (answerContent.isNotEmpty()) {
                         return@withPermit answerContent.toString()
                     }

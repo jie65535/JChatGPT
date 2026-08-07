@@ -6,6 +6,7 @@ import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.ChatRole
 import com.aallam.openai.api.chat.ToolCall
 import com.aallam.openai.api.chat.ToolChoice
+import com.aallam.openai.api.chat.StreamOptions
 import com.aallam.openai.api.core.Usage
 import com.aallam.openai.api.model.ModelId
 import kotlinx.coroutines.CancellationException
@@ -21,7 +22,7 @@ import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.message.data.source
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
-import top.jie65535.mirai.data.TokenUsageStore
+import top.jie65535.mirai.data.ModelUsageRecorder
 import top.jie65535.mirai.llm.LargeLanguageModels
 import top.jie65535.mirai.llm.ModelService
 import top.jie65535.mirai.profile.ProfileAutoMaintenance
@@ -50,6 +51,7 @@ import top.jie65535.mirai.tools.VisitWeb
 import top.jie65535.mirai.tools.VisualAgent
 import top.jie65535.mirai.tools.WeatherService
 import top.jie65535.mirai.tools.WebSearch
+import top.jie65535.mirai.tools.QueryTokenUsageAgent
 import top.jie65535.mirai.util.RetryBackoff
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
@@ -84,6 +86,7 @@ internal object ConversationEngine {
         AdjustUserFavorabilityAgent(),
         RequestOwner(),
         GroupManageAgent(),
+        QueryTokenUsageAgent(),
     )
 
     fun clear() {
@@ -202,7 +205,8 @@ internal object ConversationEngine {
                     var lastTokenUsage: Usage? = null
 
                     responseFlow.collect { chunk ->
-                        val delta = chunk.choices[0].delta ?: return@collect
+                        chunk.usage?.let { lastTokenUsage = it }
+                        val delta = chunk.choices.firstOrNull()?.delta ?: return@collect
                         delta.reasoningContent?.let { content ->
                             if (reasoningContent == null) reasoningContent = StringBuilder(content)
                             else reasoningContent.append(content)
@@ -238,7 +242,6 @@ internal object ConversationEngine {
                                 responseToolCalls[index] = current.copy(function = updated)
                             }
                         }
-                        chunk.usage?.let { lastTokenUsage = it }
                     }
 
                     streamingOk = true
@@ -252,7 +255,7 @@ internal object ConversationEngine {
                         toolCalls = responseToolCalls.ifEmpty { null },
                         reasoningContent = if (responseToolCalls.isNotEmpty()) reasoningContent?.toString() else null,
                     )
-                    recordUsage(roundEvent, lastTokenUsage, lastCacheUsage)
+                    recordUsage(roundEvent, endpoint, lastTokenUsage, lastCacheUsage)
                     completedRounds++
 
                     if (responseToolCalls.size > toolCallTasks.size) {
@@ -455,6 +458,7 @@ internal object ConversationEngine {
             messages = history,
             tools = availableTools,
             toolChoice = ToolChoice.Required,
+            streamOptions = StreamOptions(includeUsage = true),
         )
         JChatGPT.logger.info("API Requesting... Model=${endpoint.model} [${endpoint.label}]")
         return endpoint.service.chatCompletions(request, onCacheUsage)
@@ -534,21 +538,19 @@ internal object ConversationEngine {
 
     private fun recordUsage(
         event: MessageEvent,
+        endpoint: LargeLanguageModels.ChatEndpoint,
         usage: Usage?,
         cacheUsage: ModelService.CacheUsage?,
     ) {
-        usage ?: return
-        val group = (event as? GroupMessageEvent)?.group
-        TokenUsageStore.record(
-            timestamp = OffsetDateTime.now().toEpochSecond(),
-            userId = event.sender.id,
-            userNickname = event.senderName,
-            groupId = group?.id,
-            groupName = group?.name,
-            promptTokens = usage.promptTokens ?: 0,
-            completionTokens = usage.completionTokens ?: 0,
-            totalTokens = usage.totalTokens ?: 0,
-            cachedTokens = cacheUsage?.hitTokens ?: 0,
+        ModelUsageRecorder.recordTokens(
+            event = event,
+            endpointLabel = endpoint.label,
+            modelAlias = endpoint.alias,
+            provider = endpoint.provider,
+            model = endpoint.model,
+            usageKind = "chat",
+            usage = usage,
+            cacheUsage = cacheUsage,
         )
     }
 

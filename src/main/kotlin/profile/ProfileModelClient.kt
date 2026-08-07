@@ -8,6 +8,9 @@ import com.aallam.openai.api.core.Usage
 import com.aallam.openai.api.model.ModelId
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import net.mamoe.mirai.message.data.MessageSourceKind
+import top.jie65535.mirai.data.ModelUsageAttribution
+import top.jie65535.mirai.data.ModelUsageRecorder
 import top.jie65535.mirai.llm.LargeLanguageModels
 import top.jie65535.mirai.llm.ModelService
 
@@ -86,6 +89,8 @@ class ProfileModelClient(
                 ),
             )
         )
+        recordUsage(batch.usageAttribution(), completion)
+        require(completion.content.isNotBlank()) { "模型流式响应没有文本内容" }
         val raw = completion.content.replace(THINK_REGEX, "").trim()
         val response = parseResponse(raw)
         return ProfileModelResult(
@@ -125,6 +130,15 @@ class ProfileModelClient(
                 ),
             )
         )
+        recordUsage(
+            ModelUsageAttribution(
+                botId = batch.botId,
+                userId = 0,
+                groupId = batch.groupId,
+            ),
+            completion,
+        )
+        require(completion.content.isNotBlank()) { "模型流式响应没有文本内容" }
         val raw = completion.content.replace(THINK_REGEX, "").trim()
         return ConversationProfileModelResult(
             response = parseObject(raw),
@@ -148,6 +162,13 @@ class ProfileModelClient(
                 ),
             )
         )
+        recordUsage(
+            ModelUsageAttribution(
+                userId = profile.userId,
+            ),
+            completion,
+        )
+        require(completion.content.isNotBlank()) { "模型流式响应没有文本内容" }
         val raw = completion.content.replace(THINK_REGEX, "").trim()
         return ProfileCompactionModelResult(
             response = json.decodeFromString(extractObject(raw)),
@@ -164,10 +185,10 @@ class ProfileModelClient(
             chunk.choices.firstOrNull()?.delta?.content?.let(content::append)
             chunk.usage?.let { lastUsage = it }
         }
-        require(content.isNotBlank()) { "模型流式响应没有文本内容" }
         return CompletedProfileResponse(
             content = content.toString(),
             usage = lastUsage.toProfileUsage(cacheUsage),
+            usageAvailable = lastUsage != null,
         )
     }
 
@@ -176,6 +197,31 @@ class ProfileModelClient(
         completionTokens = this?.completionTokens ?: 0,
         cachedTokens = cacheUsage?.hitTokens ?: 0,
     )
+
+    private fun recordUsage(attribution: ModelUsageAttribution, completion: CompletedProfileResponse) {
+        if (!completion.usageAvailable) return
+        val usage = completion.usage
+        ModelUsageRecorder.recordTokenValues(
+            attribution = attribution,
+            endpointLabel = "profile",
+            modelAlias = endpoint.alias,
+            provider = endpoint.provider,
+            model = endpoint.model,
+            usageKind = "profile",
+            promptTokens = usage.promptTokens.toLong(),
+            completionTokens = usage.completionTokens.toLong(),
+            cachedTokens = usage.cachedTokens.toLong(),
+        )
+    }
+
+    private fun ProfileHistoryBatch.usageAttribution(): ModelUsageAttribution {
+        val record = messages.firstOrNull()?.record
+        return ModelUsageAttribution(
+            botId = record?.botId ?: 0,
+            userId = userId,
+            groupId = record?.targetId?.takeIf { record.kind == MessageSourceKind.GROUP },
+        )
+    }
 
     private fun parseResponse(raw: String): ProfileModelResponse {
         return parseObject(raw)
@@ -206,5 +252,6 @@ class ProfileModelClient(
     private data class CompletedProfileResponse(
         val content: String,
         val usage: ProfileTokenUsage,
+        val usageAvailable: Boolean,
     )
 }

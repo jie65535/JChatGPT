@@ -40,7 +40,7 @@ data class FavorabilityInfo(
 }
 
 /**
- * Token使用日聚合记录。按 (date, userId, groupId) 维度合并。由 [TokenUsageStore] 持久化到独立 JSON 文件。
+ * 旧版 Token 使用日聚合记录。仅用于将 token_usage.json 迁移到 [TokenUsageStore] 的 SQLite 明细表。
  * @param date 本地时区下的日期，格式 yyyy-MM-dd
  * @param userId QQ
  * @param userNickname 最近一次记录到的昵称

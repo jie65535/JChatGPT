@@ -11,6 +11,8 @@ import net.mamoe.mirai.event.events.MessageEvent
 import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
+import top.jie65535.mirai.data.ModelUsageRecorder
+import top.jie65535.mirai.llm.ModelCatalog
 import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlin.time.measureTime
@@ -48,22 +50,24 @@ class SendVoiceMessage : BaseAgent(
         get() = "录音中..."
 
     override val isEnabled: Boolean
-        get() = PluginConfig.dashScopeApiKey.isNotEmpty()
+        get() = ModelCatalog.resolveTts() != null
 
 
     override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         requireNotNull(args)
         if (event.subject !is AudioSupported) return "当前聊天环境不支持发送语音！"
+        val modelDefinition = ModelCatalog.resolveTts()
+            ?: return "未配置 TTS 模型，无法生成语音。"
 
         val content = args.getValue("content").jsonPrimitive.content
         val instructions = args["instructions"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
 
         // https://help.aliyun.com/zh/model-studio/qwen-tts
-        val response = httpClient.post(API_URL) {
+        val response = httpClient.post(modelDefinition.api.ifBlank { API_URL }) {
             contentType(ContentType("application", "json"))
-            header("Authorization", "Bearer " + PluginConfig.dashScopeApiKey)
+            header("Authorization", "Bearer " + modelDefinition.token)
             setBody(buildJsonObject {
-                put("model", PluginConfig.ttsModel)
+                put("model", modelDefinition.model)
                 putJsonObject("input") {
                     put("text", content)
                     put("voice", "Chelsie") // Chelsie（女） Cherry（女） Ethan（男） Serena（女）
@@ -82,6 +86,24 @@ class SendVoiceMessage : BaseAgent(
                 .getValue("output").jsonObject
                 .getValue("audio").jsonObject
                 .getValue("url").jsonPrimitive.content
+            val inputCharacters = (responseObject["usage"] as? JsonObject)
+                ?.let { usage ->
+                    usage["input_characters"]?.jsonPrimitive?.longOrNull
+                        ?: usage["characters"]?.jsonPrimitive?.longOrNull
+                }
+                ?.coerceAtLeast(0)
+                ?: content.codePointCount(0, content.length).toLong()
+            ModelUsageRecorder.recordUnits(
+                event = event,
+                endpointLabel = "tts",
+                modelAlias = modelDefinition.alias,
+                provider = modelDefinition.provider,
+                model = modelDefinition.model,
+                usageKind = "tts",
+                unit = "characters",
+                inputUnits = inputCharacters,
+                totalUnits = inputCharacters,
+            )
 
             val voiceFolder = JChatGPT.resolveDataFile("voice")
             voiceFolder.mkdir()
