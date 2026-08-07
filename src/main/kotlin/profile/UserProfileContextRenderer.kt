@@ -68,7 +68,7 @@ object UserProfileContextRenderer {
                             .append(summary.normalized().take(maxChars))
                     } ?: profile?.takeIf { it.items.isNotEmpty() }?.let {
                         append(" | 画像认识：已有").append(it.items.size)
-                            .append("条记录，可用 queryUserProfile 查询详情")
+                            .append("条记录（摘要暂缺）")
                     }
 
                     profile?.items?.asSequence()

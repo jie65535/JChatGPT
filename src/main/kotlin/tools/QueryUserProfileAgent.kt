@@ -7,8 +7,6 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import net.mamoe.mirai.contact.User
@@ -35,24 +33,8 @@ import java.util.concurrent.ConcurrentHashMap
 class QueryUserProfileAgent : BaseAgent(
     tool = Tool.function(
         name = "queryUserProfile",
-        description = "查询你已归纳的用户画像，并按需读取该联系人的公开资料卡。用于了解某个群友/好友的长期信息、兴趣、表达方式、关系备注。默认查询当前对话发送者；在群聊中也可用QQ号、群名片或昵称查询别人。",
-        parameters = Parameters.buildJsonObject {
-            put("type", "object")
-            putJsonObject("properties") {
-                putJsonObject("userId") {
-                    put("type", "integer")
-                    put("description", "要查询的用户QQ号；留空时查询当前发送者")
-                }
-                putJsonObject("name") {
-                    put("type", "string")
-                    put("description", "群名片、昵称或好友备注关键词；仅在未填写userId时用于群聊中匹配用户")
-                }
-                putJsonObject("includeItems") {
-                    put("type", "boolean")
-                    put("description", "是否返回画像条目明细，默认true")
-                }
-            }
-        }
+        description = "查询本轮触发消息发送者的完整用户画像及公开资料卡。",
+        parameters = Parameters.Empty,
     )
 ) {
     override val isEnabled: Boolean
@@ -62,8 +44,15 @@ class QueryUserProfileAgent : BaseAgent(
         get() = "查询用户画像中..."
 
     override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
-        val userId = resolveUserId(args, event)
-            ?: return "未找到唯一匹配用户。请提供 userId，或使用更明确的群名片、昵称、好友备注。"
+        val requestedUserId = if (hasLegacyProfileTarget(args)) {
+            runCatching { resolveUserId(args, event) }.getOrNull()
+        } else {
+            null
+        }
+        if (!isOwnProfileQuery(args, event.sender.id, requestedUserId)) {
+            return PROFILE_QUERY_PRIVACY_REFUSAL
+        }
+        val userId = event.sender.id
         val (profile, supportStats) = runCatching {
             val snapshot = UserProfileStore.load(userId)
             snapshot to if (snapshot == null) emptyMap() else UserProfileStore.loadSupportStats(userId)
@@ -267,6 +256,23 @@ class QueryUserProfileAgent : BaseAgent(
 
     private fun String.normalized(): String = trim().replace(Regex("\\s+"), " ")
 }
+
+internal const val PROFILE_QUERY_PRIVACY_REFUSAL = "出于隐私考虑，禁止查询他人画像详情"
+
+internal fun isOwnProfileQuery(
+    args: JsonObject?,
+    senderId: Long,
+    requestedUserId: Long?,
+): Boolean {
+    if (args?.keys?.any { it !in LEGACY_PROFILE_QUERY_ARGUMENTS } == true) return false
+    return !hasLegacyProfileTarget(args) || requestedUserId == senderId
+}
+
+private val LEGACY_PROFILE_QUERY_ARGUMENTS = setOf("userId", "name", "includeItems")
+private val LEGACY_PROFILE_TARGET_ARGUMENTS = setOf("userId", "name")
+
+private fun hasLegacyProfileTarget(args: JsonObject?): Boolean =
+    args?.keys?.any { it in LEGACY_PROFILE_TARGET_ARGUMENTS } == true
 
 internal fun selectProfileItems(
     items: List<UserProfileItem>,
