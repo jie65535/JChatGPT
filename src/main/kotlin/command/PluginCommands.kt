@@ -18,6 +18,7 @@ import top.jie65535.mirai.JChatGPT.reload
 import top.jie65535.mirai.config.PluginConfig
 import top.jie65535.mirai.config.ModelConfig
 import top.jie65535.mirai.config.ModelConfigMigration
+import top.jie65535.mirai.conversation.ConversationContext
 import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.data.SkillStore
 import top.jie65535.mirai.data.TokenUsageStore
@@ -58,6 +59,7 @@ object PluginCommands : CompositeCommand(
             ProfileAutoMaintenance.clear()
         }
         SkillStore.reload()
+        ConversationContext.invalidateMemePromptCache()
         sendMessage("OK")
     }
 

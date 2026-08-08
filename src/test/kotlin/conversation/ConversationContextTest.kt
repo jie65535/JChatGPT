@@ -1,9 +1,12 @@
 package top.jie65535.mirai.conversation
 
+import java.nio.file.Files
 import net.mamoe.mirai.message.data.MessageSourceKind
 import top.jie65535.mirai.data.ChatMessageRecord
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 
 class ConversationContextTest {
@@ -20,6 +23,25 @@ class ConversationContextTest {
         assertEquals(first, index.get(1))
         assertEquals(1, index.indexOfIds("10,20"))
         assertNull(index.indexOfIds("missing"))
+    }
+
+    @Test
+    fun memePromptCacheRefreshesDirectoryListingAfterClear() {
+        val directory = Files.createTempDirectory("jchatgpt-meme-prompt-test-")
+        try {
+            Files.createFile(directory.resolve("before.png"))
+            val cache = MemePromptCache()
+
+            assertContains(cache.get(directory.toString()), "before.png")
+
+            Files.createFile(directory.resolve("after.png"))
+            assertFalse(cache.get(directory.toString()).contains("after.png"))
+
+            cache.clear()
+            assertContains(cache.get(directory.toString()), "after.png")
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
     }
 
     private fun record(ids: String?, time: Int) = ChatMessageRecord(

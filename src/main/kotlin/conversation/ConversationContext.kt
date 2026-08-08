@@ -72,6 +72,39 @@ internal class ReplyIndex {
     fun indexOfIds(ids: String): Int? = indexByIds[ids]
 }
 
+internal class MemePromptCache {
+    private var prompt: String? = null
+
+    fun get(directoryPath: String): String = synchronized(this) {
+        prompt ?: buildPrompt(directoryPath).also { prompt = it }
+    }
+
+    fun clear() {
+        synchronized(this) { prompt = null }
+    }
+
+    private fun buildPrompt(directoryPath: String): String {
+        if (directoryPath.isEmpty()) return ""
+        return buildString {
+            val directory = File(directoryPath)
+            if (!directory.isDirectory) {
+                append("配置的meme路径不存在！")
+                return@buildString
+            }
+            append("memes文件夹地址为：").appendLine(directoryPath)
+            val memes = directory.list().orEmpty()
+            if (memes.isEmpty()) {
+                append("暂无表情包~")
+            } else {
+                memes.forEach { append("- ").appendLine(it) }
+                appendLine()
+                append("表情包示例：![").append(memes[0]).append("](")
+                    .append(File(directory, memes[0]).absoluteFile).appendLine(")")
+            }
+        }
+    }
+}
+
 internal object ConversationContext {
     private val chronologicalRecordOrder = compareBy<ChatMessageRecord> { it.time }
         .thenBy { if (it.id == 0L) Long.MAX_VALUE else it.id }
@@ -81,16 +114,21 @@ internal object ConversationContext {
     private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy年MM月dd E HH:mm:ss")
     private val shortTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneOffset.systemDefault())
-    private var memePrompt: String? = null
+    private val memePromptCache = MemePromptCache()
 
     fun clearCache() {
         synchronized(contextCache) { contextCache.clear() }
+    }
+
+    fun invalidateMemePromptCache() {
+        memePromptCache.clear()
     }
 
     fun clearAll() {
         synchronized(contextCache) { contextCache.clear() }
         synchronized(replyIndexes) { replyIndexes.clear() }
         synchronized(imageIndexes) { imageIndexes.clear() }
+        memePromptCache.clear()
     }
 
     fun cache(subjectId: Long): ConversationCache? = synchronized(contextCache) {
@@ -150,7 +188,7 @@ internal object ConversationContext {
         replace("{skills}") {
             if (PluginConfig.skillsEnabled) SkillStore.buildIndexPrompt() else "暂无技能"
         }
-        replace("{meme}") { buildMemePrompt() }
+        replace("{meme}") { memePromptCache.get(PluginConfig.memeDir) }
         return prompt.toString()
     }
 
@@ -256,28 +294,6 @@ internal object ConversationContext {
 
     private fun activeImageIndex(subjectId: Long): ImageIndex = synchronized(imageIndexes) {
         imageIndexes.getOrPut(subjectId) { ImageIndex() }
-    }
-
-    private fun buildMemePrompt(): String {
-        memePrompt?.let { return it }
-        if (PluginConfig.memeDir.isEmpty()) return ""
-        return buildString {
-            val directory = File(PluginConfig.memeDir)
-            if (!directory.isDirectory) {
-                append("配置的meme路径不存在！")
-                return@buildString
-            }
-            append("memes文件夹地址为：").appendLine(PluginConfig.memeDir)
-            val memes = directory.list().orEmpty()
-            if (memes.isEmpty()) {
-                append("暂无表情包~")
-            } else {
-                memes.forEach { append("- ").appendLine(it) }
-                appendLine()
-                append("表情包示例：![").append(memes[0]).append("](")
-                    .append(File(directory, memes[0]).absoluteFile).appendLine(")")
-            }
-        }.also { memePrompt = it }
     }
 
     private fun appendUserProfileContext(
