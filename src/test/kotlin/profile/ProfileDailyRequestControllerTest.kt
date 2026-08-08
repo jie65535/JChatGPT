@@ -197,6 +197,25 @@ class ProfileDailyRequestControllerTest {
     }
 
     @Test
+    fun canStopTheRunAfterTheFirstTaskExhaustsItsAttempts() = runBlocking {
+        val controller = ProfileDailyRequestController(
+            maxConcurrentRequests = 128,
+            maxAttempts = 3,
+            maxConsecutiveExhaustedTasks = 1,
+        )
+
+        repeat(3) { attemptIndex -> fail(controller, key(1), attemptIndex + 1) }
+
+        val stats = controller.snapshot()
+        assertTrue(stats.stopped)
+        assertEquals(1, stats.exhaustedTasks)
+        assertFailsWith<ProfileDailyRunStoppedException> {
+            controller.execute(key(2), attempt = 1) { }
+        }
+        Unit
+    }
+
+    @Test
     fun cancellationWhileWaitingDoesNotLeaveAQueuedRequest() = runBlocking {
         val controller = controller(maxConcurrency = 1)
         val firstEntered = CompletableDeferred<Unit>()

@@ -29,6 +29,8 @@ import top.jie65535.mirai.profile.ProfileAutoMaintenance
 import top.jie65535.mirai.profile.ProfileCategory
 import top.jie65535.mirai.profile.ProfileCompactionReport
 import top.jie65535.mirai.profile.ProfileDailyMaintenance
+import top.jie65535.mirai.profile.ProfileDailyRequestController
+import top.jie65535.mirai.profile.ProfileDailyRunStoppedException
 import top.jie65535.mirai.profile.ProfilePersistentText
 import top.jie65535.mirai.profile.UserProfileAnalysisService
 import top.jie65535.mirai.profile.UserProfileSnapshot
@@ -115,25 +117,35 @@ object PluginCommands : CompositeCommand(
             return
         }
         val runToken = UserProfileAnalysisService.newRunToken()
+        val requestController = ProfileDailyRequestController(
+            maxConcurrentRequests = PluginConfig.profileMaxConcurrentRequests,
+            maxAttempts = PluginConfig.profileRetryMax.coerceIn(0, 3) + 1,
+            // A manual full run uses one shared endpoint. If its first task
+            // exhausts retries, probing more groups only repeats the same
+            // configuration failure and floods the log.
+            maxConsecutiveExhaustedTasks = 1,
+        )
         sendMessage(
             "已启动 ${parsedGroupIds.size} 个群的画像分析，每群最多推进 $batches 个批次。" +
-                    if (analyzeAllGroups) {
-                        " 全量启动门槛 $minimumMessages 条待处理消息，" +
-                                "画像请求并发上限 " +
-                                "${normalizeMaxConcurrentRequests(PluginConfig.profileMaxConcurrentRequests)}。"
-                    } else {
-                        ""
-                    }
+                    " 请求并发上限 ${normalizeMaxConcurrentRequests(PluginConfig.profileMaxConcurrentRequests)}。" +
+                    if (analyzeAllGroups) " 全量启动门槛 $minimumMessages 条待处理消息。" else ""
         )
         val completedGroups = AtomicInteger()
         val successfulGroups = AtomicInteger()
         val alreadyRunningGroups = AtomicInteger()
         val missingGroups = AtomicInteger()
         val failedGroups = AtomicInteger()
+        val stoppedGroups = AtomicInteger()
+        val failureLogged = java.util.concurrent.atomic.AtomicBoolean()
         parsedGroupIds.forEach { groupId ->
             JChatGPT.launch {
                 try {
-                    val report = UserProfileAnalysisService.analyzeGroup(groupId, batches, runToken) { progress ->
+                    val report = UserProfileAnalysisService.analyzeGroupControlled(
+                        groupId = groupId,
+                        maxBatches = batches,
+                        runToken = runToken,
+                        requestController = requestController,
+                    ) { progress ->
                         JChatGPT.logger.info(
                             "PROFILE_GROUP_BATCH group=$groupId batch=${progress.batchIndex}/$batches " +
                                     "range=${progress.startTime}-${progress.endTime} " +
@@ -174,9 +186,13 @@ object PluginCommands : CompositeCommand(
                     }
                 } catch (cause: CancellationException) {
                     throw cause
+                } catch (cause: ProfileDailyRunStoppedException) {
+                    stoppedGroups.incrementAndGet()
                 } catch (cause: Exception) {
                     failedGroups.incrementAndGet()
-                    JChatGPT.logger.error("群 $groupId 批量画像分析失败", cause)
+                    if (failureLogged.compareAndSet(false, true)) {
+                        JChatGPT.logger.error("群 $groupId 批量画像分析失败，本轮仅输出一次代表性异常", cause)
+                    }
                     if (!analyzeAllGroups) {
                         sendMessage("群 $groupId 批量画像分析失败：${cause.message ?: cause::class.simpleName}")
                     }
@@ -185,7 +201,8 @@ object PluginCommands : CompositeCommand(
                         sendMessage(
                             "全量群画像分析完成：成功 ${successfulGroups.get()}，" +
                                     "已在运行 ${alreadyRunningGroups.get()}，" +
-                                    "无历史 ${missingGroups.get()}，失败 ${failedGroups.get()}。"
+                                    "无历史 ${missingGroups.get()}，失败 ${failedGroups.get()}，" +
+                                    "停止 ${stoppedGroups.get()}。"
                         )
                     }
                 }
