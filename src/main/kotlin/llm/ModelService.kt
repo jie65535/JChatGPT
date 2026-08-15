@@ -166,7 +166,9 @@ class ModelService(
         extraBody?.forEach { (key, value) ->
             requestJson[key] = value
         }
-        return JsonObject(requestJson).toString()
+        // Ktor's text writer rejects lone UTF-16 surrogates. They can enter chat history through
+        // malformed gateway text, so normalize only invalid code units before encoding the body.
+        return JsonObject(requestJson).toString().replaceUnpairedSurrogates()
     }
 
     internal fun decodeStreamChunk(rawJson: String): ChatCompletionChunk? {
@@ -236,6 +238,31 @@ class ModelService(
         replace(Regex("[\\r\\n]+"), " ").let { normalized ->
             if (normalized.length <= maxChars) normalized else normalized.take(maxChars) + "...[截断]"
         }
+
+    private fun String.replaceUnpairedSurrogates(): String {
+        var output: StringBuilder? = null
+        var index = 0
+        while (index < length) {
+            val current = this[index]
+            when {
+                Character.isHighSurrogate(current) &&
+                        index + 1 < length && Character.isLowSurrogate(this[index + 1]) -> {
+                    output?.append(current)?.append(this[index + 1])
+                    index += 2
+                }
+                Character.isSurrogate(current) -> {
+                    if (output == null) output = StringBuilder(length).append(this, 0, index)
+                    output.append('\uFFFD')
+                    index++
+                }
+                else -> {
+                    output?.append(current)
+                    index++
+                }
+            }
+        }
+        return output?.toString() ?: this
+    }
 
     private fun isSafetyRejection(code: String?, message: String?): Boolean {
         val normalizedCode = code.orEmpty().lowercase()

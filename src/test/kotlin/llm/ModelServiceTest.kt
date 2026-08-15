@@ -22,6 +22,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Protocol
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -244,6 +245,48 @@ class ModelServiceTest {
             }
 
             assertEquals("hello world", content.toString())
+        } finally {
+            localService.httpClient.close()
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun sendsRequestsContainingUnpairedSurrogates() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val receivedBody = AtomicReference<String>()
+        val responseBody = listOf(
+            """data: {"id":"chunk-1","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}""",
+            "data: [DONE]",
+            "",
+        ).joinToString("\n\n").toByteArray()
+        server.createContext("/v1/chat/completions") { exchange ->
+            receivedBody.set(String(exchange.requestBody.readBytes(), Charsets.UTF_8))
+            exchange.responseHeaders.add("Content-Type", "text/event-stream")
+            exchange.sendResponseHeaders(200, responseBody.size.toLong())
+            exchange.responseBody.use { body -> body.write(responseBody) }
+        }
+        server.start()
+
+        val localService = ModelService(
+            baseUrl = "http://127.0.0.1:${server.address.port}/v1/",
+            token = "test",
+            timeout = 1.seconds,
+            firstChunkTimeout = 1.seconds,
+        )
+        try {
+            val content = StringBuilder()
+            localService.chatCompletions(
+                ChatCompletionRequest(
+                    model = ModelId("test-model"),
+                    messages = listOf(ChatMessage.User("emoji \uD83D\uDE00 before\uD800middle\uDC00after")),
+                )
+            ).collect { chunk ->
+                chunk.choices.firstOrNull()?.delta?.content?.let(content::append)
+            }
+
+            assertEquals("ok", content.toString())
+            assertTrue(receivedBody.get().contains("emoji \uD83D\uDE00 before\uFFFDmiddle\uFFFDafter"))
         } finally {
             localService.httpClient.close()
             server.stop(0)
