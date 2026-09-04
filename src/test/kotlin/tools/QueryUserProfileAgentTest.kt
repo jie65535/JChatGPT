@@ -7,6 +7,8 @@ import top.jie65535.mirai.profile.ProfileCategory
 import top.jie65535.mirai.profile.ProfileConfidence
 import top.jie65535.mirai.profile.ProfileItemSupportStats
 import top.jie65535.mirai.profile.UserProfileItem
+import java.time.Instant
+import java.time.ZoneId
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -111,8 +113,11 @@ class QueryUserProfileAgentTest {
             ),
         )
 
+        val expectedConfirmationDate = Instant.ofEpochSecond(1_751_472_000)
+            .atZone(ZoneId.systemDefault())
+            .toLocalDate()
         assertEquals(
-            "从事 Java 底层开发〔事实，高置信；4次支持；最近确认于 2025-07-03〕",
+            "从事 Java 底层开发〔事实，高置信；4次支持；最近确认于 $expectedConfirmationDate〕",
             output,
         )
     }
