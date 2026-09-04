@@ -144,8 +144,8 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("单条画像结论的最大字符数")
     val profileSummaryMaxLength: Int by value(500)
 
-    @ValueDescription("是否在群聊会话结束后静默自动维护相关用户画像")
-    val profileAutoUpdateEnabled: Boolean by value(true)
+    @ValueDescription("是否在群聊会话结束后静默自动维护相关用户画像（默认关闭；手动画像命令不受影响）")
+    val profileAutoUpdateEnabled: Boolean by value(false)
 
     @ValueDescription("群画像历史推进的目标消息数；实时自动维护改按自然空窗读取完整连续会话")
     val profileAutoConversationMessageLimit: Int by value(150)
