@@ -32,6 +32,7 @@ import top.jie65535.mirai.config.ModelConfig
 import top.jie65535.mirai.config.ModelConfigMigration
 import top.jie65535.mirai.conversation.ConversationContext
 import top.jie65535.mirai.conversation.ConversationEngine
+import top.jie65535.mirai.conversation.allowsGroupChatTrigger
 import top.jie65535.mirai.data.ChatHistoryStore
 import top.jie65535.mirai.data.ChatMessageRecord
 import top.jie65535.mirai.data.ContactSnapshotRefresher
@@ -174,6 +175,18 @@ object JChatGPT : KotlinPlugin(
 
     private suspend fun onMessage(event: MessageEvent) {
         if (LargeLanguageModels.chat == null) return
+
+        if (event is GroupMessageEvent && !allowsGroupChatTrigger(
+                requireOwnerInGroup = PluginConfig.requireOwnerInGroup,
+                ownerId = PluginConfig.ownerId,
+                isMember = { ownerId -> event.group[ownerId] != null },
+                onFailure = { cause ->
+                    logger.warning(
+                        "检查主人是否在群内失败，忽略群聊触发：bot=${event.bot.id}, group=${event.group.id}",
+                        cause,
+                    )
+                },
+            )) return
 
         if (ConversationEngine.isExpectedUser(event)) {
             if (shouldIgnoreBecauseMuted(event)) return

@@ -21,6 +21,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("主人QQ，AI可以通过工具向主人发起请求，会等待一段时间")
     val ownerId: Long by value()
 
+    @ValueDescription("是否仅在主人（ownerId）也在的群内允许聊天触发，默认开启；主人未配置、不在群内或无法确认时静默忽略。仅限制群聊，不影响私聊和聊天记录保存")
+    val requireOwnerInGroup: Boolean by value(true)
+
     @ValueDescription("OpenAI API base url")
     val openAiApi: String by value("https://dashscope.aliyuncs.com/compatible-mode/v1/")
 
