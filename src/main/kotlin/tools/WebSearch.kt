@@ -15,8 +15,7 @@ import top.jie65535.mirai.config.PluginConfig
 class WebSearch : BaseAgent(
     tool = Tool.function(
         name = "webSearch",
-        description = "Provides meta-search functionality through SearXNG," +
-                " aggregating results from multiple search engines.",
+        description = "Search via SearXNG across multiple engines; use for supplementary searches or cross-checking sources.",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {

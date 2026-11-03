@@ -29,6 +29,8 @@ import top.jie65535.mirai.profile.ProfileAutoMaintenance
 import top.jie65535.mirai.tools.AdjustUserFavorabilityAgent
 import top.jie65535.mirai.tools.BaseAgent
 import top.jie65535.mirai.tools.DeleteSkill
+import top.jie65535.mirai.tools.DeepSeekSearch
+import top.jie65535.mirai.tools.DeepSeekFetch
 import top.jie65535.mirai.tools.GroupManageAgent
 import top.jie65535.mirai.tools.GetChatHistoryContext
 import top.jie65535.mirai.tools.GithubAgent
@@ -75,6 +77,8 @@ internal object ConversationEngine {
         SearchChatHistory(),
         GetChatHistoryContext(),
         QueryUserProfileAgent(),
+        DeepSeekSearch(),
+        DeepSeekFetch(),
         WebSearch(),
         GithubAgent(),
         VisitWeb(),
@@ -485,8 +489,8 @@ internal object ConversationEngine {
             JChatGPT.logger.error("Failed to call ${function.name}", cause)
             "工具调用失败，请尝试自行回答用户，或如实告知。\n异常信息：${cause.message}"
         }
-        JChatGPT.logger.info("Result=\"$result\"")
-        val truncated = truncateToolOutput(result)
+        JChatGPT.logger.info("工具 ${function.name} 返回 ${result.length} 字符")
+        val truncated = agent.limitOutput(result, PluginConfig.maxToolOutputLength)
         if (truncated.length != result.length) {
             JChatGPT.logger.warning(
                 "工具 ${function.name} 返回内容过长，已从 ${result.length} 字符截断至 ${truncated.length} 字符"
@@ -552,12 +556,6 @@ internal object ConversationEngine {
             usage = usage,
             cacheUsage = cacheUsage,
         )
-    }
-
-    private fun truncateToolOutput(content: String): String {
-        val maxLength = PluginConfig.maxToolOutputLength
-        return if (content.length <= maxLength) content
-        else content.take(maxLength) + "\n\n[系统提示：因内容过长，部分内容已被省略]"
     }
 }
 

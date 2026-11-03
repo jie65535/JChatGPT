@@ -23,11 +23,18 @@ abstract class BaseAgent(
      */
     open val loadingMessage: String = ""
 
+    protected open val retryOnConnectionFailure: Boolean = true
+
     /**
      * HTTP客户端
      */
     protected val httpClient by lazy {
         HttpClient(OkHttp) {
+            engine {
+                config {
+                    retryOnConnectionFailure(this@BaseAgent.retryOnConnectionFailure)
+                }
+            }
             install(HttpTimeout) {
                 requestTimeoutMillis = 120_000
                 connectTimeoutMillis = 30_000
@@ -50,6 +57,10 @@ abstract class BaseAgent(
     open suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         return execute(args)
     }
+
+    open fun limitOutput(content: String, maxLength: Int): String =
+        if (content.length <= maxLength) content
+        else content.take(maxLength) + "\n\n[系统提示：因内容过长，部分内容已被省略]"
 
     override fun toString(): String {
         return "${tool.function.name}: ${tool.function.description}"

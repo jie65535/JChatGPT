@@ -13,6 +13,16 @@ import kotlin.test.assertTrue
 
 class QueryTokenUsageAgentTest {
     @Test
+    fun includesToolsOnlyDeepSeekProviderInBalanceAccounts() {
+        val accounts = QueryTokenUsageAgent.collectDeepSeekBalanceAccounts(
+            providers = listOf(ModelProviderDefinition("tools-only", "openai", "https://api.deepseek.com/v1/", "test-key")),
+            models = emptyList(),
+            additionalProviderNames = setOf("tools-only"),
+        )
+        assertEquals(listOf("tools-only"), accounts.map { it.name })
+    }
+
+    @Test
     fun scopesUsageToCurrentGroupOrPrivateSender() {
         val group = QueryTokenUsageAgent.queryScope(
             botId = 1,

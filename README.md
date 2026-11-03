@@ -68,6 +68,16 @@ chatFallbackModelAliases: []
 
 修改配置后执行 `/jgpt reload`。其他模型、工具和实验功能按需配置，缺少依赖或凭据的可选工具不会启用。
 
+### DeepSeek 网页搜索与抓取
+
+在 `Config.yml` 中引用 `Models.yml` 的 DeepSeek provider（`type: openai`），即可同时启用 `deepseekSearch` 和 `deepseekFetch`：
+
+```yaml
+deepSeekToolsProvider: deepseek
+```
+
+可复用聊天模型的 provider，留空则禁用。修改后执行 `/jgpt reload`。仅使用 DeepSeek 时，可清空 `searXngUrl` 和 `jinaReaderUrl` 关闭旧工具。接口和计费见 [官方指南](https://api-docs.deepseek.com/zh-cn/guides/search.md)。
+
 ### 群聊触发限制
 
 默认开启 `requireOwnerInGroup`：只有配置的主人也在群内，JChatGPT 才允许触发群聊对话。请在 `Config.yml` 中填写主人的 QQ：
@@ -109,26 +119,25 @@ requireOwnerInGroup: true
 画像维护命令：
 
 ```text
-/jgpt profileAnalyze <userIds> [batches]
+/jgpt profileAnalyze <groupId> <userIds> [batches]
 /jgpt profileAnalyzeGroup [groupIds] [batches]
-/jgpt profileShow <userId>
-/jgpt profileCompact [userIds]
+/jgpt profileShow <groupId> <userId>
+/jgpt profileCompact <groupId> [userIds]
 /jgpt profileStop
 ```
+
+群成员画像按 **群号 + 用户 QQ** 独立保存，包括摘要、条目、证据支持、修订和分析进度。同一人在不同群的画像互不合并；群聊自动注入和 `queryUserProfile` 只读取当前群，私聊不读取群画像。群聊中执行查看、单用户分析或压缩命令，也只能指定当前群；有命令权限的控制台或私聊管理员可明确指定群号维护。`profileCompact` 省略用户列表时，仅压缩指定群中达到门槛的画像。
+
+首次升级到按群画像时，插件会自动将旧 `user-profile.sqlite` 做成包含已提交 WAL 数据的完整 SQLite 备份，保存在 `data/top.jie65535.mirai.JChatGPT/profile-backups/user-profile-before-group-<时间>-<唯一标识>.sqlite`，启动日志会给出实际路径。备份通过完整性与记录数量验证后，才事务性清空旧画像、证据、修订和群分析游标，建立新的按群存储。备份或迁移失败时画像功能暂时禁用，原数据保留；后续重启不会再次清空已经建立的按群画像。
+
+备份只供管理员离线保管，运行时不会读取或重新导入。聊天历史保留，可以用 `profileAnalyzeGroup` 或 `profileAnalyze` 按群重新归纳旧记录，因此旧信息可能从其原属群的聊天记录中再次生成。此次变更仅涉及群成员画像；好感度的代号、标签、主观印象和普通会话记忆维持原有行为。
 
 ## 数据位置
 
 - `config/top.jie65535.mirai.JChatGPT/`：模型、插件配置和系统提示词
 - `data/top.jie65535.mirai.JChatGPT/chat-history.sqlite`：聊天历史、联系人快照和模型用量
+- `data/top.jie65535.mirai.JChatGPT/user-profile.sqlite`：按群隔离的成员画像
+- `data/top.jie65535.mirai.JChatGPT/profile-backups/`：升级前的旧画像备份
 - `data/top.jie65535.mirai.JChatGPT/skills/`：Bot 沉淀的全局技能
 
 数据库和运行时配置包含不可替代的私有数据，不要提交到 Git，也不要在没有备份时删除或重建。
-
-## 开发验证
-
-```powershell
-.\gradlew.bat test --console=plain
-.\gradlew.bat build buildPlugin --console=plain
-```
-
-涉及事件、联系人、撤回或群元数据的行为，最终仍需在 NapCat / OneBot / Overflow 实际链路中验证。

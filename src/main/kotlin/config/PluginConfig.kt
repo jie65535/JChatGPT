@@ -72,7 +72,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("聊天模型备用接入点列表（容灾）。主接入点连续失败时按顺序切换；每项留空的字段会继承主接入点，例如只换API KEY就只填token，只换模型就只填model")
     val chatFallbacks: List<ChatFallbackEndpoint> by value()
 
-    @ValueDescription("是否启用实验性的历史用户画像分析")
+    @ValueDescription("是否启用实验性的群成员画像分析；画像按群号和用户QQ隔离保存")
     val profileEnabled: Boolean by value(true)
 
     @ValueDescription("画像分析模型API。留空时继承聊天模型API")
@@ -147,7 +147,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("单条画像结论的最大字符数")
     val profileSummaryMaxLength: Int by value(500)
 
-    @ValueDescription("是否在群聊会话结束后静默自动维护相关用户画像（默认关闭；手动画像命令不受影响）")
+    @ValueDescription("是否在群聊会话结束后静默自动维护当前群的相关成员画像（默认关闭；手动画像命令不受影响）")
     val profileAutoUpdateEnabled: Boolean by value(false)
 
     @ValueDescription("群画像历史推进的目标消息数；实时自动维护改按自然空窗读取完整连续会话")
@@ -156,7 +156,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("用户在会话中至少包含多少个本人文本字符才调用画像模型")
     val profileAutoMinAuthoredTextChars: Int by value(20)
 
-    @ValueDescription("是否在普通群聊上下文中自动注入相关用户的画像摘要")
+    @ValueDescription("是否在普通群聊上下文中自动注入当前群相关成员的画像摘要；私聊不注入群画像")
     val profileAutoInjectEnabled: Boolean by value(true)
 
     @ValueDescription("一次普通对话最多自动注入多少名相关用户的画像摘要")
@@ -204,10 +204,13 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("TTS 模型别名；留空时兼容旧的 dashScopeApiKey/ttsModel")
     var ttsModelAlias: String by value("")
 
+    @ValueDescription("DeepSeek Tools 使用的 Models.yml provider 名称；配置后同时启用搜索和抓取，留空时禁用，不依赖聊天模型")
+    val deepSeekToolsProvider: String by value("")
+
     @ValueDescription("Jina API Key")
     val jinaApiKey by value("")
 
-    @ValueDescription("Jina Reader API 地址，默认使用在线服务；自托管示例：http://127.0.0.1:4223/")
+    @ValueDescription("Jina Reader API 地址，默认使用在线服务，留空时禁用 visit；自托管示例：http://127.0.0.1:4223/")
     val jinaReaderUrl: String by value("https://r.jina.ai/")
 
     @ValueDescription("网页摘要模型API；留空时网页工具只返回受限正文摘录")

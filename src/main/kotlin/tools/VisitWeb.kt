@@ -31,7 +31,7 @@ import java.net.UnknownHostException
 class VisitWeb : BaseAgent(
     tool = Tool.function(
         name = "visit",
-        description = "Read public webpage(s) and return concise task-focused summaries. Provide instruction for specific facts or comparisons.",
+        description = "Read webpages via Jina Reader, with optional task-focused model summaries; use for targeted extraction or alternative fetching.",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
@@ -142,7 +142,7 @@ class VisitWeb : BaseAgent(
     }
 
     override val isEnabled: Boolean
-        get() = true // PluginConfig.jinaApiKey.isNotEmpty()
+        get() = PluginConfig.jinaReaderUrl.isNotBlank()
 
     override val loadingMessage: String
         get() = "上网中..."

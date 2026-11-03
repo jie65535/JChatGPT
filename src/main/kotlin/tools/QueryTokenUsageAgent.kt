@@ -73,6 +73,8 @@ class QueryTokenUsageAgent : BaseAgent(
                         add("reasoning")
                         add("visual")
                         add("web_summary")
+                        add("web_search")
+                        add("web_fetch")
                         add("image")
                         add("tts")
                     }
@@ -87,7 +89,9 @@ class QueryTokenUsageAgent : BaseAgent(
         private const val MAX_DETAILS = 100
         private const val DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance"
         private val OPERATIONS = setOf("summary", "details", "balance", "overview")
-        private val USAGE_TYPES = setOf("chat", "profile", "reasoning", "visual", "web_summary", "image", "tts")
+        private val USAGE_TYPES = setOf(
+            "chat", "profile", "reasoning", "visual", "web_summary", "web_search", "web_fetch", "image", "tts",
+        )
         private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
         internal data class QueryScope(
@@ -141,8 +145,10 @@ class QueryTokenUsageAgent : BaseAgent(
             providers: List<ModelProviderDefinition>,
             models: List<ModelDefinition>,
             legacyAccounts: List<BalanceAccount> = emptyList(),
+            additionalProviderNames: Set<String> = emptySet(),
         ): List<BalanceAccount> {
             val referencedProviders = models.mapTo(HashSet()) { it.provider.trim() }
+            referencedProviders += additionalProviderNames.map(String::trim)
             val accounts = providers.asSequence()
                 .filter { it.name.trim() in referencedProviders }
                 .filter { it.token.isNotBlank() && isDeepSeekApi(it.api) }
@@ -398,6 +404,7 @@ class QueryTokenUsageAgent : BaseAgent(
             providers = ModelConfig.providers,
             models = boundModels,
             legacyAccounts = legacyAccounts,
+            additionalProviderNames = setOf(PluginConfig.deepSeekToolsProvider),
         )
     }
 
