@@ -16,9 +16,9 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 object UserProfileAnalysisService {
-    private val runningUsers = ConcurrentHashMap.newKeySet<Long>()
+    private val runningUsers = ConcurrentHashMap.newKeySet<Pair<Long, Long>>()
     private val runningGroups = ConcurrentHashMap.newKeySet<Long>()
-    private val runningCompactions = ConcurrentHashMap.newKeySet<Long>()
+    private val runningCompactions = ConcurrentHashMap.newKeySet<Pair<Long, Long>>()
     private val userLocks = ProfileUserLockManager()
     private val runGate = ProfileAnalysisRunGate()
 
@@ -74,17 +74,19 @@ object UserProfileAnalysisService {
     }
 
     suspend fun analyze(
+        groupId: Long,
         userId: Long,
         maxBatches: Int,
         runToken: ProfileAnalysisRunToken = newRunToken(),
         onProgress: suspend (ProfileAnalysisProgress) -> Unit = {},
     ): ProfileAnalysisReport {
+        require(groupId > 0) { "groupId 必须是正数" }
         require(userId > 0) { "userId 必须是正数" }
         require(maxBatches > 0) { "maxBatches 必须是正数" }
         check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
 
-        if (!runningUsers.add(userId)) {
+        if (!runningUsers.add(groupId to userId)) {
             return ProfileAnalysisReport(
                 userId = userId,
                 processedBatches = 0,
@@ -92,38 +94,40 @@ object UserProfileAnalysisService {
                 appliedOperations = 0,
                 skippedOperations = 0,
                 usage = ProfileTokenUsage(),
-                profile = UserProfileStore.load(userId),
+                profile = UserProfileStore.load(groupId, userId),
                 caughtUp = false,
                 alreadyRunning = true,
             )
         }
 
         try {
-            return userLocks.withUserLocks(listOf(userId)) {
-                analyzeExclusive(userId, maxBatches, runToken, onProgress)
+            return userLocks.withUserLocks(groupId, listOf(userId)) {
+                analyzeExclusive(groupId, userId, maxBatches, runToken, onProgress)
             }
         } finally {
-            runningUsers.remove(userId)
+            runningUsers.remove(groupId to userId)
         }
     }
 
     suspend fun compact(
+        groupId: Long,
         userId: Long,
         runToken: ProfileAnalysisRunToken = newRunToken(),
     ): ProfileCompactionReport {
+        require(groupId > 0) { "groupId 必须是正数" }
         require(userId > 0) { "userId 必须是正数" }
         check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
 
-        if (!runningCompactions.add(userId)) {
-            val profile = withContext(Dispatchers.IO) { UserProfileStore.load(userId) }
+        if (!runningCompactions.add(groupId to userId)) {
+            val profile = withContext(Dispatchers.IO) { UserProfileStore.load(groupId, userId) }
                 ?: throw IllegalArgumentException("用户 $userId 尚无画像")
             return unchangedCompactionReport(profile, alreadyRunning = true)
         }
 
         try {
-            return userLocks.withUserLocks(listOf(userId)) locked@{
-                val profile = withContext(Dispatchers.IO) { UserProfileStore.load(userId) }
+            return userLocks.withUserLocks(groupId, listOf(userId)) locked@{
+                val profile = withContext(Dispatchers.IO) { UserProfileStore.load(groupId, userId) }
                     ?: throw IllegalArgumentException("用户 $userId 尚无画像")
                 if (!runGate.canContinue(runToken)) {
                     return@locked unchangedCompactionReport(profile, stopped = true)
@@ -134,7 +138,7 @@ object UserProfileAnalysisService {
 
                 val endpoint = checkNotNull(LargeLanguageModels.profile) { "画像分析模型未配置" }
                 val model: ProfileCompactionModel = ProfileModelClient(endpoint)
-                val supportStats = withContext(Dispatchers.IO) { UserProfileStore.loadSupportStats(userId) }
+                val supportStats = withContext(Dispatchers.IO) { UserProfileStore.loadSupportStats(groupId, userId) }
                 val (result, plan) = compactWithRetry(model, profile, supportStats)
                 if (plan.reduction.profile.version != profile.version) {
                     val batch = compactionBatch(profile, result.rawResponse)
@@ -142,7 +146,7 @@ object UserProfileAnalysisService {
                         UserProfileStore.commitCompaction(plan, batch, result.usage)
                     }
                     ProfileOperationLogger.log(
-                        context = "source=COMPACTION user=$userId",
+                        context = "source=COMPACTION group=$groupId user=$userId",
                         reductions = listOf(plan.reduction),
                     )
                 }
@@ -161,7 +165,7 @@ object UserProfileAnalysisService {
                 )
             }
         } finally {
-            runningCompactions.remove(userId)
+            runningCompactions.remove(groupId to userId)
         }
     }
 
@@ -229,6 +233,7 @@ object UserProfileAnalysisService {
     }
 
     private suspend fun analyzeExclusive(
+        groupId: Long,
         userId: Long,
         maxBatches: Int,
         runToken: ProfileAnalysisRunToken,
@@ -240,12 +245,13 @@ object UserProfileAnalysisService {
         val model: ProfileModel = ProfileModelClient(endpoint)
         val historyFile = resolveHistoryFile()
         val reader = withContext(Dispatchers.IO) { ProfileHistoryReader(historyFile) }
-        val bounds = withContext(Dispatchers.IO) { reader.findUserTimeBounds(userId) }
+        val bounds = withContext(Dispatchers.IO) { reader.findUserTimeBounds(groupId, userId) }
             ?: return emptyReport(userId)
 
-        var profile = withContext(Dispatchers.IO) { UserProfileStore.load(userId) }
+        var profile = withContext(Dispatchers.IO) { UserProfileStore.load(groupId, userId) }
             ?: UserProfileSnapshot(
                 userId = userId,
+                groupId = groupId,
                 cursorTime = bounds.startTime,
                 snapshotEndTime = bounds.endTime,
             )
@@ -264,6 +270,7 @@ object UserProfileAnalysisService {
             val batch = withContext(Dispatchers.IO) {
                 reader.loadNextBatch(
                     userId = userId,
+                    groupId = groupId,
                     startTime = profile.cursorTime,
                     snapshotEndTime = profile.snapshotEndTime,
                     targetMessageLimit = PluginConfig.profileBatchTargetMessages.coerceAtLeast(1),
@@ -281,7 +288,7 @@ object UserProfileAnalysisService {
             }
 
             val supportStats = withContext(Dispatchers.IO) {
-                UserProfileStore.loadSupportStats(userId)
+                UserProfileStore.loadSupportStats(groupId, userId)
             }
             val (result, reduction) = analyzeWithRetry(model, profile, batch, supportStats)
             withContext(Dispatchers.IO) {
@@ -293,7 +300,7 @@ object UserProfileAnalysisService {
                 )
             }
             ProfileOperationLogger.log(
-                context = "source=BACKFILL batch=[${batch.startTime},${batch.endTime})",
+                context = "source=BACKFILL group=$groupId batch=[${batch.startTime},${batch.endTime})",
                 reductions = listOf(reduction),
             )
             profile = reduction.profile
@@ -324,7 +331,7 @@ object UserProfileAnalysisService {
             appliedOperations = appliedOperations,
             skippedOperations = skippedOperations,
             usage = totalUsage,
-            profile = withContext(Dispatchers.IO) { UserProfileStore.load(userId) } ?: profile,
+            profile = withContext(Dispatchers.IO) { UserProfileStore.load(groupId, userId) } ?: profile,
             caughtUp = caughtUp,
             stopped = stopped,
         )
@@ -494,16 +501,18 @@ object UserProfileAnalysisService {
         requestController: ProfileDailyRequestController? = null,
     ): ConversationProfileAnalysisReport? {
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
+        require(batch.groupId > 0) { "groupId 必须是正数" }
+        require(batch.messages.all { it.record.targetId == batch.groupId }) { "证据包含其他群的消息" }
         val eligibleUserIds = batch.authoredTextCharsByUser
             .filterValues { it >= minAuthoredTextChars.coerceAtLeast(1) }
             .keys
         if (eligibleUserIds.isEmpty()) return null
-        val profileState = userLocks.withUserLocks(eligibleUserIds) {
+        val profileState = userLocks.withUserLocks(batch.groupId, eligibleUserIds) {
             withContext(Dispatchers.IO) {
-                if (UserProfileStore.isConversationProcessed(batch.inputHash)) null
+                if (UserProfileStore.isConversationProcessed(batch.groupId, batch.inputHash)) null
                 else {
-                    val profiles = loadConversationProfiles(eligibleUserIds)
-                    profiles to loadConversationSupportStats(eligibleUserIds)
+                    val profiles = loadConversationProfiles(batch.groupId, eligibleUserIds)
+                    profiles to loadConversationSupportStats(batch.groupId, eligibleUserIds)
                 }
             }
         } ?: return null
@@ -520,12 +529,12 @@ object UserProfileAnalysisService {
             requestController = requestController,
         )
         val totalUsage = result.usage
-        val commitOutcome = userLocks.withUserLocks(eligibleUserIds) {
+        val commitOutcome = userLocks.withUserLocks(batch.groupId, eligibleUserIds) {
             withContext(Dispatchers.IO) {
-                if (UserProfileStore.isConversationProcessed(batch.inputHash)) {
+                if (UserProfileStore.isConversationProcessed(batch.groupId, batch.inputHash)) {
                     ConversationCommitOutcome.AlreadyProcessed
                 } else {
-                    val latestProfiles = loadConversationProfiles(eligibleUserIds)
+                    val latestProfiles = loadConversationProfiles(batch.groupId, eligibleUserIds)
                     val committedReductions = if (hasProfileVersionConflict(profiles, latestProfiles)) {
                         ConversationProfileReducer.reduceRebased(
                             expectedProfiles = profiles,
@@ -570,19 +579,21 @@ object UserProfileAnalysisService {
         )
     }
 
-    private fun loadConversationProfiles(userIds: Set<Long>): Map<Long, UserProfileSnapshot> =
+    private fun loadConversationProfiles(groupId: Long, userIds: Set<Long>): Map<Long, UserProfileSnapshot> =
         userIds.associateWith { userId ->
-            UserProfileStore.load(userId) ?: UserProfileSnapshot(
+            UserProfileStore.load(groupId, userId) ?: UserProfileSnapshot(
                 userId = userId,
+                groupId = groupId,
                 cursorTime = 0,
                 snapshotEndTime = 0,
             )
         }
 
     private fun loadConversationSupportStats(
+        groupId: Long,
         userIds: Set<Long>,
     ): Map<Long, Map<String, ProfileItemSupportStats>> = userIds.associateWith { userId ->
-        UserProfileStore.loadSupportStats(userId)
+        UserProfileStore.loadSupportStats(groupId, userId)
     }
 
     private fun hasProfileVersionConflict(
@@ -792,13 +803,14 @@ object UserProfileAnalysisService {
 
     private fun compactionBatch(profile: UserProfileSnapshot, rawResponse: String): ProfileHistoryBatch {
         val digest = MessageDigest.getInstance("SHA-256")
-            .digest("${profile.userId}|${profile.version}|$rawResponse".toByteArray(Charsets.UTF_8))
+            .digest("${profile.groupId}|${profile.userId}|${profile.version}|$rawResponse".toByteArray(Charsets.UTF_8))
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
         val startTime = profile.items.minOfOrNull(UserProfileItem::firstSeenAt) ?: profile.cursorTime
         val lastConfirmedAt = profile.items.maxOfOrNull(UserProfileItem::lastConfirmedAt) ?: startTime
         val endTime = if (lastConfirmedAt == Int.MAX_VALUE) lastConfirmedAt else lastConfirmedAt + 1
         return ProfileHistoryBatch(
             userId = profile.userId,
+            groupId = profile.groupId,
             startTime = startTime,
             endTime = endTime,
             messages = emptyList(),

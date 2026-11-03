@@ -20,7 +20,7 @@ class QueryUserProfileAgentTest {
         val function = QueryUserProfileAgent().tool.function
         val schema = requireNotNull(function.parameters).schema.jsonObject
 
-        assertEquals("查询本轮触发消息发送者的完整用户画像及公开资料卡。", function.description)
+        assertTrue(requireNotNull(function.description).contains("当前群聊"))
         assertTrue(schema.getValue("properties").jsonObject.isEmpty())
     }
 

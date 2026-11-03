@@ -116,6 +116,11 @@ object JChatGPT : KotlinPlugin(
         }
 
         runCatching { UserProfileStore.init(dataFolder) }
+            .onSuccess {
+                UserProfileStore.lastBackupFileOrNull?.let { backup ->
+                    logger.info("旧全局画像已备份并重置，后续按群重新归纳。备份位置: ${backup.absolutePath}")
+                }
+            }
             .onFailure { logger.error("初始化用户画像数据库失败，画像分析将暂时禁用", it) }
 
         LargeLanguageModels.reload()

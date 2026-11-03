@@ -41,7 +41,7 @@ class ConversationProfileLiveExperiment {
         val eligible = batch.authoredTextCharsByUser.filterValues { it >= 20 }.keys
         check(eligible.isNotEmpty()) { "所选会话没有达到文本门槛的参与者" }
         val profiles = eligible.associateWith { userId ->
-            UserProfileSnapshot(userId = userId, cursorTime = 0, snapshotEndTime = 0)
+            UserProfileSnapshot(userId = userId, groupId = batch.groupId, cursorTime = 0, snapshotEndTime = 0)
         }
         val service = ModelService(
             baseUrl = baseUrl,
@@ -65,6 +65,7 @@ class ConversationProfileLiveExperiment {
             )
             val names = batch.aliases.mapValues { (userId, alias) -> "$alias/$userId" }
             val injection = UserProfileContextRenderer.render(
+                groupId = batch.groupId,
                 profiles = reductions.map { it.profile },
                 favorabilityByUserId = emptyMap(),
                 displayNames = names,

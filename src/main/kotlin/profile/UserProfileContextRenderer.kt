@@ -4,6 +4,7 @@ import top.jie65535.mirai.data.FavorabilityInfo
 
 object UserProfileContextRenderer {
     fun render(
+        groupId: Long?,
         profiles: List<UserProfileSnapshot>,
         favorabilityByUserId: Map<Long, FavorabilityInfo>,
         displayNames: Map<Long, String>,
@@ -12,6 +13,7 @@ object UserProfileContextRenderer {
         sectionTitle: String = "你对相关群友的认识",
     ): String {
         val entries = renderEntries(
+            groupId = groupId,
             profiles = profiles,
             favorabilityByUserId = favorabilityByUserId,
             displayNames = displayNames,
@@ -29,6 +31,7 @@ object UserProfileContextRenderer {
     }
 
     internal fun renderEntries(
+        groupId: Long?,
         profiles: List<UserProfileSnapshot>,
         favorabilityByUserId: Map<Long, FavorabilityInfo>,
         displayNames: Map<Long, String>,
@@ -37,7 +40,7 @@ object UserProfileContextRenderer {
     ): Map<Long, String> {
         val profilesByUserId = profiles
             .filter { profile ->
-                profile.reliable &&
+                groupId != null && profile.groupId == groupId && profile.reliable &&
                         (ProfilePersistentText.summaryForDisplay(profile.summary).isNotBlank() || profile.items.isNotEmpty())
             }
             .associateBy { it.userId }

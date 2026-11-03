@@ -464,6 +464,7 @@ class UserProfileReducerTest {
 
     private fun emptyProfile() = UserProfileSnapshot(
         userId = TARGET,
+        groupId = 10,
         cursorTime = 100,
         snapshotEndTime = 1_000,
     )
@@ -479,6 +480,7 @@ class UserProfileReducerTest {
 
     private fun batchOf(vararg messages: ProfilePromptMessage) = ProfileHistoryBatch(
         userId = TARGET,
+        groupId = 10,
         startTime = 100,
         endTime = 200,
         messages = messages.toList(),

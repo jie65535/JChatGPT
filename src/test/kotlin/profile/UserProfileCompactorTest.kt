@@ -314,6 +314,7 @@ class UserProfileCompactorTest {
         )
         val current = UserProfileSnapshot(
             userId = 1,
+            groupId = 10,
             summary = "本批多次参与群聊。",
             version = 1,
             cursorTime = 100,
@@ -404,6 +405,7 @@ class UserProfileCompactorTest {
 
     private fun profile() = UserProfileSnapshot(
         userId = 100,
+        groupId = 10,
         summary = "关注模型并从事软件开发。",
         version = 8,
         cursorTime = 300,

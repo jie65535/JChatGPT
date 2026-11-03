@@ -64,7 +64,8 @@ object PluginCommands : CompositeCommand(
     }
 
     @SubCommand
-    suspend fun CommandSender.profileAnalyze(userIds: String, batches: Int = 1) {
+    suspend fun CommandSender.profileAnalyze(groupId: Long, userIds: String, batches: Int = 1) {
+        requireProfileGroupScope(groupId)
         require(batches > 0) { "batches 必须是正数" }
         val parsedUserIds = parseProfileUserIds(userIds)
         val runToken = UserProfileAnalysisService.newRunToken()
@@ -72,9 +73,9 @@ object PluginCommands : CompositeCommand(
         parsedUserIds.forEach { userId ->
             JChatGPT.launch {
                 try {
-                    val report = UserProfileAnalysisService.analyze(userId, batches, runToken) { progress ->
+                    val report = UserProfileAnalysisService.analyze(groupId, userId, batches, runToken) { progress ->
                         JChatGPT.logger.info(
-                            "PROFILE_BATCH user=$userId batch=${progress.batchIndex}/$batches " +
+                            "PROFILE_BATCH group=$groupId user=$userId batch=${progress.batchIndex}/$batches " +
                                     "range=${progress.startTime}-${progress.endTime} " +
                                     "messages=${progress.messageCount} operations=${progress.operationCount} " +
                                     "skipped=${progress.skippedOperationCount} " +
@@ -213,25 +214,27 @@ object PluginCommands : CompositeCommand(
     }
 
     @SubCommand
-    suspend fun CommandSender.profileShow(userId: Long) {
+    suspend fun CommandSender.profileShow(groupId: Long, userId: Long) {
+        requireProfileGroupScope(groupId)
         if (!UserProfileStore.isAvailable) {
             sendMessage("用户画像数据库不可用。")
             return
         }
-        val profile = UserProfileStore.load(userId)
-        sendMessage(profile?.let(::formatProfile) ?: "用户 $userId 尚无画像。")
+        val profile = withContext(Dispatchers.IO) { UserProfileStore.load(groupId, userId) }
+        sendMessage(profile?.let(::formatProfile) ?: "群 $groupId 的用户 $userId 尚无画像。")
     }
 
     @SubCommand
-    suspend fun CommandSender.profileCompact(userIds: String = "") {
+    suspend fun CommandSender.profileCompact(groupId: Long, userIds: String = "") {
+        requireProfileGroupScope(groupId)
         check(PluginConfig.profileEnabled) { "历史用户画像分析未启用" }
         check(UserProfileStore.isAvailable) { "用户画像数据库不可用" }
         val compactAllUsers = userIds.isBlank()
         val (parsedUserIds, skippedBelowThreshold) = if (compactAllUsers) {
             withContext(Dispatchers.IO) {
-                val allUserIds = UserProfileStore.listUserIds()
+                val allUserIds = UserProfileStore.listUserIds(groupId)
                 val candidates = UserProfileStore.listUserIdsWithMinimumItems(
-                    BULK_PROFILE_COMPACTION_MIN_ITEMS
+                    groupId, BULK_PROFILE_COMPACTION_MIN_ITEMS
                 )
                 candidates to (allUserIds.size - candidates.size)
             }
@@ -276,7 +279,7 @@ object PluginCommands : CompositeCommand(
         parsedUserIds.forEach { userId ->
             JChatGPT.launch {
                 try {
-                    val report = UserProfileAnalysisService.compact(userId, runToken)
+                    val report = UserProfileAnalysisService.compact(groupId, userId, runToken)
                     when {
                         report.alreadyRunning -> {
                             alreadyRunningUsers.incrementAndGet()
@@ -342,6 +345,11 @@ object PluginCommands : CompositeCommand(
                     "（用户分析 ${report.userTasks}，群分析 ${report.groupTasks}，压缩 ${report.compactionTasks}）。" +
                     "当前轮次会正常完成，之后不再开始新一轮。"
         )
+    }
+
+    private fun CommandSender.requireProfileGroupScope(groupId: Long) {
+        require(groupId > 0) { "groupId 必须是正数" }
+        require(subject !is Group || subject?.id == groupId) { "群聊中只能查看或维护当前群的成员画像" }
     }
 
     @SubCommand
@@ -585,7 +593,7 @@ object PluginCommands : CompositeCommand(
                 repairedItemRanges > 0 || summaryChanged
 
     private fun formatProfile(profile: UserProfileSnapshot): String = buildString {
-        appendLine("用户 ${profile.userId} · 画像 v${profile.version}")
+        appendLine("群 ${profile.groupId} · 用户 ${profile.userId} · 画像 v${profile.version}")
         if (profile.cursorTime <= 0) {
             appendLine("历史回顾：尚未开始（当前画像来自自动会话归纳）")
         } else {

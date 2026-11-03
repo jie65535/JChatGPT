@@ -372,6 +372,7 @@ class ConversationProfileReducerTest {
 
     private fun emptyProfile(userId: Long) = UserProfileSnapshot(
         userId = userId,
+        groupId = 10,
         cursorTime = 0,
         snapshotEndTime = 0,
     )

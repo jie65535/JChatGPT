@@ -4,13 +4,13 @@ import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.ConcurrentHashMap
 
 internal class ProfileUserLockManager {
-    private val entries = ConcurrentHashMap<Long, LockEntry>()
+    private val entries = ConcurrentHashMap<Pair<Long, Long>, LockEntry>()
 
-    suspend fun <T> withUserLocks(userIds: Collection<Long>, block: suspend () -> T): T {
+    suspend fun <T> withUserLocks(groupId: Long, userIds: Collection<Long>, block: suspend () -> T): T {
         val reserved = userIds.asSequence()
             .distinct()
             .sorted()
-            .map { userId -> userId to reserve(userId) }
+            .map { userId -> (groupId to userId).let { key -> key to reserve(key) } }
             .toList()
         val acquired = mutableListOf<LockEntry>()
         return try {
@@ -28,11 +28,11 @@ internal class ProfileUserLockManager {
     internal val activeLockCount: Int
         get() = entries.size
 
-    private fun reserve(userId: Long): LockEntry = entries.compute(userId) { _, current ->
+    private fun reserve(userId: Pair<Long, Long>): LockEntry = entries.compute(userId) { _, current ->
         (current ?: LockEntry()).also { it.references++ }
     } ?: error("无法创建用户画像锁: $userId")
 
-    private fun release(userId: Long, expected: LockEntry) {
+    private fun release(userId: Pair<Long, Long>, expected: LockEntry) {
         entries.computeIfPresent(userId) { _, current ->
             check(current === expected) { "用户画像锁状态不一致: $userId" }
             current.references--

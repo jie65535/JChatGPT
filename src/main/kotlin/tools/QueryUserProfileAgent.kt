@@ -33,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap
 class QueryUserProfileAgent : BaseAgent(
     tool = Tool.function(
         name = "queryUserProfile",
-        description = "查询本轮触发消息发送者的完整用户画像及公开资料卡。",
+        description = "仅在当前群聊中查询本轮触发消息发送者的群成员画像及公开资料卡；不会读取其他群画像。",
         parameters = Parameters.Empty,
     )
 ) {
@@ -44,6 +44,8 @@ class QueryUserProfileAgent : BaseAgent(
         get() = "查询用户画像中..."
 
     override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
+        val groupId = (event as? GroupMessageEvent)?.group?.id
+            ?: return "请在群聊中查询当前群的成员画像，私聊不读取群画像。"
         val requestedUserId = if (hasLegacyProfileTarget(args)) {
             runCatching { resolveUserId(args, event) }.getOrNull()
         } else {
@@ -54,8 +56,8 @@ class QueryUserProfileAgent : BaseAgent(
         }
         val userId = event.sender.id
         val (profile, supportStats) = runCatching {
-            val snapshot = UserProfileStore.load(userId)
-            snapshot to if (snapshot == null) emptyMap() else UserProfileStore.loadSupportStats(userId)
+            val snapshot = UserProfileStore.load(groupId, userId)
+            snapshot to if (snapshot == null) emptyMap() else UserProfileStore.loadSupportStats(groupId, userId)
         }
             .getOrElse { cause -> return "读取用户 $userId 画像失败：${cause.message ?: cause::class.simpleName}" }
         val publicProfile = loadPublicProfile(userId, event)
@@ -64,7 +66,7 @@ class QueryUserProfileAgent : BaseAgent(
         val includeItems = args?.get("includeItems")?.jsonPrimitive?.booleanOrNull ?: true
         val displayName = resolveDisplayName(userId, event)
 
-        return formatProfile(userId, profile, supportStats, publicProfile, displayName, includeItems)
+        return formatProfile(groupId, userId, profile, supportStats, publicProfile, displayName, includeItems)
     }
 
     private fun resolveUserId(args: JsonObject?, event: MessageEvent): Long? {
@@ -131,6 +133,7 @@ class QueryUserProfileAgent : BaseAgent(
     }
 
     private fun formatProfile(
+        groupId: Long,
         userId: Long,
         profile: UserProfileSnapshot?,
         supportStats: Map<String, ProfileItemSupportStats>,
@@ -138,7 +141,7 @@ class QueryUserProfileAgent : BaseAgent(
         displayName: String,
         includeItems: Boolean,
     ): String = buildString {
-        appendLine("用户画像：$displayName($userId)")
+        appendLine("本群成员画像：$displayName($userId)；群 $groupId")
         if (profile != null) {
             appendLine("版本：v${profile.version}；可靠：${if (profile.reliable) "是" else "否"}；条目数：${profile.items.size}")
         }

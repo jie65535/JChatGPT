@@ -315,10 +315,10 @@ internal object ConversationContext {
         val uncertainProfileIds = mutableSetOf<Long>()
         val profiles = if (shouldLoadProfiles && UserProfileStore.isAvailable) {
             candidateIds.mapNotNull { userId ->
-                runCatching { UserProfileStore.load(userId) }
+                runCatching { UserProfileStore.load(event.group.id, userId) }
                     .onFailure {
                         uncertainProfileIds += userId
-                        JChatGPT.logger.warning("读取用户画像失败: user=$userId", it)
+                        JChatGPT.logger.warning("读取群成员画像失败: group=${event.group.id}, user=$userId", it)
                     }
                     .getOrNull()
             }
@@ -336,6 +336,7 @@ internal object ConversationContext {
             event.group[id]?.nameCardOrNick ?: snapshotNames[id] ?: id.toString()
         }
         val renderedEntries = UserProfileContextRenderer.renderEntries(
+            groupId = event.group.id,
             profiles = profiles,
             favorabilityByUserId = favorability,
             displayNames = names,
@@ -361,18 +362,6 @@ internal object ConversationContext {
     ) {
         if (!PluginConfig.profileAutoInjectEnabled && !PluginConfig.enableFavorabilitySystem) return
         val userId = event.sender.id
-        val shouldLoadProfile = PluginConfig.profileEnabled && PluginConfig.profileAutoInjectEnabled
-        var profileReadUncertain = shouldLoadProfile && !UserProfileStore.isAvailable
-        val profiles = if (shouldLoadProfile && UserProfileStore.isAvailable) {
-            listOfNotNull(
-                runCatching { UserProfileStore.load(userId) }
-                    .onFailure {
-                        profileReadUncertain = true
-                        JChatGPT.logger.warning("读取用户画像失败: user=$userId", it)
-                    }
-                    .getOrNull()
-            )
-        } else emptyList()
         val favorability = if (PluginConfig.enableFavorabilitySystem) {
             PluginData.userFavorability[userId]?.let { mapOf(userId to it) }.orEmpty()
         } else emptyMap()
@@ -380,7 +369,8 @@ internal object ConversationContext {
             ContactSnapshotStore.loadDisplayName(event.bot.id, null, userId)
         }.getOrNull()
         val renderedEntries = UserProfileContextRenderer.renderEntries(
-            profiles = profiles,
+            groupId = null,
+            profiles = emptyList(),
             favorabilityByUserId = favorability,
             displayNames = mapOf(userId to (snapshotName ?: event.senderName)),
             activeUserIds = setOf(userId),
@@ -388,11 +378,7 @@ internal object ConversationContext {
         )
         target.append(
             profileInjectionState.renderChanges(
-                candidateUserIds = if (profileReadUncertain && profileInjectionState.hasSeen(userId)) {
-                    emptyList()
-                } else {
-                    listOf(userId)
-                },
+                candidateUserIds = listOf(userId),
                 renderedEntries = renderedEntries,
                 sectionTitle = "你对对方的认识",
             )

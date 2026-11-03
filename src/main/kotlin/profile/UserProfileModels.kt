@@ -70,6 +70,7 @@ data class UserProfileItem(
 
 data class UserProfileSnapshot(
     val userId: Long,
+    val groupId: Long,
     val summary: String = "",
     val version: Int = 0,
     val cursorTime: Int,
@@ -111,6 +112,7 @@ data class ProfilePromptMessage(
 
 data class ProfileHistoryBatch(
     val userId: Long,
+    val groupId: Long,
     val startTime: Int,
     val endTime: Int,
     val messages: List<ProfilePromptMessage>,
@@ -185,6 +187,7 @@ data class ConversationProfileBatch(
 
     fun forUser(userId: Long): ProfileHistoryBatch = ProfileHistoryBatch(
         userId = userId,
+        groupId = groupId,
         startTime = startTime,
         endTime = endTime,
         messages = messages,

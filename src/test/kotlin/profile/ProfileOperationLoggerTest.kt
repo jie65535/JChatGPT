@@ -11,6 +11,7 @@ class ProfileOperationLoggerTest {
         val reduction = ProfileReduction(
             profile = UserProfileSnapshot(
                 userId = 100,
+                groupId = 10,
                 summary = "不应打印的摘要",
                 cursorTime = 0,
                 snapshotEndTime = 0,
@@ -50,7 +51,7 @@ class ProfileOperationLoggerTest {
     @Test
     fun omitsBatchWhenThereAreNoOperations() {
         val reduction = ProfileReduction(
-            profile = UserProfileSnapshot(userId = 100, cursorTime = 0, snapshotEndTime = 0),
+            profile = UserProfileSnapshot(userId = 100, groupId = 10, cursorTime = 0, snapshotEndTime = 0),
             operations = emptyList(),
         )
 

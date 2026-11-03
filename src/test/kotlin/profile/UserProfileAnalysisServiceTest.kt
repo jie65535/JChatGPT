@@ -82,9 +82,9 @@ class UserProfileAnalysisServiceTest {
         assertEquals(2, report.analyzedUsers)
         assertEquals(2, report.appliedOperations)
         assertEquals(0, report.skippedOperations)
-        assertEquals("日常使用 Kotlin 开发", UserProfileStore.load(USER_A)?.items?.single()?.content)
-        assertEquals("持续关注本地大模型", UserProfileStore.load(USER_B)?.items?.single()?.content)
-        assertEquals(true, UserProfileStore.isConversationProcessed(INPUT_HASH))
+        assertEquals("日常使用 Kotlin 开发", UserProfileStore.load(GROUP, USER_A)?.items?.single()?.content)
+        assertEquals("持续关注本地大模型", UserProfileStore.load(GROUP, USER_B)?.items?.single()?.content)
+        assertEquals(true, UserProfileStore.isConversationProcessed(GROUP, INPUT_HASH))
     }
 
     @Test
@@ -104,9 +104,9 @@ class UserProfileAnalysisServiceTest {
         assertEquals(1, model.calls)
         assertEquals(0, report.appliedOperations)
         assertEquals(1, report.skippedOperations)
-        assertNotNull(UserProfileStore.load(USER_A))
-        assertNotNull(UserProfileStore.load(USER_B))
-        assertTrue(UserProfileStore.isConversationProcessed(INPUT_HASH))
+        assertNotNull(UserProfileStore.load(GROUP, USER_A))
+        assertNotNull(UserProfileStore.load(GROUP, USER_B))
+        assertTrue(UserProfileStore.isConversationProcessed(GROUP, INPUT_HASH))
     }
 
     @Test
@@ -118,9 +118,9 @@ class UserProfileAnalysisServiceTest {
         }
 
         assertEquals(2, model.calls)
-        assertNull(UserProfileStore.load(USER_A))
-        assertNull(UserProfileStore.load(USER_B))
-        assertFalse(UserProfileStore.isConversationProcessed(INPUT_HASH))
+        assertNull(UserProfileStore.load(GROUP, USER_A))
+        assertNull(UserProfileStore.load(GROUP, USER_B))
+        assertFalse(UserProfileStore.isConversationProcessed(GROUP, INPUT_HASH))
     }
 
     @Test
@@ -138,8 +138,8 @@ class UserProfileAnalysisServiceTest {
         }
 
         assertEquals(1, model.calls)
-        assertNull(UserProfileStore.load(USER_A))
-        assertFalse(UserProfileStore.isConversationProcessed(INPUT_HASH))
+        assertNull(UserProfileStore.load(GROUP, USER_A))
+        assertFalse(UserProfileStore.isConversationProcessed(GROUP, INPUT_HASH))
     }
 
     @Test
@@ -184,14 +184,14 @@ class UserProfileAnalysisServiceTest {
             result(responseFor("U1", "长期关注 Kotlin", evidenceRef = 1))
         }
         assertNotNull(analyze(firstBatch, firstModel))
-        val itemId = assertNotNull(UserProfileStore.load(USER_A)).items.single().id
+        val itemId = assertNotNull(UserProfileStore.load(GROUP, USER_A)).items.single().id
 
         val secondModel = SupportInspectingConversationProfileModel { supportStatsByUserId ->
             val support = assertNotNull(supportStatsByUserId[USER_A]?.get(itemId))
             assertEquals(1, support.count)
             result()
         }
-        assertNotNull(analyze(singleUserBatch(USER_A, 20, "support-second"), secondModel))
+        assertNotNull(analyze(singleUserBatch(USER_A, GROUP, "support-second"), secondModel))
     }
 
     @Test
@@ -204,7 +204,7 @@ class UserProfileAnalysisServiceTest {
 
         assertNull(report)
         assertEquals(0, model.calls)
-        assertFalse(UserProfileStore.isConversationProcessed(INPUT_HASH))
+        assertFalse(UserProfileStore.isConversationProcessed(GROUP, INPUT_HASH))
     }
 
     @Test
@@ -233,7 +233,7 @@ class UserProfileAnalysisServiceTest {
     }
 
     @Test
-    fun sharedUserRequestsRunConcurrentlyAndConflictRebasesWithoutAnotherModelCall() = withProfileStore {
+    fun sharedUserInDifferentGroupsHasIndependentProfiles() = withProfileStore {
         val firstEntered = CompletableDeferred<Unit>()
         val releaseFirst = CompletableDeferred<Unit>()
         val secondFirstEntered = CompletableDeferred<Unit>()
@@ -265,9 +265,88 @@ class UserProfileAnalysisServiceTest {
         }
 
         assertEquals(1, secondCalls.get())
-        val profile = assertNotNull(UserProfileStore.load(USER_A))
+        val firstProfile = assertNotNull(UserProfileStore.load(10, USER_A))
+        val secondProfile = assertNotNull(UserProfileStore.load(20, USER_A))
+        assertEquals(1, firstProfile.version)
+        assertEquals(1, secondProfile.version)
+        assertEquals("第一群归纳的信息", firstProfile.items.single().content)
+        assertEquals("第二群归纳的信息", secondProfile.items.single().content)
+    }
+
+    @Test
+    fun sharedUserInSameGroupRebasesConcurrentUpdatesWithoutAnotherModelCall() = withProfileStore {
+        val firstEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val secondFirstEntered = CompletableDeferred<Unit>()
+        val releaseSecondFirst = CompletableDeferred<Unit>()
+        val secondCalls = AtomicInteger()
+        val firstModel = InspectingConversationProfileModel { profiles ->
+            assertEquals(0, profiles.getValue(USER_A).version)
+            firstEntered.complete(Unit)
+            releaseFirst.await()
+            result(responseFor("U1", "第一群归纳的信息", evidenceRef = 1))
+        }
+        val secondModel = InspectingConversationProfileModel { profiles ->
+            secondCalls.incrementAndGet()
+            assertEquals(0, profiles.getValue(USER_A).version)
+            secondFirstEntered.complete(Unit)
+            releaseSecondFirst.await()
+            result(responseFor("U1", "第二群归纳的信息", evidenceRef = 1))
+        }
+
+        coroutineScope {
+            val first = async { analyze(singleUserBatch(USER_A, 10, "shared-a"), firstModel) }
+            firstEntered.await()
+            val second = async { analyze(singleUserBatch(USER_A, 10, "shared-b"), secondModel) }
+            withTimeout(1_000) { secondFirstEntered.await() }
+            releaseFirst.complete(Unit)
+            assertNotNull(first.await())
+            releaseSecondFirst.complete(Unit)
+            assertNotNull(second.await())
+        }
+
+        assertEquals(1, secondCalls.get())
+        val profile = assertNotNull(UserProfileStore.load(10, USER_A))
         assertEquals(2, profile.version)
         assertEquals(2, profile.items.size)
+    }
+
+    @Test
+    fun doesNotSendOtherGroupProfilesToTheModel() = withProfileStore {
+        assertNotNull(analyze(singleUserBatch(USER_A, 10, "group-a"), FakeConversationProfileModel {
+            result(responseFor("U1", "第一群私密信息", evidenceRef = 1))
+        }))
+        val model = InspectingConversationProfileModel { profiles ->
+            assertTrue(profiles.getValue(USER_A).items.isEmpty())
+            assertEquals("", profiles.getValue(USER_A).summary)
+            assertEquals(20L, profiles.getValue(USER_A).groupId)
+            result(responseFor("U1", "第二群独立信息", evidenceRef = 1))
+        }
+        // Even an identical hash in another group must be independently processed.
+        assertNotNull(analyze(singleUserBatch(USER_A, 20, "group-a"), model))
+        assertEquals("第一群私密信息", UserProfileStore.load(10, USER_A)?.items?.single()?.content)
+        assertEquals("第二群独立信息", UserProfileStore.load(20, USER_A)?.items?.single()?.content)
+    }
+
+    @Test
+    fun rejectsMixedGroupEvidenceBeforeCallingTheModel() = withProfileStore {
+        val model = FakeConversationProfileModel { error("不得调用模型") }
+        val mixedBatch = batch().copy(messages = batch().messages + message(3, USER_A, "其他群的信息", groupId = 20))
+        assertFailsWith<IllegalArgumentException> { analyze(mixedBatch, model) }
+        assertEquals(0, model.calls)
+        assertNull(UserProfileStore.load(GROUP, USER_A))
+    }
+
+    @Test
+    fun doesNotSendOtherGroupSupportStatsToTheModel() = withProfileStore {
+        assertNotNull(analyze(singleUserBatch(USER_A, 10, "support-group-a"), FakeConversationProfileModel {
+            result(responseFor("U1", "第一群信息", evidenceRef = 1))
+        }))
+        val model = SupportInspectingConversationProfileModel { stats ->
+            assertTrue(stats.getValue(USER_A).isEmpty())
+            result(responseFor("U1", "第二群信息", evidenceRef = 1))
+        }
+        assertNotNull(analyze(singleUserBatch(USER_A, 20, "support-group-b"), model))
     }
 
     private suspend fun analyze(

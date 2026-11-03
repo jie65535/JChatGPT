@@ -8,7 +8,7 @@ import java.sql.DriverManager
 import java.sql.ResultSet
 
 object UserProfileStore {
-    private const val SCHEMA_VERSION = 3
+    private const val SCHEMA_VERSION = 4
     private const val BUSY_TIMEOUT_MS = 30_000
 
     private val lifecycleLock = Any()
@@ -21,8 +21,14 @@ object UserProfileStore {
     private lateinit var databaseFile: File
     private var writeConnection: Connection? = null
 
+    @Volatile
+    private var lastBackupFile: File? = null
+
     val isAvailable: Boolean
         get() = initialized
+
+    val lastBackupFileOrNull: File?
+        get() = lastBackupFile
 
     fun init(dataFolder: File) {
         synchronized(lifecycleLock) {
@@ -33,7 +39,12 @@ object UserProfileStore {
             val connection = openConnection()
             try {
                 configureWriteConnection(connection)
-                createSchema(connection)
+                lastBackupFile = null
+                lastBackupFile = ProfileDatabaseReset.backupLegacyDatabase(connection, databaseFile)
+                createSchema(connection, resetLegacy = lastBackupFile != null)
+                if (lastBackupFile != null) {
+                    connection.createStatement().use { it.execute("PRAGMA wal_checkpoint(TRUNCATE)") }
+                }
                 writeConnection = connection
                 initialized = true
             } catch (cause: Throwable) {
@@ -61,18 +72,19 @@ object UserProfileStore {
         }
     }
 
-    fun load(userId: Long): UserProfileSnapshot? {
+    fun load(groupId: Long, userId: Long): UserProfileSnapshot? {
         check(initialized) { "用户画像数据库尚未初始化" }
         return openReadConnection().use { connection ->
             val profileRow = connection.prepareStatement(
                 """
-                SELECT user_id, summary, version, cursor_time, snapshot_end_time,
+                SELECT group_id, user_id, summary, version, cursor_time, snapshot_end_time,
                        reliable, model, prompt_version, updated_at
                 FROM user_profile
-                WHERE user_id = ?
+                WHERE user_id = ? AND group_id = ?
                 """.trimIndent()
             ).use { statement ->
                 statement.setLong(1, userId)
+                statement.setLong(2, groupId)
                 statement.executeQuery().use { results ->
                     if (results.next()) results.toProfileWithoutItems() else null
                 }
@@ -83,11 +95,12 @@ object UserProfileStore {
                 SELECT item_id, category, content, confidence, related_user_id,
                        first_seen_at, last_confirmed_at
                 FROM profile_item
-                WHERE user_id = ?
+                WHERE user_id = ? AND group_id = ?
                 ORDER BY category, first_seen_at, item_id
                 """.trimIndent()
             ).use { statement ->
                 statement.setLong(1, userId)
+                statement.setLong(2, groupId)
                 statement.executeQuery().use { results ->
                     buildList {
                         while (results.next()) add(results.toProfileItem())
@@ -98,10 +111,11 @@ object UserProfileStore {
         }
     }
 
-    fun listUserIds(): List<Long> {
+    fun listUserIds(groupId: Long): List<Long> {
         check(initialized) { "用户画像数据库尚未初始化" }
         return openReadConnection().use { connection ->
-            connection.prepareStatement("SELECT user_id FROM user_profile ORDER BY user_id").use { statement ->
+            connection.prepareStatement("SELECT user_id FROM user_profile WHERE group_id = ? ORDER BY user_id").use { statement ->
+                statement.setLong(1, groupId)
                 statement.executeQuery().use { results ->
                     buildList {
                         while (results.next()) add(results.getLong("user_id"))
@@ -111,7 +125,7 @@ object UserProfileStore {
         }
     }
 
-    fun listUserIdsWithMinimumItems(minimumItems: Int): List<Long> {
+    fun listUserIdsWithMinimumItems(groupId: Long, minimumItems: Int): List<Long> {
         check(initialized) { "用户画像数据库尚未初始化" }
         require(minimumItems > 0) { "minimumItems must be positive" }
         return openReadConnection().use { connection ->
@@ -119,12 +133,14 @@ object UserProfileStore {
                 """
                 SELECT user_id
                 FROM profile_item
+                WHERE group_id = ?
                 GROUP BY user_id
                 HAVING COUNT(*) >= ?
                 ORDER BY user_id
                 """.trimIndent()
             ).use { statement ->
-                statement.setInt(1, minimumItems)
+                statement.setLong(1, groupId)
+                statement.setInt(2, minimumItems)
                 statement.executeQuery().use { results ->
                     buildList {
                         while (results.next()) add(results.getLong("user_id"))
@@ -134,7 +150,7 @@ object UserProfileStore {
         }
     }
 
-    fun loadSupportStats(userId: Long): Map<String, ProfileItemSupportStats> {
+    fun loadSupportStats(groupId: Long, userId: Long): Map<String, ProfileItemSupportStats> {
         check(initialized) { "用户画像数据库尚未初始化" }
         return openReadConnection().use { connection ->
             connection.prepareStatement(
@@ -143,11 +159,12 @@ object UserProfileStore {
                        MIN(start_time) AS first_supported_at,
                        MAX(end_time) AS last_supported_at
                 FROM profile_support
-                WHERE user_id = ?
+                WHERE user_id = ? AND group_id = ?
                 GROUP BY item_id
                 """.trimIndent()
             ).use { statement ->
                 statement.setLong(1, userId)
+                statement.setLong(2, groupId)
                 statement.executeQuery().use { results ->
                     buildMap {
                         while (results.next()) {
@@ -189,13 +206,14 @@ object UserProfileStore {
         supportReassignments = plan.supportReassignments,
     )
 
-    fun isConversationProcessed(inputHash: String): Boolean {
+    fun isConversationProcessed(groupId: Long, inputHash: String): Boolean {
         check(initialized) { "用户画像数据库尚未初始化" }
         return openReadConnection().use { connection ->
             connection.prepareStatement(
-                "SELECT 1 FROM profile_revision WHERE source = 'conversation' AND input_hash = ? LIMIT 1"
+                "SELECT 1 FROM profile_revision WHERE source = 'conversation' AND input_hash = ? AND group_id = ? LIMIT 1"
             ).use { statement ->
                 statement.setString(1, inputHash)
+                statement.setLong(2, groupId)
                 statement.executeQuery().use { it.next() }
             }
         }
@@ -288,12 +306,13 @@ object UserProfileStore {
                 if (supportReassignments.isNotEmpty()) {
                     val userId = entries.single().first.profile.userId
                     connection.prepareStatement(
-                        "UPDATE profile_support SET item_id = ? WHERE user_id = ? AND item_id = ?"
+                        "UPDATE profile_support SET item_id = ? WHERE user_id = ? AND group_id = ? AND item_id = ?"
                     ).use { statement ->
                         supportReassignments.forEach { (sourceItemId, targetItemId) ->
                             statement.setString(1, targetItemId)
                             statement.setLong(2, userId)
-                            statement.setString(3, sourceItemId)
+                            statement.setLong(3, entries.single().first.profile.groupId)
+                            statement.setString(4, sourceItemId)
                             statement.addBatch()
                         }
                         statement.executeBatch()
@@ -317,13 +336,16 @@ object UserProfileStore {
         source: ProfileRevisionSource,
     ) {
         val profile = reduction.profile
+        require(profile.groupId > 0 && profile.userId > 0) { "群号和用户 ID 必须是正数" }
+        require(profile.groupId == batch.groupId && profile.userId == batch.userId) { "画像与证据批次范围不一致" }
+        require(batch.messages.all { it.record.targetId == profile.groupId }) { "证据包含其他群的消息" }
         connection.prepareStatement(
             """
             INSERT INTO user_profile(
-                user_id, summary, version, cursor_time, snapshot_end_time,
+                user_id, group_id, summary, version, cursor_time, snapshot_end_time,
                 reliable, model, prompt_version, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(group_id, user_id) DO UPDATE SET
                 summary = excluded.summary,
                 version = excluded.version,
                 cursor_time = excluded.cursor_time,
@@ -335,39 +357,42 @@ object UserProfileStore {
             """.trimIndent()
         ).use { statement ->
             statement.setLong(1, profile.userId)
-            statement.setString(2, profile.summary)
-            statement.setInt(3, profile.version)
-            statement.setInt(4, profile.cursorTime)
-            statement.setInt(5, profile.snapshotEndTime)
-            statement.setInt(6, if (profile.reliable) 1 else 0)
-            statement.setString(7, profile.model)
-            statement.setString(8, profile.promptVersion)
-            statement.setLong(9, profile.updatedAt)
+            statement.setLong(2, profile.groupId)
+            statement.setString(3, profile.summary)
+            statement.setInt(4, profile.version)
+            statement.setInt(5, profile.cursorTime)
+            statement.setInt(6, profile.snapshotEndTime)
+            statement.setInt(7, if (profile.reliable) 1 else 0)
+            statement.setString(8, profile.model)
+            statement.setString(9, profile.promptVersion)
+            statement.setLong(10, profile.updatedAt)
             statement.executeUpdate()
         }
 
-        connection.prepareStatement("DELETE FROM profile_item WHERE user_id = ?").use { statement ->
+        connection.prepareStatement("DELETE FROM profile_item WHERE user_id = ? AND group_id = ?").use { statement ->
             statement.setLong(1, profile.userId)
+            statement.setLong(2, profile.groupId)
             statement.executeUpdate()
         }
         connection.prepareStatement(
             """
             INSERT INTO profile_item(
-                item_id, user_id, category, content, confidence, related_user_id,
+                item_id, user_id, group_id, category, content, confidence, related_user_id,
                 first_seen_at, last_confirmed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
         ).use { statement ->
             profile.items.forEach { item ->
                 statement.setString(1, item.id)
                 statement.setLong(2, profile.userId)
-                statement.setString(3, item.category.toStorageValue())
-                statement.setString(4, item.content)
-                statement.setString(5, item.confidence.toStorageValue())
-                if (item.relatedUserId == null) statement.setNull(6, java.sql.Types.BIGINT)
-                else statement.setLong(6, item.relatedUserId)
-                statement.setInt(7, item.firstSeenAt)
-                statement.setInt(8, item.lastConfirmedAt)
+                statement.setLong(3, profile.groupId)
+                statement.setString(4, item.category.toStorageValue())
+                statement.setString(5, item.content)
+                statement.setString(6, item.confidence.toStorageValue())
+                if (item.relatedUserId == null) statement.setNull(7, java.sql.Types.BIGINT)
+                else statement.setLong(7, item.relatedUserId)
+                statement.setInt(8, item.firstSeenAt)
+                statement.setInt(9, item.lastConfirmedAt)
                 statement.addBatch()
             }
             statement.executeBatch()
@@ -377,9 +402,9 @@ object UserProfileStore {
             connection.prepareStatement(
                 """
                 INSERT INTO profile_support(
-                    item_id, user_id, group_ids, start_time, end_time,
+                    item_id, user_id, group_id, group_ids, start_time, end_time,
                     input_hash, action, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """.trimIndent()
             ).use { statement ->
                 reduction.operations.forEach { operation ->
@@ -389,12 +414,13 @@ object UserProfileStore {
                     val groupIds = evidence.map { it.record.targetId }.distinct().sorted().joinToString(",")
                     statement.setString(1, operation.itemId)
                     statement.setLong(2, profile.userId)
-                    statement.setString(3, groupIds)
-                    statement.setInt(4, startTime)
-                    statement.setInt(5, endTime)
-                    statement.setString(6, batch.inputHash)
-                    statement.setString(7, operation.action.name)
-                    statement.setLong(8, System.currentTimeMillis())
+                    statement.setLong(3, profile.groupId)
+                    statement.setString(4, groupIds)
+                    statement.setInt(5, startTime)
+                    statement.setInt(6, endTime)
+                    statement.setString(7, batch.inputHash)
+                    statement.setString(8, operation.action.name)
+                    statement.setLong(9, System.currentTimeMillis())
                     statement.addBatch()
                 }
                 statement.executeBatch()
@@ -404,38 +430,40 @@ object UserProfileStore {
         connection.prepareStatement(
             """
             INSERT INTO profile_revision(
-                user_id, profile_version, source, start_time, end_time, input_hash,
+                user_id, group_id, profile_version, source, start_time, end_time, input_hash,
                 operations_json, summary, model, prompt_version,
                 prompt_tokens, completion_tokens, cached_tokens, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
         ).use { statement ->
             statement.setLong(1, profile.userId)
-            statement.setInt(2, profile.version)
-            statement.setString(3, source.name.lowercase())
-            statement.setInt(4, batch.startTime)
-            statement.setInt(5, batch.endTime)
-            statement.setString(6, batch.inputHash)
-            statement.setString(7, json.encodeToString(operationListSerializer, reduction.operations))
-            statement.setString(8, profile.summary)
-            statement.setString(9, profile.model)
-            statement.setString(10, profile.promptVersion)
-            statement.setInt(11, usage.promptTokens)
-            statement.setInt(12, usage.completionTokens)
-            statement.setInt(13, usage.cachedTokens)
-            statement.setLong(14, System.currentTimeMillis())
+            statement.setLong(2, profile.groupId)
+            statement.setInt(3, profile.version)
+            statement.setString(4, source.name.lowercase())
+            statement.setInt(5, batch.startTime)
+            statement.setInt(6, batch.endTime)
+            statement.setString(7, batch.inputHash)
+            statement.setString(8, json.encodeToString(operationListSerializer, reduction.operations))
+            statement.setString(9, profile.summary)
+            statement.setString(10, profile.model)
+            statement.setString(11, profile.promptVersion)
+            statement.setInt(12, usage.promptTokens)
+            statement.setInt(13, usage.completionTokens)
+            statement.setInt(14, usage.cachedTokens)
+            statement.setLong(15, System.currentTimeMillis())
             statement.executeUpdate()
         }
     }
 
-    fun lastRevisionAt(userId: Long, source: ProfileRevisionSource): Long? {
+    fun lastRevisionAt(groupId: Long, userId: Long, source: ProfileRevisionSource): Long? {
         check(initialized) { "用户画像数据库尚未初始化" }
         return openReadConnection().use { connection ->
             connection.prepareStatement(
-                "SELECT MAX(created_at) FROM profile_revision WHERE user_id = ? AND source = ?"
+                "SELECT MAX(created_at) FROM profile_revision WHERE user_id = ? AND group_id = ? AND source = ?"
             ).use { statement ->
                 statement.setLong(1, userId)
-                statement.setString(2, source.name.lowercase())
+                statement.setLong(2, groupId)
+                statement.setString(3, source.name.lowercase())
                 statement.executeQuery().use { results ->
                     if (!results.next()) return@use null
                     results.getLong(1).let { if (results.wasNull()) null else it }
@@ -444,15 +472,21 @@ object UserProfileStore {
         }
     }
 
-    private fun createSchema(connection: Connection) {
+    private fun createSchema(connection: Connection, resetLegacy: Boolean) {
         val oldAutoCommit = connection.autoCommit
         connection.autoCommit = false
         try {
             connection.createStatement().use { statement ->
+                if (resetLegacy) {
+                    ProfileDatabaseReset.PROFILE_TABLES.forEach { table ->
+                        statement.executeUpdate("DROP TABLE IF EXISTS $table")
+                    }
+                }
                 statement.executeUpdate(
                     """
                     CREATE TABLE IF NOT EXISTS user_profile(
-                        user_id INTEGER PRIMARY KEY,
+                        user_id INTEGER NOT NULL,
+                        group_id INTEGER NOT NULL,
                         summary TEXT NOT NULL,
                         version INTEGER NOT NULL,
                         cursor_time INTEGER NOT NULL,
@@ -460,26 +494,29 @@ object UserProfileStore {
                         reliable INTEGER NOT NULL,
                         model TEXT NOT NULL,
                         prompt_version TEXT NOT NULL,
-                        updated_at INTEGER NOT NULL
+                        updated_at INTEGER NOT NULL,
+                        PRIMARY KEY(group_id, user_id)
                     )
                     """.trimIndent()
                 )
                 statement.executeUpdate(
                     """
                     CREATE TABLE IF NOT EXISTS profile_item(
-                        item_id TEXT PRIMARY KEY,
+                        item_id TEXT NOT NULL,
                         user_id INTEGER NOT NULL,
+                        group_id INTEGER NOT NULL,
                         category TEXT NOT NULL,
                         content TEXT NOT NULL,
                         confidence TEXT NOT NULL,
                         related_user_id INTEGER,
                         first_seen_at INTEGER NOT NULL,
-                        last_confirmed_at INTEGER NOT NULL
+                        last_confirmed_at INTEGER NOT NULL,
+                        PRIMARY KEY(group_id, user_id, item_id)
                     )
                     """.trimIndent()
                 )
                 statement.executeUpdate(
-                    "CREATE INDEX IF NOT EXISTS idx_profile_item_user ON profile_item(user_id, category)"
+                    "CREATE INDEX IF NOT EXISTS idx_profile_item_user ON profile_item(group_id, user_id, category)"
                 )
                 statement.executeUpdate(
                     """
@@ -487,6 +524,7 @@ object UserProfileStore {
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         item_id TEXT NOT NULL,
                         user_id INTEGER NOT NULL,
+                        group_id INTEGER NOT NULL,
                         group_ids TEXT NOT NULL,
                         start_time INTEGER NOT NULL,
                         end_time INTEGER NOT NULL,
@@ -497,13 +535,14 @@ object UserProfileStore {
                     """.trimIndent()
                 )
                 statement.executeUpdate(
-                    "CREATE INDEX IF NOT EXISTS idx_profile_support_user ON profile_support(user_id, start_time)"
+                    "CREATE INDEX IF NOT EXISTS idx_profile_support_user ON profile_support(group_id, user_id, start_time)"
                 )
                 statement.executeUpdate(
                     """
                     CREATE TABLE IF NOT EXISTS profile_revision(
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id INTEGER NOT NULL,
+                        group_id INTEGER NOT NULL,
                         profile_version INTEGER NOT NULL,
                         source TEXT NOT NULL DEFAULT 'backfill',
                         start_time INTEGER NOT NULL,
@@ -517,15 +556,13 @@ object UserProfileStore {
                         completion_tokens INTEGER NOT NULL,
                         cached_tokens INTEGER NOT NULL,
                         created_at INTEGER NOT NULL,
-                        UNIQUE(user_id, start_time, end_time, input_hash)
+                        UNIQUE(group_id, user_id, start_time, end_time, input_hash)
                     )
                     """.trimIndent()
                 )
-                ensureColumn(
-                    connection = connection,
-                    table = "profile_revision",
-                    column = "source",
-                    definition = "TEXT NOT NULL DEFAULT 'backfill'",
+                statement.executeUpdate(
+                    "CREATE INDEX IF NOT EXISTS idx_profile_revision_conversation " +
+                            "ON profile_revision(group_id, source, input_hash)"
                 )
                 statement.executeUpdate(
                     """
@@ -573,28 +610,6 @@ object UserProfileStore {
         }
     }
 
-    private fun ensureColumn(
-        connection: Connection,
-        table: String,
-        column: String,
-        definition: String,
-    ) {
-        val exists = connection.createStatement().use { statement ->
-            statement.executeQuery("PRAGMA table_info($table)").use { results ->
-                var found = false
-                while (results.next()) {
-                    if (results.getString("name") == column) found = true
-                }
-                found
-            }
-        }
-        if (!exists) {
-            connection.createStatement().use { statement ->
-                statement.executeUpdate("ALTER TABLE $table ADD COLUMN $column $definition")
-            }
-        }
-    }
-
     private fun openConnection(): Connection =
         DriverManager.getConnection("jdbc:sqlite:${databaseFile.absolutePath}")
 
@@ -618,6 +633,7 @@ object UserProfileStore {
 
     private fun ResultSet.toProfileWithoutItems() = UserProfileSnapshot(
         userId = getLong("user_id"),
+        groupId = getLong("group_id"),
         summary = getString("summary"),
         version = getInt("version"),
         cursorTime = getInt("cursor_time"),

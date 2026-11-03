@@ -12,6 +12,8 @@ object UserProfileReducer {
         summaryMaxLength: Int,
         advanceBackfillCursor: Boolean = true,
     ): ProfileReduction {
+        require(current.groupId == batch.groupId && current.userId == batch.userId) { "画像与证据批次范围不一致" }
+        require(batch.messages.all { it.record.targetId == batch.groupId }) { "证据包含其他群的消息" }
         val items = current.items.associateBy { it.id }.toMutableMap()
         val applied = mutableListOf<AppliedProfileOperation>()
         val skipped = mutableListOf<String>()

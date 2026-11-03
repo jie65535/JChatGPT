@@ -8,9 +8,37 @@ import kotlin.test.assertFalse
 
 class UserProfileContextRendererTest {
     @Test
+    fun excludesOtherGroupsAndAllGroupProfilesInPrivateChat() {
+        val profiles = listOf(10L, 20L).map { groupId ->
+            UserProfileSnapshot(
+                groupId = groupId,
+                userId = 100,
+                cursorTime = 0,
+                snapshotEndTime = 0,
+                reliable = true,
+                summary = "仅属于群 $groupId 的信息",
+            )
+        }
+        fun render(groupId: Long?) = UserProfileContextRenderer.render(
+            groupId = groupId,
+            profiles = profiles,
+            favorabilityByUserId = emptyMap(),
+            displayNames = emptyMap(),
+            activeUserIds = setOf(100),
+            summaryMaxChars = 300,
+        )
+
+        assertContains(render(10), "仅属于群 10 的信息")
+        assertFalse(render(10).contains("仅属于群 20 的信息"))
+        assertContains(render(20), "仅属于群 20 的信息")
+        assertEquals("", render(null))
+    }
+
+    @Test
     fun rendersCompactSummariesAndOnlyRelationshipsInsideCurrentConversation() {
         val profile = UserProfileSnapshot(
             userId = 100,
+            groupId = 10,
             summary = "长期关注 Kotlin 开发，也经常讨论大模型应用。",
             cursorTime = 1,
             snapshotEndTime = 2,
@@ -22,6 +50,7 @@ class UserProfileContextRendererTest {
         )
 
         val rendered = UserProfileContextRenderer.render(
+            groupId = 10,
             profiles = listOf(profile),
             favorabilityByUserId = mapOf(
                 100L to FavorabilityInfo(
@@ -49,6 +78,7 @@ class UserProfileContextRendererTest {
     @Test
     fun keepsFavorabilityVisibleWithoutAHistoricalProfile() {
         val rendered = UserProfileContextRenderer.render(
+            groupId = 10,
             profiles = emptyList(),
             favorabilityByUserId = mapOf(
                 100L to FavorabilityInfo(userId = 100, value = -8, impression = "偶尔喜欢抬杠")
@@ -67,6 +97,7 @@ class UserProfileContextRendererTest {
     @Test
     fun keepsImpressionVisibleWhenFavorabilityIsZero() {
         val rendered = UserProfileContextRenderer.render(
+            groupId = 10,
             profiles = emptyList(),
             favorabilityByUserId = mapOf(
                 100L to FavorabilityInfo(userId = 100, value = 0, impression = "长期活跃的老群友")
@@ -84,6 +115,7 @@ class UserProfileContextRendererTest {
     @Test
     fun perUserEntriesIgnoreFavorabilityFieldsHiddenFromTheModel() {
         fun render(reasons: List<String>) = UserProfileContextRenderer.renderEntries(
+            groupId = 10,
             profiles = emptyList(),
             favorabilityByUserId = mapOf(
                 100L to FavorabilityInfo(userId = 100, value = 5, reasons = reasons)

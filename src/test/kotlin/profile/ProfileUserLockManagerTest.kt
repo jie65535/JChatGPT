@@ -19,20 +19,20 @@ class ProfileUserLockManagerTest {
 
         coroutineScope {
             val holder = async {
-                locks.withUserLocks(listOf(2)) {
+                locks.withUserLocks(10, listOf(2)) {
                     secondUserLocked.complete(Unit)
                     releaseSecondUser.await()
                 }
             }
             secondUserLocked.await()
             val waiter = async {
-                locks.withUserLocks(listOf(1, 2)) { error("已取消任务不应进入临界区") }
+                locks.withUserLocks(10, listOf(1, 2)) { error("已取消任务不应进入临界区") }
             }
             delay(50)
             waiter.cancelAndJoin()
 
             withTimeout(1_000) {
-                locks.withUserLocks(listOf(1)) { }
+                locks.withUserLocks(10, listOf(1)) { }
             }
             releaseSecondUser.complete(Unit)
             holder.await()

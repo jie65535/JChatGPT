@@ -40,16 +40,17 @@ class ProfileHistoryReader(private val databaseFile: File) {
         Class.forName("org.sqlite.JDBC")
     }
 
-    fun findUserTimeBounds(userId: Long): TimeBounds? = openReadConnection().use { connection ->
+    fun findUserTimeBounds(groupId: Long, userId: Long): TimeBounds? = openReadConnection().use { connection ->
         connection.prepareStatement(
             """
             SELECT MIN(time) AS min_time, MAX(time) AS max_time
             FROM message_record
-            WHERE kind = ? AND recalled = 0 AND from_id = ?
+            WHERE kind = ? AND recalled = 0 AND from_id = ? AND target_id = ?
             """.trimIndent()
         ).use { statement ->
             statement.setInt(1, MessageSourceKind.GROUP.ordinal)
             statement.setLong(2, userId)
+            statement.setLong(3, groupId)
             statement.executeQuery().use { results ->
                 if (!results.next()) return@use null
                 val start = results.getInt("min_time")
@@ -213,6 +214,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
     }
 
     fun loadNextBatch(
+        groupId: Long,
         userId: Long,
         startTime: Int,
         snapshotEndTime: Int,
@@ -228,6 +230,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
         return openReadConnection().use { connection ->
             val firstPage = queryTargetMessages(
                 connection,
+                groupId,
                 userId,
                 startTime,
                 snapshotEndTime,
@@ -238,6 +241,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
             val pageEndTime = firstPage.last().time.safeNextSecond()
             val pageTargetMessages = queryTargetMessages(
                 connection,
+                groupId,
                 userId,
                 startTime,
                 pageEndTime,
@@ -301,7 +305,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
                     { it.second.code },
                 )
             )
-            createBatch(userId, startTime, endTime, records, maxMessageChars)
+            createBatch(groupId, userId, startTime, endTime, records, maxMessageChars)
         }
     }
 
@@ -511,6 +515,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
 
     private fun queryTargetMessages(
         connection: Connection,
+        groupId: Long,
         userId: Long,
         startTime: Int,
         endTime: Int,
@@ -522,7 +527,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
                 SELECT id, bot_id, from_id, target_id, ids, internal_ids,
                        time, kind, code, recalled
                 FROM message_record
-                WHERE kind = ? AND recalled = 0 AND from_id = ?
+                WHERE kind = ? AND recalled = 0 AND from_id = ? AND target_id = ?
                   AND time >= ? AND time < ?
                 ORDER BY time ASC
                 """.trimIndent()
@@ -532,9 +537,10 @@ class ProfileHistoryReader(private val databaseFile: File) {
         return connection.prepareStatement(sql).use { statement ->
             statement.setInt(1, MessageSourceKind.GROUP.ordinal)
             statement.setLong(2, userId)
-            statement.setInt(3, startTime)
-            statement.setInt(4, endTime)
-            if (limit != Int.MAX_VALUE) statement.setInt(5, limit)
+            statement.setLong(3, groupId)
+            statement.setInt(4, startTime)
+            statement.setInt(5, endTime)
+            if (limit != Int.MAX_VALUE) statement.setInt(6, limit)
             statement.executeQuery().use(::readRecords)
         }
     }
@@ -648,6 +654,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
     }
 
     private fun createBatch(
+        groupId: Long,
         userId: Long,
         startTime: Int,
         endTime: Int,
@@ -681,6 +688,7 @@ class ProfileHistoryReader(private val databaseFile: File) {
         }
         return ProfileHistoryBatch(
             userId = userId,
+            groupId = groupId,
             startTime = startTime,
             endTime = endTime,
             messages = promptMessages,

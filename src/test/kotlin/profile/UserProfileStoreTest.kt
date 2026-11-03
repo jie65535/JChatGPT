@@ -7,6 +7,7 @@ import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class UserProfileStoreTest {
@@ -17,6 +18,7 @@ class UserProfileStoreTest {
             UserProfileStore.init(directory.toFile())
             val batch = ProfileHistoryBatch(
                 userId = 100,
+                groupId = 300,
                 startTime = 100,
                 endTime = 200,
                 messages = listOf(
@@ -49,6 +51,7 @@ class UserProfileStoreTest {
             )
             val profile = UserProfileSnapshot(
                 userId = 100,
+                groupId = 300,
                 summary = "关注 Kotlin 开发。",
                 version = 1,
                 cursorTime = 200,
@@ -79,81 +82,14 @@ class UserProfileStoreTest {
                 source = ProfileRevisionSource.CONVERSATION,
             )
 
-            val loaded = assertNotNull(UserProfileStore.load(100))
+            val loaded = assertNotNull(UserProfileStore.load(300, 100))
             assertEquals(200, loaded.cursorTime)
             assertEquals(1_000, loaded.snapshotEndTime)
             assertEquals("关注 Kotlin 开发。", loaded.summary)
             assertEquals(item, loaded.items.single())
             assertTrue(loaded.reliable)
-            assertNotNull(UserProfileStore.lastRevisionAt(100, ProfileRevisionSource.CONVERSATION))
-            assertTrue(UserProfileStore.isConversationProcessed("input-hash"))
-        } finally {
-            UserProfileStore.close()
-            directory.toFile().deleteRecursively()
-        }
-    }
-
-    @Test
-    fun migratesRevisionSourceColumnWithoutRebuildingExistingDatabase() {
-        val directory = Files.createTempDirectory("jchatgpt-profile-migration-test-")
-        val database = directory.resolve("user-profile.sqlite")
-        try {
-            DriverManager.getConnection("jdbc:sqlite:${database.toAbsolutePath()}").use { connection ->
-                connection.createStatement().use { statement ->
-                    statement.executeUpdate(
-                        """
-                        CREATE TABLE profile_revision(
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            user_id INTEGER NOT NULL,
-                            profile_version INTEGER NOT NULL,
-                            start_time INTEGER NOT NULL,
-                            end_time INTEGER NOT NULL,
-                            input_hash TEXT NOT NULL,
-                            operations_json TEXT NOT NULL,
-                            summary TEXT NOT NULL,
-                            model TEXT NOT NULL,
-                            prompt_version TEXT NOT NULL,
-                            prompt_tokens INTEGER NOT NULL,
-                            completion_tokens INTEGER NOT NULL,
-                            cached_tokens INTEGER NOT NULL,
-                            created_at INTEGER NOT NULL,
-                            UNIQUE(user_id, start_time, end_time, input_hash)
-                        )
-                        """.trimIndent()
-                    )
-                }
-            }
-
-            UserProfileStore.init(directory.toFile())
-            UserProfileStore.close()
-
-            DriverManager.getConnection("jdbc:sqlite:${database.toAbsolutePath()}").use { connection ->
-                val columns = connection.createStatement().use { statement ->
-                    statement.executeQuery("PRAGMA table_info(profile_revision)").use { results ->
-                        buildSet {
-                            while (results.next()) add(results.getString("name"))
-                        }
-                    }
-                }
-                assertTrue("source" in columns)
-                val tables = connection.createStatement().use { statement ->
-                    statement.executeQuery("SELECT name FROM sqlite_master WHERE type = 'table'").use { results ->
-                        buildSet {
-                            while (results.next()) add(results.getString("name"))
-                        }
-                    }
-                }
-                assertTrue("profile_group_cursor" in tables)
-                val version = connection.createStatement().use { statement ->
-                    statement.executeQuery(
-                        "SELECT value FROM user_profile_meta WHERE key = 'schema_version'"
-                    ).use { results ->
-                        assertTrue(results.next())
-                        results.getString(1)
-                    }
-                }
-                assertEquals("3", version)
-            }
+            assertNotNull(UserProfileStore.lastRevisionAt(300, 100, ProfileRevisionSource.CONVERSATION))
+            assertTrue(UserProfileStore.isConversationProcessed(300, "input-hash"))
         } finally {
             UserProfileStore.close()
             directory.toFile().deleteRecursively()
@@ -196,6 +132,7 @@ class UserProfileStoreTest {
                 val batch = batchFor(userId, "shared-conversation-hash")
                 val profile = UserProfileSnapshot(
                     userId = userId,
+                    groupId = 300,
                     summary = "用户 $userId 的测试摘要",
                     version = 1,
                     cursorTime = 0,
@@ -210,13 +147,13 @@ class UserProfileStoreTest {
 
             UserProfileStore.commitConversation(entries, ProfileTokenUsage(100, 20, 50))
 
-            assertNotNull(UserProfileStore.load(100))
-            assertNotNull(UserProfileStore.load(200))
-            assertEquals(listOf(100L, 200L), UserProfileStore.listUserIds())
-            assertEquals(listOf(100L, 200L), UserProfileStore.listUserIdsWithMinimumItems(9))
-            assertEquals(listOf(200L), UserProfileStore.listUserIdsWithMinimumItems(10))
-            assertEquals(emptyList(), UserProfileStore.listUserIdsWithMinimumItems(11))
-            assertTrue(UserProfileStore.isConversationProcessed("shared-conversation-hash"))
+            assertNotNull(UserProfileStore.load(300, 100))
+            assertNotNull(UserProfileStore.load(300, 200))
+            assertEquals(listOf(100L, 200L), UserProfileStore.listUserIds(300))
+            assertEquals(listOf(100L, 200L), UserProfileStore.listUserIdsWithMinimumItems(300, 9))
+            assertEquals(listOf(200L), UserProfileStore.listUserIdsWithMinimumItems(300, 10))
+            assertEquals(emptyList(), UserProfileStore.listUserIdsWithMinimumItems(300, 11))
+            assertTrue(UserProfileStore.isConversationProcessed(300, "shared-conversation-hash"))
             val database = directory.resolve("user-profile.sqlite")
             DriverManager.getConnection("jdbc:sqlite:${database.toAbsolutePath()}").use { connection ->
                 connection.createStatement().use { statement ->
@@ -247,6 +184,7 @@ class UserProfileStoreTest {
             val second = itemFor("item-2").copy(content = "关注 Kotlin 生态")
             val initialProfile = UserProfileSnapshot(
                 userId = 100,
+                groupId = 300,
                 summary = "关注 Kotlin。",
                 version = 1,
                 cursorTime = 200,
@@ -266,6 +204,21 @@ class UserProfileStoreTest {
                 ),
                 batch = batch,
                 usage = ProfileTokenUsage(),
+            )
+
+            val otherGroupProfile = initialProfile.copy(groupId = 400, summary = "另一个群的独立画像")
+            val otherGroupBatch = batch.copy(
+                groupId = 400,
+                messages = batch.messages.map { it.copy(record = it.record.copy(targetId = 400)) },
+            )
+            UserProfileStore.commitConversation(
+                listOf(
+                    ProfileReduction(
+                        otherGroupProfile,
+                        listOf(applied(second, ProfileOperationAction.ADD, listOf(1))),
+                    ) to otherGroupBatch
+                ),
+                ProfileTokenUsage(),
             )
 
             val merged = first.copy(content = "关注 Kotlin 及其生态")
@@ -291,6 +244,7 @@ class UserProfileStoreTest {
                 plan = plan,
                 batch = ProfileHistoryBatch(
                     userId = 100,
+                    groupId = 300,
                     startTime = 150,
                     endTime = 151,
                     messages = emptyList(),
@@ -300,12 +254,26 @@ class UserProfileStoreTest {
                 usage = ProfileTokenUsage(50, 10, 0),
             )
 
-            val loaded = assertNotNull(UserProfileStore.load(100))
+            val loaded = assertNotNull(UserProfileStore.load(300, 100))
             assertEquals(200, loaded.cursorTime)
             assertEquals(listOf(merged), loaded.items)
-            assertEquals(2, UserProfileStore.loadSupportStats(100).getValue(first.id).count)
-            assertTrue(second.id !in UserProfileStore.loadSupportStats(100))
-            assertNotNull(UserProfileStore.lastRevisionAt(100, ProfileRevisionSource.COMPACTION))
+            assertEquals(2, UserProfileStore.loadSupportStats(300, 100).getValue(first.id).count)
+            assertTrue(second.id !in UserProfileStore.loadSupportStats(300, 100))
+            assertNotNull(UserProfileStore.lastRevisionAt(300, 100, ProfileRevisionSource.COMPACTION))
+            assertEquals(otherGroupProfile, UserProfileStore.load(400, 100))
+            assertEquals(1, UserProfileStore.loadSupportStats(400, 100).getValue(second.id).count)
+            assertNull(UserProfileStore.lastRevisionAt(400, 100, ProfileRevisionSource.COMPACTION))
+            assertTrue(UserProfileStore.isConversationProcessed(400, "initial-hash"))
+            assertTrue(!UserProfileStore.isConversationProcessed(300, "initial-hash"))
+            assertEquals(listOf(100L), UserProfileStore.listUserIdsWithMinimumItems(400, 2))
+            assertEquals(emptyList(), UserProfileStore.listUserIdsWithMinimumItems(300, 2))
+            assertNull(UserProfileStore.load(500, 100))
+
+            UserProfileStore.close()
+            UserProfileStore.init(directory.toFile())
+            assertEquals(compactedProfile, UserProfileStore.load(300, 100))
+            assertEquals(otherGroupProfile, UserProfileStore.load(400, 100))
+            assertNull(UserProfileStore.lastBackupFileOrNull)
         } finally {
             UserProfileStore.close()
             directory.toFile().deleteRecursively()
@@ -314,6 +282,7 @@ class UserProfileStoreTest {
 
     private fun batchFor(userId: Long, inputHash: String) = ProfileHistoryBatch(
         userId = userId,
+        groupId = 300,
         startTime = 100,
         endTime = 200,
         messages = listOf(

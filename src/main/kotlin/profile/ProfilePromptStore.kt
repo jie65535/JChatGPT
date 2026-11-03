@@ -6,8 +6,8 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 object ProfilePromptStore {
-    const val PROMPT_VERSION = "profile-v8"
-    const val COMPACTION_PROMPT_VERSION = "profile-compact-v6"
+    const val PROMPT_VERSION = "profile-v9"
+    const val COMPACTION_PROMPT_VERSION = "profile-compact-v7"
 
     private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
         .withZone(ZoneId.systemDefault())
@@ -23,6 +23,7 @@ object ProfilePromptStore {
     ): String = buildString {
         appendLine("## 目标")
         appendLine("目标用户别名: TARGET")
+        appendLine("画像范围: 仅当前群 ${batch.groupId}；只根据该群消息归纳。")
         appendLine("本批时间范围: [${formatTime(batch.startTime)}, ${formatTime(batch.endTime)})")
         appendLine("别名只在本批有效，不要输出 QQ 号或数据库消息 ID。")
         appendLine()
@@ -238,7 +239,7 @@ object ProfilePromptStore {
     private fun ProfileCategory.wireName(): String = name.lowercase()
     private fun ProfileConfidence.wireName(): String = name.lowercase()
 
-    private const val DEFAULT_SYSTEM_PROMPT = """你是保守、严谨的群聊人物画像归纳器。
+    private const val DEFAULT_SYSTEM_PROMPT = """你是保守、严谨的群聊人物画像归纳器。画像仅属于输入的当前群，不得引入其他群的认识。
 
 你会收到一个目标用户的当前画像，以及一个带完整发言者、时间、回复引用和相邻消息的原始群聊批次。
 你的任务是判断本批信息是否应当 ADD、UPDATE、CONFIRM 或 DELETE 画像条目；没有可靠变化时返回空 operations。
@@ -297,7 +298,7 @@ D. 最小充分门槛：优先 CONFIRM 或 UPDATE 已有同主题条目；只有
 }
 """
 
-    private const val DEFAULT_CONVERSATION_SYSTEM_PROMPT = """你是保守、严谨的群聊人物画像归纳器。
+    private const val DEFAULT_CONVERSATION_SYSTEM_PROMPT = """你是保守、严谨的群聊人物画像归纳器。画像仅属于输入的当前群，不得引入其他群的认识。
 
 你会收到一段已经闭合的真实群聊、候选用户别名，以及他们各自的当前画像。你的任务是一次性判断这段对话是否足以 ADD、UPDATE、CONFIRM 或 DELETE 各候选用户的画像条目。没有可靠变化的用户不要输出，只输出稳定事实，或数周、数月后仍有认识价值的重要阶段状态和事件。
 
