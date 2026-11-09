@@ -21,6 +21,7 @@ import top.jie65535.mirai.config.ModelConfigMigration
 import top.jie65535.mirai.conversation.ConversationContext
 import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.data.SkillStore
+import top.jie65535.mirai.media.ImageAssets
 import top.jie65535.mirai.data.TokenUsageStore
 import top.jie65535.mirai.llm.LargeLanguageModels
 import top.jie65535.mirai.llm.normalizeMaxConcurrentRequests
@@ -59,7 +60,12 @@ object PluginCommands : CompositeCommand(
             ProfileAutoMaintenance.clear()
         }
         SkillStore.reload()
-        ConversationContext.invalidateMemePromptCache()
+        if (PluginConfig.memeDir.isNotBlank() && ImageAssets.store != null) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { ImageAssets.requireStore().importDirectory(java.io.File(PluginConfig.memeDir)) }
+                    .onFailure { JChatGPT.logger.warning("重新导入本地图片素材失败", it) }
+            }
+        }
         sendMessage("OK")
     }
 

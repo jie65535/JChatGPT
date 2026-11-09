@@ -195,6 +195,9 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("图像模型别名；留空时兼容旧的 dashScopeApiKey/imageModel")
     var imageModelAlias: String by value("")
 
+    @ValueDescription("同步绘图请求总超时与读超时，单位毫秒，默认6分钟，有效范围30秒~30分钟；超时不会自动重发")
+    val imageTimeoutMillis: Long by value(360000L)
+
     @ValueDescription("是否在生成的图片右下角添加 Qwen-Image 水印")
     val imageWatermark: Boolean by value(false)
 
@@ -331,7 +334,7 @@ object PluginConfig : AutoSavePluginConfig("Config") {
     @ValueDescription("是否启用好感度系统")
     val enableFavorabilitySystem by value(true)
 
-    @ValueDescription("表情包路径，配置后会加载目录下的文件名，提示词中需要用{meme}来插入上下文")
+    @ValueDescription("本地图片素材来源目录；启动和reload时导入全局素材库，保留原文件。{meme}插入按需列举说明，不再展开全部文件名")
     val memeDir: String by value("")
 
     @ValueDescription("请求主人回复等待时间，单位毫秒，默认300秒")

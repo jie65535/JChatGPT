@@ -9,6 +9,23 @@ import kotlin.test.assertTrue
 
 class ModelCatalogTest {
     @Test
+    fun resolvesImageAliasesForBothProtocolsWithoutFallingBackFromInvalidAlias() {
+        val providers = listOf(
+            ModelProviderDefinition("relay", "openai-compatible", "https://example.com/v1/", "test-token"),
+            ModelProviderDefinition("native", "dashscope", "", "test-token"),
+        )
+        val models = listOf(ModelDefinition("gpt-image", "relay", "image-model"),
+            ModelDefinition("qwen-image", "native", "qwen-image"))
+        val relay = requireNotNull(ModelCatalog.resolveImage("gpt-image", providers, models))
+        assertEquals("openai-compatible", relay.providerType)
+        assertEquals("https://example.com/v1/", relay.api)
+        assertTrue(requireNotNull(ModelCatalog.resolveImage("qwen-image", providers, models)).api.contains("dashscope"))
+        assertNull(ModelCatalog.resolveImage("missing", providers, models))
+        assertNull(ModelCatalog.resolveImage("gpt-image", providers.map { it.copy(token = "") }, models))
+        assertNull(ModelCatalog.resolveImage("gpt-image", providers.map { it.copy(api = "") }, models))
+    }
+
+    @Test
     fun resolvesModelAliasThroughProvider() {
         val resolved = ModelCatalog.resolve(
             alias = "chat-main",

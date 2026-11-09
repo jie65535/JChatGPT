@@ -68,6 +68,54 @@ chatFallbackModelAliases: []
 
 修改配置后执行 `/jgpt reload`。其他模型、工具和实验功能按需配置，缺少依赖或凭据的可选工具不会启用。
 
+### 图片生成与全局素材库
+
+支持 OpenAI 兼容绘图接口和千问。在 `Models.yml` 的对应列表中添加绘图供应商与模型：
+
+```yaml
+providers:
+  - name: image-relay
+    type: openai
+    api: 'https://your-image-provider.example/v1/'
+    token: '填写API密钥'
+
+models:
+  - name: image-main
+    provider: image-relay
+    model: '填写供应商实际提供的绘图模型名'
+    extraBody: '{"size":"auto","quality":"auto","output_format":"png"}'
+```
+
+在 `Config.yml` 中绑定：
+
+```yaml
+imageModelAlias: image-main
+imageTimeoutMillis: 360000 # 超时 6 分钟
+memeDir: '' # 可选：本地素材目录
+```
+
+`api` 填写供应商的基础地址，包含所需的 `/v1/`。尺寸、质量及参考图编辑能力取决于模型和供应商。已有千问配置可继续使用；`imageModelAlias` 留空时沿用 `dashScopeApiKey/imageModel`。
+
+图片相关工具：
+
+- `imageAgent`：生成图片，或使用聊天图片、素材库图片作为参考图进行编辑。
+- `imageRecognition`：识别、比较图片。图片引用使用 `chat:编号` 或 `asset:编号`。
+- `imageLibrary`：按需列举、收藏图片、修改名称描述标签和取消收藏。所有群聊与私聊共用素材库，默认只列出已收藏图片。
+
+发送图片使用消息工具中的 Markdown，例如 `![表情](asset:素材编号)`，也可直接使用工具返回的 `markdown`。
+
+配置 `memeDir` 后，启动或执行 `/jgpt reload` 会导入目录中的 PNG、JPEG、WebP、GIF。生成图片默认未收藏，可随后收藏或复用；取消收藏不删除文件，素材库不会自动清理。
+
+参考图最多 16 张（千问原生接口为 3 张），单张不超过 50 MiB、合计不超过 100 MiB。GIF 收藏保留动画，编辑使用首帧。
+
+绘图期间会等待结果，失败不会自动重试或切换模型。超时后供应商仍可能已受理或计费，请先检查调用记录。
+
+### 联系人信息与头像
+
+`getContactInfo` 可查询昵称、群名片、群内身份和头像，无需额外配置。可选 `userId` 指定 QQ 号，省略时查询本轮发起人。群聊仅查询当前群成员；私聊可查询当前发起人、机器人及已有好友。
+
+头像默认保存为未收藏素材，可用于识图、改图、发送或收藏。仅查询文字资料时设置 `includeAvatar: false`。
+
 ### DeepSeek 网页搜索与抓取
 
 在 `Config.yml` 中引用 `Models.yml` 的 DeepSeek provider（`type: openai`），即可同时启用 `deepseekSearch` 和 `deepseekFetch`：
@@ -139,5 +187,6 @@ requireOwnerInGroup: true
 - `data/top.jie65535.mirai.JChatGPT/user-profile.sqlite`：按群隔离的成员画像
 - `data/top.jie65535.mirai.JChatGPT/profile-backups/`：升级前的旧画像备份
 - `data/top.jie65535.mirai.JChatGPT/skills/`：Bot 沉淀的全局技能
+- `data/top.jie65535.mirai.JChatGPT/images/`：全局图片素材与元数据，包括生成图片的提示词和参考素材信息
 
 数据库和运行时配置包含不可替代的私有数据，不要提交到 Git，也不要在没有备份时删除或重建。

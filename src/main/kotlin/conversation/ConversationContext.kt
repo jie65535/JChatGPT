@@ -2,6 +2,8 @@ package top.jie65535.mirai.conversation
 
 import com.aallam.openai.api.chat.ChatMessage
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import net.mamoe.mirai.contact.Contact
 import net.mamoe.mirai.contact.Group
 import net.mamoe.mirai.contact.Member
@@ -25,6 +27,7 @@ import net.mamoe.mirai.message.data.buildMessageChain
 import net.mamoe.mirai.message.data.content
 import net.mamoe.mirai.message.data.ids
 import net.mamoe.mirai.message.data.source
+import net.mamoe.mirai.utils.ExternalResource.Companion.toExternalResource
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
 import top.jie65535.mirai.data.ChatHistoryStore
@@ -34,10 +37,11 @@ import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.data.SkillStore
 import top.jie65535.mirai.llm.LargeLanguageModels
 import top.jie65535.mirai.media.ImageIndex
+import top.jie65535.mirai.media.ImageAssets
+import top.jie65535.mirai.media.ImageMessageResolver
 import top.jie65535.mirai.profile.UserProfileContextRenderer
 import top.jie65535.mirai.profile.UserProfileStore
 import util.LunarDateUtil
-import java.io.File
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -72,39 +76,6 @@ internal class ReplyIndex {
     fun indexOfIds(ids: String): Int? = indexByIds[ids]
 }
 
-internal class MemePromptCache {
-    private var prompt: String? = null
-
-    fun get(directoryPath: String): String = synchronized(this) {
-        prompt ?: buildPrompt(directoryPath).also { prompt = it }
-    }
-
-    fun clear() {
-        synchronized(this) { prompt = null }
-    }
-
-    private fun buildPrompt(directoryPath: String): String {
-        if (directoryPath.isEmpty()) return ""
-        return buildString {
-            val directory = File(directoryPath)
-            if (!directory.isDirectory) {
-                append("配置的meme路径不存在！")
-                return@buildString
-            }
-            append("memes文件夹地址为：").appendLine(directoryPath)
-            val memes = directory.list().orEmpty()
-            if (memes.isEmpty()) {
-                append("暂无表情包~")
-            } else {
-                memes.forEach { append("- ").appendLine(it) }
-                appendLine()
-                append("表情包示例：![").append(memes[0]).append("](")
-                    .append(File(directory, memes[0]).absoluteFile).appendLine(")")
-            }
-        }
-    }
-}
-
 internal object ConversationContext {
     private val chronologicalRecordOrder = compareBy<ChatMessageRecord> { it.time }
         .thenBy { if (it.id == 0L) Long.MAX_VALUE else it.id }
@@ -114,21 +85,15 @@ internal object ConversationContext {
     private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy年MM月dd E HH:mm:ss")
     private val shortTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         .withZone(ZoneOffset.systemDefault())
-    private val memePromptCache = MemePromptCache()
 
     fun clearCache() {
         synchronized(contextCache) { contextCache.clear() }
-    }
-
-    fun invalidateMemePromptCache() {
-        memePromptCache.clear()
     }
 
     fun clearAll() {
         synchronized(contextCache) { contextCache.clear() }
         synchronized(replyIndexes) { replyIndexes.clear() }
         synchronized(imageIndexes) { imageIndexes.clear() }
-        memePromptCache.clear()
     }
 
     fun cache(subjectId: Long): ConversationCache? = synchronized(contextCache) {
@@ -188,7 +153,7 @@ internal object ConversationContext {
         replace("{skills}") {
             if (PluginConfig.skillsEnabled) SkillStore.buildIndexPrompt() else "暂无技能"
         }
-        replace("{meme}") { memePromptCache.get(PluginConfig.memeDir) }
+        replace("{meme}") { ImageAssets.prompt() }
         return prompt.toString()
     }
 
@@ -263,7 +228,7 @@ internal object ConversationContext {
         return result.toString()
     }
 
-    fun toMessage(contact: Contact, content: String): Message {
+    suspend fun toMessage(contact: Contact, content: String): Message {
         if (content.isEmpty()) return PlainText("...")
         if (content.length < 3) return PlainText(content)
 
@@ -275,7 +240,14 @@ internal object ConversationContext {
             }
         }
         REGEX_IMAGE.findAll(content).forEach { match ->
-            chunks += MessageChunk(match.range, Image(match.groupValues[2]))
+            val reference = match.groupValues[2]
+            val localFile = withContext(Dispatchers.IO) {
+                ImageMessageResolver.localFile(reference, ImageAssets.store, PluginConfig.memeDir)
+            }
+            val image = if (localFile == null) Image(reference) else withContext(Dispatchers.IO) {
+                localFile.toExternalResource().use { contact.uploadImage(it) }
+            }
+            chunks += MessageChunk(match.range, image)
         }
         return buildMessageChain {
             var index = 0
@@ -463,10 +435,15 @@ internal object ConversationContext {
         .filterNot { it is QuoteReply || it is MessageSource }
         .joinToString("") { message ->
             when (message) {
-                is At -> if (contact is Group) message.getDisplay(contact) else message.content
+                is At -> formatMention(message, contact as? Group)
                 else -> singleMessageToText(message, imageIndex)
             }
         }
+
+    internal fun formatMention(message: At, group: Group?): String {
+        val display = message.getDisplay(group)
+        return if (display == "@${message.target}") display else "$display(qq=${message.target})"
+    }
 
     private fun singleMessageToText(message: SingleMessage, imageIndex: ImageIndex): String = when (message) {
         is ForwardMessage -> formatForward(message, 1, imageIndex)

@@ -3,6 +3,7 @@ package top.jie65535.mirai.tools
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsChannel
@@ -87,13 +88,24 @@ internal class VisualImageResolver {
         }
     }
 
-    suspend fun resolve(rawUrl: String): Result {
+    suspend fun resolve(rawUrl: String): Result = prepare(downloadOriginal(rawUrl))
+
+    /** 下载原始字节；收藏与编辑不能使用识图流程产生的缩放图或长图切片。 */
+    suspend fun downloadOriginal(
+        rawUrl: String,
+        maxBytes: Int = MAX_DOWNLOAD_BYTES,
+        timeoutMillis: Long = DOWNLOAD_TIMEOUT_MILLIS,
+    ): ByteArray {
         var currentUrl = validateUrl(rawUrl)
 
         repeat(MAX_REDIRECTS + 1) { redirectCount ->
             val response = httpClient.get(currentUrl.toASCIIString()) {
                 header(HttpHeaders.Accept, "image/*")
                 header(HttpHeaders.UserAgent, USER_AGENT)
+                timeout {
+                    requestTimeoutMillis = timeoutMillis
+                    socketTimeoutMillis = timeoutMillis
+                }
             }
 
             if (response.status.value in REDIRECT_STATUS_CODES) {
@@ -120,18 +132,18 @@ internal class VisualImageResolver {
             }
 
             val declaredLength = response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
-            if (declaredLength != null && declaredLength > MAX_DOWNLOAD_BYTES) {
+            if (declaredLength != null && declaredLength > maxBytes) {
                 response.bodyAsChannel().cancel()
-                throw IllegalArgumentException("图片文件过大：$declaredLength 字节，下载上限为 $MAX_DOWNLOAD_BYTES 字节")
+                throw IllegalArgumentException("图片文件过大：$declaredLength 字节，下载上限为 $maxBytes 字节")
             }
 
-            val bytes = readBodyLimited(response.bodyAsChannel())
-            val declaredContentType = response.headers[HttpHeaders.ContentType]?.substringBefore(';')?.trim()
-            return prepare(bytes, declaredContentType)
+            return readBodyLimited(response.bodyAsChannel(), maxBytes)
         }
 
         error("无法完成图片下载")
     }
+
+    fun close() = httpClient.close()
 
     internal fun prepare(bytes: ByteArray, declaredContentType: String? = null): Result {
         require(bytes.isNotEmpty()) { "下载到的图片内容为空" }
@@ -176,7 +188,7 @@ internal class VisualImageResolver {
         )
     }
 
-    private suspend fun readBodyLimited(channel: io.ktor.utils.io.ByteReadChannel): ByteArray {
+    private suspend fun readBodyLimited(channel: io.ktor.utils.io.ByteReadChannel, maxBytes: Int): ByteArray {
         val output = ByteArrayOutputStream()
         val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
         var total = 0
@@ -186,8 +198,8 @@ internal class VisualImageResolver {
                 if (count < 0) break
                 if (count == 0) continue
                 total += count
-                if (total > MAX_DOWNLOAD_BYTES) {
-                    throw IllegalArgumentException("图片文件超过下载上限 $MAX_DOWNLOAD_BYTES 字节")
+                if (total > maxBytes) {
+                    throw IllegalArgumentException("图片文件超过下载上限 $maxBytes 字节")
                 }
                 output.write(buffer, 0, count)
             }

@@ -1,8 +1,8 @@
 package top.jie65535.mirai.media
 
 /**
- * 会话内图片短索引：向 LLM 暴露递增整数，内部保留从原消息图片取得的精确 URL。
- * 同一 imageId 重复出现在上下文中时复用原编号，并用最新取得的 URL 刷新映射。
+ * 会话内图片短索引：向 LLM 暴露递增整数，内部保留原消息的 HTTP 地址或 Overflow 内嵌图片。
+ * 同一 imageId 重复出现在上下文中时复用原编号，并用最新取得的图片来源刷新映射。
  */
 internal class ImageIndex {
     private val imageUrlByIndex = LinkedHashMap<Int, String>()

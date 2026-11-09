@@ -1,12 +1,14 @@
 package top.jie65535.mirai.conversation
 
-import java.nio.file.Files
 import net.mamoe.mirai.message.data.MessageSourceKind
+import net.mamoe.mirai.message.data.At
+import net.mamoe.mirai.contact.Group
+import net.mamoe.mirai.contact.NormalMember
 import top.jie65535.mirai.data.ChatMessageRecord
+import java.lang.reflect.Proxy
 import kotlin.test.Test
-import kotlin.test.assertContains
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 
 class ConversationContextTest {
@@ -26,22 +28,25 @@ class ConversationContextTest {
     }
 
     @Test
-    fun memePromptCacheRefreshesDirectoryListingAfterClear() {
-        val directory = Files.createTempDirectory("jchatgpt-meme-prompt-test-")
-        try {
-            Files.createFile(directory.resolve("before.png"))
-            val cache = MemePromptCache()
-
-            assertContains(cache.get(directory.toString()), "before.png")
-
-            Files.createFile(directory.resolve("after.png"))
-            assertFalse(cache.get(directory.toString()).contains("after.png"))
-
-            cache.clear()
-            assertContains(cache.get(directory.toString()), "after.png")
-        } finally {
-            directory.toFile().deleteRecursively()
-        }
+    fun groupMentionsPreserveQqNumbersEvenWhenMembersShareAName() {
+        val member = Proxy.newProxyInstance(NormalMember::class.java.classLoader, arrayOf(NormalMember::class.java)) { _, method, _ ->
+            when (method.name) {
+                "getNameCard" -> "同名群友"
+                "getNick" -> "昵称"
+                else -> error("Unexpected member call: ${method.name}")
+            }
+        } as NormalMember
+        val group = Proxy.newProxyInstance(Group::class.java.classLoader, arrayOf(Group::class.java)) { _, method, args ->
+            if (method.name == "get") member.takeIf { args!!.single() in listOf(123L, 456L) }
+            else error("Unexpected group call: ${method.name}")
+        } as Group
+        val first = ConversationContext.formatMention(At(123), group)
+        val second = ConversationContext.formatMention(At(456), group)
+        assertEquals("@同名群友(qq=123)", first)
+        assertEquals("@同名群友(qq=456)", second)
+        assertNotEquals(first, second)
+        assertEquals("@789", ConversationContext.formatMention(At(789), group))
+        assertEquals("@123", ConversationContext.formatMention(At(123), null))
     }
 
     private fun record(ids: String?, time: Int) = ChatMessageRecord(

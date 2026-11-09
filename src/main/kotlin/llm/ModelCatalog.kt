@@ -63,7 +63,7 @@ object ModelCatalog {
             add(Triple("推理", PluginConfig.reasoningModelAlias, openAiProviderTypes))
             add(Triple("视觉", PluginConfig.visualModelAlias, openAiProviderTypes))
             add(Triple("网页摘要", PluginConfig.webSummaryModelAlias, openAiProviderTypes))
-            add(Triple("图像", PluginConfig.imageModelAlias, setOf("dashscope")))
+            add(Triple("图像", PluginConfig.imageModelAlias, supportedProviderTypes))
             add(Triple("TTS", PluginConfig.ttsModelAlias, setOf("dashscope")))
         }
         return bindings.mapNotNull { (role, alias, allowedTypes) ->
@@ -130,16 +130,31 @@ object ModelCatalog {
         }
     }.distinct()
 
-    fun resolveImage(): ResolvedModelDefinition? =
-        resolveDashScope(PluginConfig.imageModelAlias)
-            ?: legacy(
-                alias = "legacy-image",
-                provider = "dashscope",
-                providerType = "dashscope",
-                api = DEFAULT_DASHSCOPE_IMAGE_API,
-                token = PluginConfig.dashScopeApiKey,
-                model = PluginConfig.imageModel,
-            )
+    fun resolveImage(): ResolvedModelDefinition? {
+        // 明确配置的别名无效时禁用，不能静默换回另一种付费模型。
+        if (PluginConfig.imageModelAlias.isNotBlank()) {
+            return resolveImage(PluginConfig.imageModelAlias, ModelConfig.providers, ModelConfig.models)
+        }
+        return legacy(
+            alias = "legacy-image",
+            provider = "dashscope",
+            providerType = "dashscope",
+            api = DEFAULT_DASHSCOPE_IMAGE_API,
+            token = PluginConfig.dashScopeApiKey,
+            model = PluginConfig.imageModel,
+        )
+    }
+
+    internal fun resolveImage(
+        alias: String,
+        providers: List<ModelProviderDefinition>,
+        models: List<ModelDefinition>,
+    ): ResolvedModelDefinition? = resolve(alias, providers, models)
+        ?.takeIf { it.providerType in supportedProviderTypes && it.token.isNotBlank() && it.model.isNotBlank() }
+        ?.let {
+            if (it.providerType == "dashscope") it.copy(api = it.api.ifBlank { DEFAULT_DASHSCOPE_IMAGE_API })
+            else it.takeIf { definition -> definition.api.isNotBlank() }
+        }
 
     fun resolveTts(): ResolvedModelDefinition? =
         resolveDashScope(PluginConfig.ttsModelAlias)

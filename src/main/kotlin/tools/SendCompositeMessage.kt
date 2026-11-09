@@ -17,7 +17,7 @@ import kotlin.collections.getValue
 class SendCompositeMessage : BaseAgent(
     tool = Tool.function(
         name = "sendCompositeMessage",
-        description = "发送组合消息，适合发送较长消息而避免刷屏（不支持Markdown）",
+        description = "发送组合消息，适合较长内容而避免刷屏；支持 Markdown 图片语法 ![说明](图片引用)，不渲染其他 Markdown",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {

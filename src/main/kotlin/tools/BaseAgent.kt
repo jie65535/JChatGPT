@@ -7,6 +7,7 @@ import io.ktor.client.plugins.HttpTimeout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.JsonObject
 import net.mamoe.mirai.event.events.MessageEvent
 
@@ -24,12 +25,14 @@ abstract class BaseAgent(
     open val loadingMessage: String = ""
 
     protected open val retryOnConnectionFailure: Boolean = true
+    protected open val followRedirects: Boolean = true
 
     /**
      * HTTP客户端
      */
-    protected val httpClient by lazy {
+    private val clientDelegate = lazy {
         HttpClient(OkHttp) {
+            followRedirects = this@BaseAgent.followRedirects
             engine {
                 config {
                     retryOnConnectionFailure(this@BaseAgent.retryOnConnectionFailure)
@@ -42,12 +45,19 @@ abstract class BaseAgent(
             }
         }
     }
+    protected val httpClient: HttpClient get() = clientDelegate.value
 
     /**
      * 协程作用域
      */
-    protected val scope by lazy {
+    private val scopeDelegate = lazy {
         CoroutineScope(Dispatchers.IO + SupervisorJob())
+    }
+    protected val scope: CoroutineScope get() = scopeDelegate.value
+
+    open fun close() {
+        if (clientDelegate.isInitialized()) clientDelegate.value.close()
+        if (scopeDelegate.isInitialized()) scopeDelegate.value.cancel()
     }
 
     open suspend fun execute(args: JsonObject?): String {

@@ -41,6 +41,7 @@ import top.jie65535.mirai.data.PluginData
 import top.jie65535.mirai.data.SkillStore
 import top.jie65535.mirai.data.TokenUsageStore
 import top.jie65535.mirai.llm.LargeLanguageModels
+import top.jie65535.mirai.media.ImageAssets
 import top.jie65535.mirai.profile.ProfileAutoMaintenance
 import top.jie65535.mirai.profile.ProfileDailyMaintenance
 import top.jie65535.mirai.profile.UserProfileStore
@@ -79,6 +80,16 @@ object JChatGPT : KotlinPlugin(
             }
         }.onFailure { logger.error("初始化 SQLite 模型用量记录失败，用量统计将暂时禁用", it) }
         SkillStore.init(dataFolder)
+        runCatching {
+            ImageAssets.init(dataFolder) { message, cause ->
+                // JSON 解析异常可能包含提示词或临时下载地址，避免把原文写进日志。
+                logger.warning("$message（${cause.javaClass.simpleName}）")
+            }
+            if (PluginConfig.memeDir.isNotBlank()) {
+                val imported = ImageAssets.requireStore().importDirectory(java.io.File(PluginConfig.memeDir))
+                logger.info("全局图片素材库已导入 $imported 张本地图片")
+            }
+        }.onFailure { logger.error("初始化或导入图片素材库失败，已有素材保留", it) }
 
         includeHistory = try {
             ChatHistoryStore.init(dataFolder) { message, cause ->
@@ -152,6 +163,8 @@ object JChatGPT : KotlinPlugin(
         historyIndexJob?.cancel()
         historyIndexJob = null
         ConversationEngine.clear()
+        ConversationEngine.closeTools()
+        ImageAssets.close()
         ConversationContext.clearAll()
         ProfileAutoMaintenance.clear()
         ProfileDailyMaintenance.clear()
@@ -175,7 +188,7 @@ object JChatGPT : KotlinPlugin(
     internal fun lookupImageUrl(subjectId: Long, index: Int): String? =
         ConversationContext.lookupImageUrl(subjectId, index)
 
-    fun toMessage(contact: Contact, content: String): Message =
+    suspend fun toMessage(contact: Contact, content: String): Message =
         ConversationContext.toMessage(contact, content)
 
     private suspend fun onMessage(event: MessageEvent) {

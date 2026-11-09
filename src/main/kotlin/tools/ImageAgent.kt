@@ -2,143 +2,88 @@ package top.jie65535.mirai.tools
 
 import com.aallam.openai.api.chat.Tool
 import com.aallam.openai.api.core.Parameters
-import io.ktor.client.request.header
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.client.statement.bodyAsText
-import io.ktor.http.ContentType
-import io.ktor.http.contentType
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.addJsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.int
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.*
 import net.mamoe.mirai.event.events.MessageEvent
 import top.jie65535.mirai.JChatGPT
 import top.jie65535.mirai.config.PluginConfig
 import top.jie65535.mirai.data.ModelUsageRecorder
 import top.jie65535.mirai.llm.ModelCatalog
+import top.jie65535.mirai.media.*
 
 class ImageAgent : BaseAgent(
-    tool = Tool.function(
+    Tool.function(
         name = "imageAgent",
-        description = "调用千问图像模型生成或编辑图片。不传 image_indices 即纯文生图；" +
-                "传 1~3 张图片可进行编辑、修改或多图融合。" +
-                "备注：该方法成本较高，非必要尽量不要调用。" +
-                "编辑图片前无需识别图片内容，模型自己会理解图片内容。",
+        description = "生成或编辑图片，支持聊天图片与素材库参考图；不传参考图即文生图。" +
+            "提示词应说明各参考图用途、修改项与保留项；GIF参考图使用首帧。同步绘图可能需要几分钟，结果不会自动发送或收藏；" +
+            "发送用返回的 Markdown，收藏用 imageLibrary。失败时如实告知，不要自动重试或换模型重画。",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
-                putJsonObject("image_indices") {
-                    put("type", "array")
-                    putJsonObject("items") {
-                        put("type", "integer")
-                        put("minimum", 1)
-                    }
-                    put("description", "用户消息中[图片n]或[表情包n]标记的参考图片编号，可传 0~3 张。" +
-                            "不传或为空即纯文生图；传 1 张为编辑；多张为融合，输出比例与最后一张对齐。")
-                }
-                putJsonObject("prompt") {
-                    put("type", "string")
-                    put("description", "提示词，描述期望生成或修改的画面内容。")
+                ImageReferences.schema(this, ImageGenerationProtocol.MAX_REFERENCES)
+                putJsonObject("prompt") { put("type", "string"); put("maxLength", 32000); put("description", "生成时必填的画面或编辑要求") }
+                putJsonObject("size") { put("type", "string"); put("description", "OpenAI 兼容接口可选：auto 或 WIDTHxHEIGHT，例如 1024x1024") }
+                putJsonObject("quality") { put("type", "string"); put("description", "OpenAI 兼容接口可选质量，须为所配置模型支持的档位") }
+                putJsonObject("background") {
+                    put("type", "string"); putJsonArray("enum") { listOf("auto", "opaque", "transparent").forEach { add(it) } }
                 }
             }
-            putJsonArray("required") {
-                add("prompt")
-            }
-        }
+            putJsonArray("required") { add("prompt") }
+        },
     )
 ) {
     companion object {
         const val API_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     }
 
-    override val isEnabled: Boolean
-        get() = ModelCatalog.resolveImage() != null
+    override val retryOnConnectionFailure: Boolean = false
+    override val followRedirects: Boolean = false
+    override val isEnabled: Boolean get() = ModelCatalog.resolveImage() != null && ImageAssets.store != null
+    override val loadingMessage: String get() = "作图处理中，可能需要等待几分钟..."
 
-    override val loadingMessage: String
-        get() = "作图中..."
+    private val service by lazy {
+        ImageGenerationService(httpClient, ImageAssets.requireStore(),
+            download = { url ->
+                ImageBinary.inspect(ImageAssets.downloader.downloadOriginal(url, ImageBinary.MAX_BYTES, 120_000))
+            },
+            // 上游异常可能含鉴权 URL；日志只记录失败阶段和异常类型。
+            report = { message, _ -> JChatGPT.logger.warning(message) })
+    }
 
     override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         requireNotNull(args)
-        val modelDefinition = ModelCatalog.resolveImage()
-            ?: return "未配置图像模型，无法生成图片。"
-        val prompt = args.getValue("prompt").jsonPrimitive.content
-        val imageIndices = args["image_indices"]?.jsonArray
-            ?.map { it.jsonPrimitive.int }
-            ?: emptyList()
-        require(imageIndices.size <= 3) { "参考图片最多只能传3张" }
-        val imageUrls = imageIndices.map { imageIndex ->
-            JChatGPT.lookupImageUrl(event.subject.id, imageIndex)
-                ?: throw IllegalArgumentException("图片编号[$imageIndex]不存在或已失效")
+        val model = ModelCatalog.resolveImage() ?: return "未正确配置图像模型，无法生成图片。"
+        val prompt = args["prompt"]?.jsonPrimitive?.content
+        require(!prompt.isNullOrBlank()) { "生成图片需要 prompt" }
+        val sources = ImageReferences.fromArguments(args, ImageGenerationProtocol.MAX_REFERENCES) {
+            JChatGPT.lookupImageUrl(event.subject.id, it)
         }
-
-        val response = httpClient.post(modelDefinition.api.ifBlank { API_URL }) {
-            contentType(ContentType("application", "json"))
-            header("Authorization", "Bearer " + modelDefinition.token)
-            setBody(buildJsonObject {
-                put("model", modelDefinition.model)
-                putJsonObject("input") {
-                    putJsonArray("messages") {
-                        addJsonObject {
-                            put("role", "user")
-                            putJsonArray("content") {
-                                for (url in imageUrls) {
-                                    addJsonObject {
-                                        put("image", url)
-                                    }
-                                }
-                                addJsonObject {
-                                    put("text", prompt)
-                                }
-                            }
-                        }
-                    }
-                }
-                putJsonObject("parameters") {
-                    put("n", 1)
-                    put("prompt_extend", true)
-                    put("watermark", PluginConfig.imageWatermark)
-                }
-            }.toString())
+        require(model.providerType != "dashscope" || sources.size <= 3) { "千问原生接口最多支持 3 张参考图" }
+        val images = mutableListOf<ImageBinary>()
+        sources.forEach { source ->
+            val original = ImageAssets.read(source)
+            images += withContext(Dispatchers.IO) { original.forEditing() }
+            require(images.sumOf { it.bytes.size.toLong() } <= 100L * 1024 * 1024) { "参考图总大小超过 100 MiB" }
         }
-
-        val responseJson = response.bodyAsText()
-        val responseObject = Json.parseToJsonElement(responseJson).jsonObject
-        return try {
-            val url = responseObject
-                .getValue("output").jsonObject
-                .getValue("choices").jsonArray[0].jsonObject
-                .getValue("message").jsonObject
-                .getValue("content").jsonArray[0].jsonObject
-                .getValue("image").jsonPrimitive.content
-            val outputImages = (responseObject["usage"] as? JsonObject)
-                ?.get("image_count")?.jsonPrimitive?.longOrNull
-                ?.coerceAtLeast(1)
-                ?: 1L
-            ModelUsageRecorder.recordUnits(
-                event = event,
-                endpointLabel = "image",
-                modelAlias = modelDefinition.alias,
-                provider = modelDefinition.provider,
-                model = modelDefinition.model,
-                usageKind = "image",
-                unit = "images",
-                inputUnits = imageUrls.size.toLong(),
-                outputUnits = outputImages,
-            )
-            "图片已生成，发送时请务必包含完整的url和查询参数，因为下载地址存在鉴权：![图片]($url)"
-        } catch (e: Throwable) {
-            JChatGPT.logger.error("图像生成结果解析异常", e)
-            responseJson
+        val options = buildJsonObject {
+            listOf("size", "quality", "background").forEach { key -> args[key]?.let { put(key, it) } }
         }
+        val result = service.generate(model, prompt, images, sources.map { it.reference }, options,
+            PluginConfig.imageWatermark, PluginConfig.imageTimeoutMillis.coerceIn(30_000L, 1_800_000L))
+        if (result.generatedImages > 0) {
+            ModelUsageRecorder.recordUnits(event, "image", model.alias, model.provider, model.model,
+                "image", "images", images.size.toLong(), result.generatedImages.toLong())
+        }
+        return buildJsonObject {
+            put("message", result.error ?: "图片已保存。可通过原有消息工具发送 Markdown，或自行选择收藏；请复用已有结果。")
+            putJsonArray("images") {
+                result.assets.forEach { asset -> addJsonObject {
+                    put("image", asset.reference); put("markdown", asset.markdown)
+                    asset.width?.let { put("width", it) }; asset.height?.let { put("height", it) }
+                    put("collected", asset.collected)
+                } }
+            }
+        }.toString()
     }
 }

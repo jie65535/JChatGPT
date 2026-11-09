@@ -29,7 +29,7 @@ data class ModelDefinition(
  */
 object ModelConfig : AutoSavePluginConfig("Models") {
     @ValueDescription(
-        """模型提供商与凭据；type 可用 openai 或 dashscope，token 对应 API Token/Key。
+        """模型提供商与凭据；type 可用 openai（聊天及 Images API 兼容接口）或 dashscope（千问原生图像/TTS），token 对应 API Token/Key。
 新安装可参考：
 - name: deepseek
   type: openai
@@ -53,7 +53,9 @@ object ModelConfig : AutoSavePluginConfig("Models") {
 - name: image-main
   provider: dashscope-native
   model: qwen-image-2.0
-  extraBody: ''"""
+  extraBody: ''
+OpenAI兼容绘图也通过imageModelAlias绑定；provider.api填写到/v1/的基础地址。
+绘图extraBody可配置size、quality、background、output_format等；每次固定生成1张。"""
     )
     var models: List<ModelDefinition> by value()
 }

@@ -11,7 +11,7 @@ import top.jie65535.mirai.JChatGPT
 class SendSingleMessageAgent : BaseAgent(
     tool = Tool.function(
         name = "sendSingleMessage",
-        description = "发送一条消息，适合发送一行以内的短句（不支持Markdown）",
+        description = "发送一条消息，适合短句和图片；支持 Markdown 图片语法 ![说明](图片引用)，不渲染其他 Markdown",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {

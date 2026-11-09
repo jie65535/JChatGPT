@@ -33,8 +33,10 @@ import top.jie65535.mirai.tools.DeepSeekSearch
 import top.jie65535.mirai.tools.DeepSeekFetch
 import top.jie65535.mirai.tools.GroupManageAgent
 import top.jie65535.mirai.tools.GetChatHistoryContext
+import top.jie65535.mirai.tools.GetContactInfoAgent
 import top.jie65535.mirai.tools.GithubAgent
 import top.jie65535.mirai.tools.ImageAgent
+import top.jie65535.mirai.tools.ImageLibraryAgent
 import top.jie65535.mirai.tools.LoadSkill
 import top.jie65535.mirai.tools.MemoryAppend
 import top.jie65535.mirai.tools.MemoryReplace
@@ -76,6 +78,7 @@ internal object ConversationEngine {
         DeleteSkill(),
         SearchChatHistory(),
         GetChatHistoryContext(),
+        GetContactInfoAgent(),
         QueryUserProfileAgent(),
         DeepSeekSearch(),
         DeepSeekFetch(),
@@ -86,6 +89,7 @@ internal object ConversationEngine {
         ReasoningAgent(),
         VisualAgent(),
         ImageAgent(),
+        ImageLibraryAgent(),
         WeatherService(),
         AdjustUserFavorabilityAgent(),
         RequestOwner(),
@@ -95,6 +99,10 @@ internal object ConversationEngine {
 
     fun clear() {
         runtimeState.clear()
+    }
+
+    fun closeTools() {
+        tools.forEach { it.close() }
     }
 
     fun isExpectedUser(event: MessageEvent): Boolean = runtimeState.isExpectedUser(
@@ -485,6 +493,8 @@ internal object ConversationEngine {
             val arguments = function.argumentsAsJsonOrNull()
             JChatGPT.logger.info("Calling ${function.name}($arguments)")
             agent.execute(arguments, event)
+        } catch (cause: CancellationException) {
+            throw cause
         } catch (cause: Throwable) {
             JChatGPT.logger.error("Failed to call ${function.name}", cause)
             "工具调用失败，请尝试自行回答用户，或如实告知。\n异常信息：${cause.message}"

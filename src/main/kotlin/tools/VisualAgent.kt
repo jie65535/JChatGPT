@@ -21,6 +21,8 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import net.mamoe.mirai.event.events.MessageEvent
@@ -30,32 +32,24 @@ import top.jie65535.mirai.data.ModelUsageRecorder
 import top.jie65535.mirai.llm.LargeLanguageModels
 import top.jie65535.mirai.llm.ModelService
 import top.jie65535.mirai.util.RetryBackoff
-import java.net.URI
+import top.jie65535.mirai.media.ImageAssets
+import top.jie65535.mirai.media.ImageReferences
+import top.jie65535.mirai.media.ImageSource
 
 class VisualAgent : BaseAgent(
     tool = Tool.function(
         name = "imageRecognition",
-        description = "可通过调用视觉模型识别一张或多张图片，并进行比较、关联或顺序理解。备注：该方法成本较高，非必要尽量不要调用。",
+        description = "查看聊天图片或 imageLibrary 素材库中的一张或多张图片，支持比较、关联或顺序理解。",
         parameters = Parameters.buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
-                putJsonObject("image_indices") {
-                    put("type", "array")
-                    put("description", "用户消息中[图片n]或[表情包n]标记的图片编号数组，按需要理解的顺序传入")
-                    put("minItems", 1)
-                    put("maxItems", MAX_SOURCE_IMAGES)
-                    putJsonObject("items") {
-                        put("type", "integer")
-                        put("minimum", 1)
-                    }
-                }
+                ImageReferences.schema(this, MAX_SOURCE_IMAGES)
                 putJsonObject("prompt") {
                     put("type", "string")
                     put("description", "用于调用视觉模型的提示词")
                 }
             }
             putJsonArray("required") {
-                add("image_indices")
                 add("prompt")
             }
         }
@@ -70,35 +64,34 @@ class VisualAgent : BaseAgent(
     override val isEnabled: Boolean
         get() = LargeLanguageModels.visual != null
 
+    override fun close() {
+        imageResolver.close()
+        super.close()
+    }
+
     override suspend fun execute(args: JsonObject?, event: MessageEvent): String {
         requireNotNull(args)
         val endpoint = LargeLanguageModels.visual ?: return "未配置llm，无法进行识别。"
-        val imageIndices = args["image_indices"]?.jsonArray
-            ?.map { it.jsonPrimitive.int }
-            ?.ifEmpty { null }
-            ?: throw IllegalArgumentException("至少需要提供一张图片")
-        require(imageIndices.size <= MAX_SOURCE_IMAGES) { "单次最多处理 $MAX_SOURCE_IMAGES 张用户图片" }
-        val imageUrls = imageIndices.map { imageIndex ->
-            JChatGPT.lookupImageUrl(event.subject.id, imageIndex)
-                ?: throw IllegalArgumentException("图片编号[$imageIndex]不存在或已失效")
+        val sources = ImageReferences.fromArguments(args, MAX_SOURCE_IMAGES) {
+            JChatGPT.lookupImageUrl(event.subject.id, it)
         }
+        require(sources.isNotEmpty()) { "至少需要提供一张图片" }
         val prompt = args.getValue("prompt").jsonPrimitive.content
 
         return concurrencyLimiter.withPermit {
-            val imageGroups = imageUrls.mapIndexed { index, imageUrl ->
-                if (PluginConfig.visualImageBase64Enabled) {
-                    val host = runCatching { URI(imageUrl).host }.getOrNull() ?: "unknown"
-                    val resolved = try {
-                        imageResolver.resolve(imageUrl)
-                    } catch (e: Throwable) {
-                        JChatGPT.logger.error(
-                            "视觉图片下载失败: image=${imageIndices[index]}, url=$imageUrl"
-                        )
-                        throw e
-                    }
+            val imageGroups = sources.mapIndexed { index, source ->
+                val resolved = try {
+                    prepareImage(source, PluginConfig.visualImageBase64Enabled, imageResolver)
+                } catch (e: Throwable) {
+                    JChatGPT.logger.error(
+                        "视觉图片读取失败: image=${source.reference}"
+                    )
+                    throw e
+                }
+                if (resolved != null) {
                     val mimeTypes = resolved.images.map { it.mimeType }.distinct().joinToString()
                     JChatGPT.logger.info(
-                        "视觉图片已本地化: image=${imageIndices[index]}, source=${index + 1}/${imageUrls.size}, host=$host, " +
+                        "视觉图片已本地化: image=${source.reference}, source=${index + 1}/${sources.size}, " +
                                 "parts=${resolved.images.size}, mime=$mimeTypes, " +
                                 "sourceBytes=${resolved.sourceSize}, payloadChars=${resolved.payloadSize}, " +
                                 "transcoded=${resolved.transcoded}"
@@ -109,7 +102,7 @@ class VisualAgent : BaseAgent(
                         payloadSize = resolved.payloadSize,
                     )
                 } else {
-                    PreparedImageGroup(inputs = listOf(imageUrl), orderHint = null, payloadSize = 0)
+                    PreparedImageGroup(inputs = listOf((source as ImageSource.Chat).url), orderHint = null, payloadSize = 0)
                 }
             }
             val modelImageCount = imageGroups.sumOf { it.inputs.size }
@@ -189,6 +182,19 @@ class VisualAgent : BaseAgent(
         private const val MAX_SOURCE_IMAGES = 16
         private const val MAX_MODEL_IMAGES = 32
         private const val MAX_TOTAL_PAYLOAD_CHARS = 48_000_000
+
+        /** 只有远程 HTTP 图片可以直接交给模型拉取；内嵌图片和素材必须转换为 Data URL。 */
+        internal suspend fun prepareImage(
+            source: ImageSource,
+            localizeRemote: Boolean,
+            resolver: VisualImageResolver,
+        ): VisualImageResolver.Result? {
+            if (source is ImageSource.Chat && !source.isInline) {
+                return if (localizeRemote) resolver.resolve(source.url) else null
+            }
+            val image = ImageAssets.read(source)
+            return withContext(Dispatchers.IO) { resolver.prepare(image.bytes, image.mimeType) }
+        }
 
         private data class PreparedImageGroup(
             val inputs: List<String>,
