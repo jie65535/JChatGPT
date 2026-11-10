@@ -180,7 +180,7 @@ class ProfileModelClient(
     private suspend fun complete(request: ChatCompletionRequest): CompletedProfileResponse {
         val content = StringBuilder()
         var lastUsage: Usage? = null
-        var cacheUsage: ModelService.CacheUsage? = null
+        var cacheUsage: ModelService.UsageDetails? = null
         endpoint.service.chatCompletions(request) { cacheUsage = it }.collect { chunk ->
             chunk.choices.firstOrNull()?.delta?.content?.let(content::append)
             chunk.usage?.let { lastUsage = it }
@@ -192,7 +192,7 @@ class ProfileModelClient(
         )
     }
 
-    private fun Usage?.toProfileUsage(cacheUsage: ModelService.CacheUsage?) = ProfileTokenUsage(
+    private fun Usage?.toProfileUsage(cacheUsage: ModelService.UsageDetails?) = ProfileTokenUsage(
         promptTokens = this?.promptTokens ?: 0,
         completionTokens = this?.completionTokens ?: 0,
         cachedTokens = cacheUsage?.hitTokens ?: 0,

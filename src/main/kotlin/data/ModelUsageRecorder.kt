@@ -36,7 +36,7 @@ object ModelUsageRecorder {
         model: String,
         usageKind: String,
         usage: Usage?,
-        cacheUsage: ModelService.CacheUsage? = null,
+        cacheUsage: ModelService.UsageDetails? = null,
     ) {
         usage ?: return
         val promptTokens = usage.promptTokens ?: 0

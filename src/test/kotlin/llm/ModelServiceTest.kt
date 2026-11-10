@@ -3,8 +3,10 @@ package top.jie65535.mirai.llm
 import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.ToolChoice
+import com.aallam.openai.api.core.Usage
 import com.aallam.openai.api.model.ModelId
 import com.sun.net.httpserver.HttpServer
+import io.ktor.client.plugins.ClientRequestException
 import io.ktor.utils.io.ByteReadChannel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -17,6 +19,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Protocol
@@ -42,25 +46,116 @@ class ModelServiceTest {
 
     @Test
     fun readsStandardCachedPromptTokens() {
-        val usage = service.extractCacheUsage(
+        val usage = service.extractUsageDetails(
             """{"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":75}}}"""
         )
 
-        assertEquals(ModelService.CacheUsage(hitTokens = 75, missTokens = 25), usage)
+        assertEquals(ModelService.UsageDetails(hitTokens = 75, missTokens = 25), usage)
     }
 
     @Test
     fun readsDeepSeekCacheTokens() {
-        val usage = service.extractCacheUsage(
+        val usage = service.extractUsageDetails(
             """{"usage":{"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}}"""
         )
 
-        assertEquals(ModelService.CacheUsage(hitTokens = 80, missTokens = 20), usage)
+        assertEquals(ModelService.UsageDetails(hitTokens = 80, missTokens = 20), usage)
     }
 
     @Test
     fun ignoresResponsesWithoutCacheDetails() {
-        assertNull(service.extractCacheUsage("""{"usage":{"prompt_tokens":100}}"""))
+        assertNull(service.extractUsageDetails("""{"usage":{"prompt_tokens":100}}"""))
+    }
+
+    @Test
+    fun readsReasoningTokensIndependentlyOfCacheFields() {
+        assertEquals(
+            ModelService.UsageDetails(reasoningTokens = 25),
+            service.extractUsageDetails("""{"usage":{"completion_tokens":40,"completion_tokens_details":{"reasoning_tokens":25}}}"""),
+        )
+        assertEquals(
+            ModelService.UsageDetails(reasoningTokens = 0),
+            service.extractUsageDetails("""{"usage":{"completion_tokens_details":{"reasoning_tokens":0}}}"""),
+        )
+        for (invalid in listOf("null", "-1", "\"invalid\"", "{}", "[]")) {
+            assertNull(service.extractUsageDetails("""{"usage":{"completion_tokens_details":{"reasoning_tokens":$invalid}}}"""))
+        }
+        assertEquals(
+            ModelService.UsageDetails(hitTokens = 80, reasoningTokens = 25),
+            service.extractUsageDetails("""{"usage":{"prompt_cache_hit_tokens":80,"prompt_tokens_details":[],"completion_tokens_details":{"reasoning_tokens":25}}}"""),
+        )
+    }
+
+    @Test
+    fun logsUsageOncePerRequestWithoutDoubleCountingOrReusingPreviousCounts() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val requestCount = AtomicInteger()
+        val firstResponse = listOf(
+            """data: {"usage":{"prompt_tokens":100,"completion_tokens":40,"total_tokens":140,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}}""",
+            """data: {"usage":{"completion_tokens_details":{"reasoning_tokens":25}}}""",
+            """data: {"usage":{"completion_tokens_details":{"reasoning_tokens":25}}}""",
+            "data: [DONE]",
+            "",
+        ).joinToString("\n\n")
+        val secondResponse = listOf(
+            """data: {"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8,"completion_tokens_details":{"reasoning_tokens":0}}}""",
+            "data: [DONE]",
+            "",
+        ).joinToString("\n\n")
+        server.createContext("/v1/chat/completions") { exchange ->
+            exchange.requestBody.use { it.readBytes() }
+            val count = requestCount.incrementAndGet()
+            val body = when (count) {
+                1 -> firstResponse
+                2 -> secondResponse
+                else -> """{"error":{"message":"invalid request"}}"""
+            }.toByteArray(Charsets.UTF_8)
+            exchange.responseHeaders.add("Content-Type", if (count < 3) "text/event-stream" else "application/json")
+            exchange.sendResponseHeaders(if (count < 3) 200 else 400, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        val logs = mutableListOf<String>()
+        val localService = ModelService(
+            baseUrl = "http://127.0.0.1:${server.address.port}/v1/",
+            token = "test",
+            timeout = 3.seconds,
+            firstChunkTimeout = 3.seconds,
+            usageLogger = logs::add,
+        )
+        val request = ChatCompletionRequest(model = ModelId("test-model"), messages = listOf(ChatMessage.User("hello")))
+        try {
+            var lastUsage: Usage? = null
+            var details: ModelService.UsageDetails? = null
+            localService.chatCompletions(request, trace = "run/1.1") { details = it }.collect { chunk ->
+                chunk.usage?.let { lastUsage = it }
+            }
+            assertEquals(Usage(promptTokens = 100, completionTokens = 40, totalTokens = 140), lastUsage)
+            assertEquals(ModelService.UsageDetails(80, 20, 25), details)
+            assertEquals(1, logs.size)
+            assertTrue(logs[0].contains("[run/1.1]"))
+            assertTrue(logs[0].contains("输出tokens（含思考）=40"))
+            assertTrue(logs[0].contains("其中思考tokens=25"))
+            assertTrue(logs[0].contains("总tokens=140"))
+
+            localService.chatCompletions(request, trace = "run/2.1").collect()
+            assertEquals(2, logs.size)
+            assertTrue(logs[1].contains("缓存命中tokens=未知"))
+            assertTrue(logs[1].contains("其中思考tokens=0"))
+            assertTrue(logs[1].contains("总tokens=8"))
+
+            assertFailsWith<ClientRequestException> {
+                localService.chatCompletions(request, trace = "run/3.1").collect()
+            }
+            assertEquals(3, logs.size)
+            assertTrue(logs[2].contains("状态=未完成"))
+            assertTrue(logs[2].contains("输入tokens=未知"))
+            assertTrue(logs[2].contains("其中思考tokens=未知"))
+            assertTrue(logs[2].contains("总tokens=未知"))
+        } finally {
+            localService.httpClient.close()
+            server.stop(0)
+        }
     }
 
     @Test
@@ -114,6 +209,85 @@ class ModelServiceTest {
             Json.parseToJsonElement(body).jsonObject.getValue("tool_choice").jsonPrimitive.content,
         )
     }
+
+    @Test
+    fun usesAutoForDeepSeekThinkingIncludingRelaysAndDefaultThinkingModels() {
+        val enabled = """{"thinking":{"type":"enabled"}}"""
+        for ((api, model, extra) in listOf(
+            Triple("https://api.deepseek.com/v1/", "custom-model", enabled),
+            Triple("https://relay.example/v1/", "deepseek-chat", enabled),
+            Triple("https://relay.example/v1/", "deepseek/deepseek-reasoner", "{}"),
+            Triple("https://api.deepseek.com/v1/", "deepseek-v4-pro", "{}"),
+            Triple("https://api.deepseek.com/v1/", "deepseek-flash", "{}"),
+        )) {
+            val body = toolChoiceBody(api, model, extra)
+            assertEquals(JsonPrimitive("auto"), body["tool_choice"], "$api $model")
+            Json.parseToJsonElement(extra).jsonObject["thinking"]?.let {
+                assertEquals(it, body["thinking"])
+            }
+        }
+    }
+
+    @Test
+    fun preservesRequiredForNonThinkingDeepSeekAndOtherProviders() {
+        for ((api, model, extra) in listOf(
+            Triple("https://api.deepseek.com/v1/", "deepseek-reasoner", """{"thinking":{"type":"disabled"}}"""),
+            Triple("https://api.deepseek.com/v1/", "deepseek-chat", "{}"),
+            Triple("https://other.example/v1/", "other-model", """{"thinking":{"type":"enabled"}}"""),
+            Triple("https://api.deepseek.com.example/v1/", "other-model", """{"thinking":{"type":"enabled"}}"""),
+        )) {
+            assertEquals(JsonPrimitive("required"), toolChoiceBody(api, model, extra)["tool_choice"], "$api $model")
+        }
+    }
+
+    @Test
+    fun preservesAutoNoneAndUnspecifiedChoicesForDeepSeekThinking() {
+        for (choice in listOf("\"auto\"", "\"none\"", "null")) {
+            val body = toolChoiceBody(
+                "https://api.deepseek.com/v1/", "deepseek-reasoner",
+                """{"tool_choice":$choice}""",
+            )
+            assertEquals(Json.parseToJsonElement(choice), body["tool_choice"])
+        }
+    }
+
+    @Test
+    fun normalizesNamedToolChoiceAfterMergingExtraBody() {
+        val body = toolChoiceBody(
+            "https://relay.example/v1/", "other-model",
+            """{"model":"deepseek-chat","thinking":{"type":"enabled"},"tool_choice":{"type":"function","function":{"name":"getDate"}}}""",
+        )
+        assertEquals(JsonPrimitive("auto"), body["tool_choice"])
+
+        val withoutChoice = ModelService(
+            baseUrl = "https://api.deepseek.com/v1/",
+            token = "test",
+            timeout = 1.seconds,
+            firstChunkTimeout = 1.seconds,
+        ).buildRequestBody(
+            ChatCompletionRequest(model = ModelId("deepseek-reasoner"), messages = listOf(ChatMessage.User("hello"))),
+            stream = true,
+        )
+        assertNull(Json.parseToJsonElement(withoutChoice).jsonObject["tool_choice"])
+    }
+
+    private fun toolChoiceBody(api: String, model: String, extra: String): JsonObject =
+        Json.parseToJsonElement(
+            ModelService(
+                baseUrl = api,
+                token = "test",
+                timeout = 1.seconds,
+                firstChunkTimeout = 1.seconds,
+                extraBody = Json.parseToJsonElement(extra).jsonObject,
+            ).buildRequestBody(
+                ChatCompletionRequest(
+                    model = ModelId(model),
+                    messages = listOf(ChatMessage.User("hello")),
+                    toolChoice = ToolChoice.Required,
+                ),
+                stream = true,
+            )
+        ).jsonObject
 
     @Test
     fun acceptsStandaloneUsageAndEmptyHeartbeatEvents() {

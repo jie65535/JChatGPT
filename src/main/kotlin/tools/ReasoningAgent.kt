@@ -45,7 +45,7 @@ class ReasoningAgent : BaseAgent(
         val answerContent = StringBuilder()
         val reasoningContent = StringBuilder()
         var lastUsage: Usage? = null
-        var cacheUsage: ModelService.CacheUsage? = null
+        var cacheUsage: ModelService.UsageDetails? = null
         endpoint.service.chatCompletions(
             ChatCompletionRequest(
                 model = ModelId(endpoint.model),

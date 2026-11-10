@@ -157,6 +157,7 @@ object LargeLanguageModels {
             endpoints += ChatEndpoint(
                 service = ModelService(
                     baseUrl = ModelCatalog.normalizeOpenAiApi(PluginConfig.openAiApi),
+                    usageLogger = { message -> JChatGPT.logger.info(message) },
                     token = PluginConfig.openAiToken,
                     timeout = timeout,
                     firstChunkTimeout = firstChunkTimeout,
@@ -202,6 +203,7 @@ object LargeLanguageModels {
                     endpoints += ChatEndpoint(
                         service = ModelService(
                             baseUrl = ModelCatalog.normalizeOpenAiApi(api),
+                            usageLogger = { message -> JChatGPT.logger.info(message) },
                             token = token,
                             timeout = timeout,
                             firstChunkTimeout = firstChunkTimeout,
@@ -245,6 +247,7 @@ object LargeLanguageModels {
                     profile = ProfileEndpoint(
                         service = ModelService(
                             baseUrl = ModelCatalog.normalizeOpenAiApi(api),
+                            usageLogger = { message -> JChatGPT.logger.info(message) },
                             token = token,
                             timeout = maxOf(timeout, profileFirstChunk),
                             firstChunkTimeout = profileFirstChunk,
@@ -282,6 +285,7 @@ object LargeLanguageModels {
             webSummary = WebSummaryEndpoint(
                 service = ModelService(
                     baseUrl = ModelCatalog.normalizeOpenAiApi(PluginConfig.webSummaryModelApi),
+                    usageLogger = { message -> JChatGPT.logger.info(message) },
                     token = PluginConfig.webSummaryModelToken,
                     timeout = maxOf(timeout, webSummaryFirstChunk),
                     firstChunkTimeout = webSummaryFirstChunk,
@@ -316,6 +320,7 @@ object LargeLanguageModels {
             reasoning = AuxiliaryEndpoint(
                 service = ModelService(
                     baseUrl = ModelCatalog.normalizeOpenAiApi(PluginConfig.reasoningModelApi),
+                    usageLogger = { message -> JChatGPT.logger.info(message) },
                     token = PluginConfig.reasoningModelToken,
                     timeout = maxOf(timeout, reasoningFirstChunk),
                     firstChunkTimeout = reasoningFirstChunk,
@@ -350,6 +355,7 @@ object LargeLanguageModels {
             visual = AuxiliaryEndpoint(
                 service = ModelService(
                     baseUrl = ModelCatalog.normalizeOpenAiApi(PluginConfig.visualModelApi),
+                    usageLogger = { message -> JChatGPT.logger.info(message) },
                     token = PluginConfig.visualModelToken,
                     timeout = maxOf(timeout, visualFirstChunk),
                     firstChunkTimeout = visualFirstChunk,
@@ -403,6 +409,7 @@ object LargeLanguageModels {
         maxConcurrentRequests: Int? = null,
     ): ModelService = ModelService(
         baseUrl = ModelCatalog.normalizeOpenAiApi(definition.api),
+        usageLogger = { message -> JChatGPT.logger.info(message) },
         token = definition.token,
         timeout = timeout,
         firstChunkTimeout = firstChunkTimeout,

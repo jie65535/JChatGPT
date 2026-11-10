@@ -122,7 +122,7 @@ class VisualAgent : BaseAgent(
                 try {
                     val answerContent = StringBuilder()
                     var lastUsage: Usage? = null
-                    var cacheUsage: ModelService.CacheUsage? = null
+                    var cacheUsage: ModelService.UsageDetails? = null
                     endpoint.service.chatCompletions(
                         ChatCompletionRequest(
                             model = ModelId(endpoint.model),

@@ -4,6 +4,7 @@ import com.aallam.openai.api.chat.ChatCompletionChunk
 import com.aallam.openai.api.chat.ChatCompletionRequest
 import com.aallam.openai.api.chat.ChatMessage
 import com.aallam.openai.api.chat.ChatRole
+import com.aallam.openai.api.chat.Tool
 import com.aallam.openai.api.chat.ToolCall
 import com.aallam.openai.api.chat.ToolChoice
 import com.aallam.openai.api.chat.StreamOptions
@@ -59,6 +60,7 @@ import top.jie65535.mirai.tools.QueryTokenUsageAgent
 import top.jie65535.mirai.util.RetryBackoff
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 import kotlin.time.Duration.Companion.seconds
 
 internal object ConversationEngine {
@@ -147,6 +149,7 @@ internal object ConversationEngine {
         resumedWait: FollowUpWaitDirective?,
     ) {
         val subjectId = initialEvent.subject.id
+        val runId = UUID.randomUUID().toString().take(8)
         var currentEvent = initialEvent
         var indexesReleased = false
         try {
@@ -196,6 +199,8 @@ internal object ConversationEngine {
 
             val endpoints = LargeLanguageModels.orderedChatEndpoints()
             if (endpoints.isEmpty()) error("OpenAI Token 未设置，无法开始")
+            // Keep schemas and ordering stable across rounds and endpoint retries for prefix caching.
+            val availableTools = tools.filter { it.isEnabled }.map { it.tool }
             var endpointIndex = 0
             var done: Boolean
             val maxRounds = PluginConfig.retryMax.coerceAtLeast(2)
@@ -205,11 +210,12 @@ internal object ConversationEngine {
             do {
                 val endpoint = endpoints[endpointIndex]
                 val roundEvent = currentEvent
+                val roundTrace = "$runId/${completedRounds + 1}.${consecutiveFailures + 1}"
                 var streamingOk = false
                 try {
                     val startedAt = OffsetDateTime.now().toEpochSecond().toInt()
-                    var lastCacheUsage: ModelService.CacheUsage? = null
-                    val responseFlow = chatCompletions(history, endpoint) { lastCacheUsage = it }
+                    var lastUsageDetails: ModelService.UsageDetails? = null
+                    val responseFlow = chatCompletions(history, endpoint, availableTools, roundTrace) { lastUsageDetails = it }
                     var responseContent: StringBuilder? = null
                     var reasoningContent: StringBuilder? = null
                     val responseToolCalls = mutableListOf<ToolCall.Function>()
@@ -233,7 +239,7 @@ internal object ConversationEngine {
                             if (index >= responseToolCalls.size) {
                                 responseToolCalls.lastOrNull()?.let { toolCall ->
                                     toolCallTasks += JChatGPT.async {
-                                        toolCall.toResultMessage(roundEvent)
+                                        toolCall.toResultMessage(roundEvent, roundTrace)
                                     }
                                 }
                                 val id = toolCallChunk.id
@@ -260,18 +266,23 @@ internal object ConversationEngine {
                     LargeLanguageModels.reportSuccess(endpoint)
                     consecutiveFailures = 0
                     val answer = responseContent?.replace(thinkRegex, "")?.trim()
-                    JChatGPT.logger.info("LLM Response: $answer")
-                    history += ChatMessage(
-                        role = ChatRole.Assistant,
+                    JChatGPT.logger.info("[$roundTrace] LLM Response: $answer")
+                    JChatGPT.logger.info(formatConversationRoundDiagnostics(
+                        trace = roundTrace,
+                        model = endpoint.model,
+                        reasoningCharacters = reasoningContent?.let { it.codePointCount(0, it.length) } ?: 0,
+                        toolCalls = responseToolCalls,
+                    ))
+                    history += buildConversationAssistantMessage(
                         content = answer,
-                        toolCalls = responseToolCalls.ifEmpty { null },
-                        reasoningContent = if (responseToolCalls.isNotEmpty()) reasoningContent?.toString() else null,
+                        toolCalls = responseToolCalls,
+                        reasoningContent = reasoningContent?.toString(),
                     )
-                    recordUsage(roundEvent, endpoint, lastTokenUsage, lastCacheUsage)
+                    recordUsage(roundEvent, endpoint, lastTokenUsage, lastUsageDetails)
                     completedRounds++
 
                     if (responseToolCalls.size > toolCallTasks.size) {
-                        val finalToolResult = responseToolCalls.last().toResultMessage(roundEvent)
+                        val finalToolResult = responseToolCalls.last().toResultMessage(roundEvent, roundTrace)
                         if (toolCallTasks.isNotEmpty()) history += toolCallTasks.awaitAll()
                         history += finalToolResult
                     }
@@ -295,7 +306,8 @@ internal object ConversationEngine {
                         JChatGPT.logger.warning("endConversation.waitForFollowUp 参数无效，将按普通结束处理")
                     }
 
-                    val requestedEnd = responseToolCalls.isEmpty() || endCall != null
+                    // With tool_choice=auto a plain response does not complete the tool-driven QQ workflow.
+                    val requestedEnd = endCall != null
                     val canContinue = completedRounds < maxRounds
                     if (!requestedEnd && canContinue) {
                         val pendingEvent = runtimeState.takePending(running)
@@ -461,29 +473,23 @@ internal object ConversationEngine {
     private fun chatCompletions(
         history: List<ChatMessage>,
         endpoint: LargeLanguageModels.ChatEndpoint,
-        onCacheUsage: ((ModelService.CacheUsage) -> Unit)? = null,
+        availableTools: List<Tool>,
+        roundTrace: String,
+        onUsageDetails: ((ModelService.UsageDetails) -> Unit)? = null,
     ): Flow<ChatCompletionChunk> {
-        val availableTools = tools.filter { it.isEnabled }.map { it.tool }
-        val request = ChatCompletionRequest(
-            model = ModelId(endpoint.model),
-            temperature = endpoint.temperature,
-            messages = history,
-            tools = availableTools,
-            toolChoice = ToolChoice.Required,
-            streamOptions = StreamOptions(includeUsage = true),
-        )
-        JChatGPT.logger.info("API Requesting... Model=${endpoint.model} [${endpoint.label}]")
-        return endpoint.service.chatCompletions(request, onCacheUsage)
+        val request = buildConversationRequest(history, endpoint.model, endpoint.temperature, availableTools)
+        JChatGPT.logger.info("[$roundTrace] API Requesting... Model=${endpoint.model} [${endpoint.label}]")
+        return endpoint.service.chatCompletions(request, trace = roundTrace, onUsageDetails = onUsageDetails)
     }
 
-    private suspend fun ToolCall.Function.toResultMessage(event: MessageEvent): ChatMessage = ChatMessage(
+    private suspend fun ToolCall.Function.toResultMessage(event: MessageEvent, roundTrace: String): ChatMessage = ChatMessage(
         role = ChatRole.Tool,
         toolCallId = id,
         name = function.name,
-        content = execute(event),
+        content = execute(event, roundTrace),
     )
 
-    private suspend fun ToolCall.Function.execute(event: MessageEvent): String {
+    private suspend fun ToolCall.Function.execute(event: MessageEvent, roundTrace: String): String {
         val agent = tools.find { it.tool.function.name == function.name }
             ?: return "Function ${function.name} not found"
         val receipt = if (PluginConfig.showToolCallingMessage && agent.loadingMessage.isNotEmpty()) {
@@ -491,15 +497,15 @@ internal object ConversationEngine {
         } else null
         val result = try {
             val arguments = function.argumentsAsJsonOrNull()
-            JChatGPT.logger.info("Calling ${function.name}($arguments)")
+            JChatGPT.logger.info("[$roundTrace] Calling ${function.name}#${id.id}($arguments)")
             agent.execute(arguments, event)
         } catch (cause: CancellationException) {
             throw cause
         } catch (cause: Throwable) {
-            JChatGPT.logger.error("Failed to call ${function.name}", cause)
+            JChatGPT.logger.error("[$roundTrace] Failed to call ${function.name}#${id.id}", cause)
             "工具调用失败，请尝试自行回答用户，或如实告知。\n异常信息：${cause.message}"
         }
-        JChatGPT.logger.info("工具 ${function.name} 返回 ${result.length} 字符")
+        JChatGPT.logger.info("[$roundTrace] 工具 ${function.name}#${id.id} 返回：${formatToolResultPreview(result)}")
         val truncated = agent.limitOutput(result, PluginConfig.maxToolOutputLength)
         if (truncated.length != result.length) {
             JChatGPT.logger.warning(
@@ -533,7 +539,7 @@ internal object ConversationEngine {
         appendLine("## 系统提示")
         append("本次运行最多还剩").append(remainingRounds).appendLine("轮。")
         appendLine("如果要多次发言，可以一次性调用多次发言工具。")
-        appendLine("如果没有什么要做的，可以提前结束。")
+        appendLine(CONVERSATION_TOOL_PROTOCOL)
         if (pendingTrigger) appendLine("运行期间收到了新的显式触发，请优先处理水位后的新消息。")
         appendLine("当前时间：${dateTimeFormatter.format(OffsetDateTime.now())}")
         val messages = ConversationContext.getAfterHistory(
@@ -554,7 +560,7 @@ internal object ConversationEngine {
         event: MessageEvent,
         endpoint: LargeLanguageModels.ChatEndpoint,
         usage: Usage?,
-        cacheUsage: ModelService.CacheUsage?,
+        usageDetails: ModelService.UsageDetails?,
     ) {
         ModelUsageRecorder.recordTokens(
             event = event,
@@ -564,10 +570,40 @@ internal object ConversationEngine {
             model = endpoint.model,
             usageKind = "chat",
             usage = usage,
-            cacheUsage = cacheUsage,
+            cacheUsage = usageDetails,
         )
     }
 }
+
+internal const val CONVERSATION_TOOL_PROTOCOL =
+    "普通回复正文不会发送到QQ。需要回复用户时必须调用发言工具（如sendSingleMessage）；" +
+            "完成任务或无需回复时必须调用endConversation，不要只输出正文。"
+
+internal fun buildConversationRequest(
+    history: List<ChatMessage>,
+    model: String,
+    temperature: Double?,
+    availableTools: List<Tool>,
+): ChatCompletionRequest = ChatCompletionRequest(
+    model = ModelId(model),
+    temperature = temperature,
+    messages = listOf(ChatMessage.System(CONVERSATION_TOOL_PROTOCOL)) + history,
+    tools = availableTools,
+    toolChoice = ToolChoice.Required,
+    streamOptions = StreamOptions(includeUsage = true),
+)
+
+internal fun buildConversationAssistantMessage(
+    content: String?,
+    toolCalls: List<ToolCall.Function>,
+    reasoningContent: String?,
+): ChatMessage = ChatMessage(
+    role = ChatRole.Assistant,
+    content = content,
+    toolCalls = toolCalls.ifEmpty { null },
+    // Requests always carry tools, so DeepSeek requires reasoning even for turns without tool calls.
+    reasoningContent = reasoningContent,
+)
 
 internal fun nextChatEndpointIndex(endpointCount: Int, currentIndex: Int, failureCount: Int): Int? {
     require(endpointCount > 0) { "endpointCount must be positive" }

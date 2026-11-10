@@ -2,6 +2,7 @@ package top.jie65535.mirai.llm
 
 import com.aallam.openai.api.chat.ChatCompletionChunk
 import com.aallam.openai.api.chat.ChatCompletionRequest
+import com.aallam.openai.api.core.Usage
 import io.ktor.client.*
 import io.ktor.client.call.body
 import io.ktor.client.engine.okhttp.*
@@ -23,6 +24,8 @@ import okhttp3.Dispatcher as OkHttpDispatcher
 import okhttp3.Protocol as OkHttpProtocol
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.net.URI
+import java.util.UUID
 import kotlin.time.Duration
 
 class ModelService(
@@ -32,6 +35,7 @@ class ModelService(
     val firstChunkTimeout: Duration,
     val extraBody: JsonObject? = null,
     maxConcurrentRequests: Int? = null,
+    private val usageLogger: ((String) -> Unit)? = null,
 ) {
     private val maxConcurrentRequests = maxConcurrentRequests?.let(::normalizeMaxConcurrentRequests)
     private val requestSemaphore = this.maxConcurrentRequests?.let(::Semaphore)
@@ -67,20 +71,34 @@ class ModelService(
         explicitNulls = false
     }
 
-    /** openai-kotlin 的 Usage 尚未暴露缓存明细，因此从原始 JSON 读取。 */
-    data class CacheUsage(val hitTokens: Int, val missTokens: Int)
+    /** SDK 尚未暴露缓存和思考明细；null 表示供应商未报告，不能视为 0。 */
+    data class UsageDetails(
+        val hitTokens: Int? = null,
+        val missTokens: Int? = null,
+        val reasoningTokens: Int? = null,
+    ) {
+        internal fun merge(newer: UsageDetails): UsageDetails = UsageDetails(
+            hitTokens = newer.hitTokens ?: hitTokens,
+            missTokens = newer.missTokens ?: missTokens,
+            reasoningTokens = newer.reasoningTokens ?: reasoningTokens,
+        )
+    }
 
-    /** 从原始 data 行（已去掉 "data: " 前缀）解析缓存命中用量；无相关字段返回 null。 */
-    internal fun extractCacheUsage(rawJson: String): CacheUsage? {
+    /** 从原始 SSE data 读取用量明细；无相关字段或非用量事件返回 null。 */
+    internal fun extractUsageDetails(rawJson: String): UsageDetails? {
         return try {
-            val usage = json.parseToJsonElement(rawJson).jsonObject["usage"]?.jsonObject ?: return null
-            val promptTokens = usage["prompt_tokens"]?.jsonPrimitive?.intOrNull
-            val promptDetails = usage["prompt_tokens_details"]?.jsonObject
-            val hit = usage["prompt_cache_hit_tokens"]?.jsonPrimitive?.intOrNull
-                ?: promptDetails?.get("cached_tokens")?.jsonPrimitive?.intOrNull
-            val miss = usage["prompt_cache_miss_tokens"]?.jsonPrimitive?.intOrNull
+            val payload = json.parseToJsonElement(rawJson) as? JsonObject ?: return null
+            val usage = payload["usage"] as? JsonObject ?: return null
+            fun JsonObject.tokenCount(key: String): Int? =
+                (this[key] as? JsonPrimitive)?.intOrNull?.takeIf { it >= 0 }
+            val promptTokens = usage.tokenCount("prompt_tokens")
+            val promptDetails = usage["prompt_tokens_details"] as? JsonObject
+            val completionDetails = usage["completion_tokens_details"] as? JsonObject
+            val hit = usage.tokenCount("prompt_cache_hit_tokens") ?: promptDetails?.tokenCount("cached_tokens")
+            val miss = usage.tokenCount("prompt_cache_miss_tokens")
                 ?: if (hit != null && promptTokens != null) (promptTokens - hit).coerceAtLeast(0) else null
-            if (hit == null && miss == null) null else CacheUsage(hit ?: 0, miss ?: 0)
+            val reasoning = completionDetails?.tokenCount("reasoning_tokens")
+            if (hit == null && miss == null && reasoning == null) null else UsageDetails(hit, miss, reasoning)
         } catch (_: Exception) {
             null
         }
@@ -88,11 +106,34 @@ class ModelService(
 
     fun chatCompletions(
         request: ChatCompletionRequest,
-        onCacheUsage: ((CacheUsage) -> Unit)? = null
+        trace: String? = null,
+        onUsageDetails: ((UsageDetails) -> Unit)? = null
     ): Flow<ChatCompletionChunk> {
         val body = buildRequestBody(request, stream = true)
 
         val responseFlow: Flow<ChatCompletionChunk> = flow {
+            var usageDetails = UsageDetails()
+            var usage: Usage? = null
+            var completed = false
+            val requestTrace = trace ?: UUID.randomUUID().toString().take(8)
+            suspend fun processData(raw: String) {
+                val chunk = decodeStreamChunk(raw)
+                chunk?.usage?.let { reported ->
+                    usage = Usage(
+                        promptTokens = reported.promptTokens ?: usage?.promptTokens,
+                        completionTokens = reported.completionTokens ?: usage?.completionTokens,
+                        totalTokens = reported.totalTokens ?: usage?.totalTokens,
+                    )
+                }
+                if (onUsageDetails != null || usageLogger != null) {
+                    extractUsageDetails(raw)?.let { reported ->
+                        // These are cumulative counts, not deltas. Preserve fields omitted in later events.
+                        usageDetails = usageDetails.merge(reported)
+                        onUsageDetails?.invoke(usageDetails)
+                    }
+                }
+                chunk?.let { emit(if (it.usage != null) it.copy(usage = usage) else it) }
+            }
             // 关键：服务器繁忙时会拖住「响应头」，使 httpClient.post() 自身阻塞在等待响应的阶段，
             // 因此必须把 post() 连同首个 data 块的读取一起纳入同一个应用层超时。
             // 否则首 token 超时永远不会触发（post() 还没返回，根本进不到读取循环），
@@ -130,8 +171,7 @@ class ModelService(
 
                 if (firstDataLine != null && !firstDataLine.startsWith("data: [DONE]")) {
                     val firstRaw = firstDataLine.removePrefix("data: ")
-                    decodeStreamChunk(firstRaw)?.let { emit(it) }
-                    onCacheUsage?.let { cb -> extractCacheUsage(firstRaw)?.let(cb) }
+                    processData(firstRaw)
 
                     val ch = channel!!
                     val reader = lineReader!!
@@ -145,15 +185,22 @@ class ModelService(
                             line.startsWith("data: [DONE]") -> break
                             line.startsWith("data: ") -> {
                                 val raw = line.removePrefix("data: ")
-                                decodeStreamChunk(raw)?.let { emit(it) }
-                                onCacheUsage?.let { cb -> extractCacheUsage(raw)?.let(cb) }
+                                processData(raw)
                             }
                             else -> continue
                         }
                     }
                 }
+                completed = true
             } finally {
                 channel?.cancel()
+                usageLogger?.invoke(formatModelUsageLog(
+                    trace = requestTrace,
+                    model = (extraBody?.get("model") as? JsonPrimitive)?.contentOrNull ?: request.model.id,
+                    usage = usage,
+                    details = usageDetails,
+                    completed = completed,
+                ))
             }
         }
         return responseFlow.withConcurrencyLimit(requestSemaphore)
@@ -166,9 +213,33 @@ class ModelService(
         extraBody?.forEach { (key, value) ->
             requestJson[key] = value
         }
+        normalizeDeepSeekToolChoice(requestJson)
         // Ktor's text writer rejects lone UTF-16 surrogates. They can enter chat history through
         // malformed gateway text, so normalize only invalid code units before encoding the body.
         return JsonObject(requestJson).toString().replaceUnpairedSurrogates()
+    }
+
+    private fun normalizeDeepSeekToolChoice(requestJson: MutableMap<String, JsonElement>) {
+        val choice = requestJson["tool_choice"] ?: return
+        val forced = choice is JsonObject || (choice as? JsonPrimitive)?.contentOrNull == "required"
+        if (!forced) return
+
+        val model = (requestJson["model"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+            .substringAfterLast('/').lowercase()
+        val host = runCatching { URI(baseUrl).host?.lowercase() }.getOrNull().orEmpty()
+        if (host != "api.deepseek.com" && !host.endsWith(".deepseek.com") && !model.startsWith("deepseek-")) {
+            return
+        }
+        val thinkingType = ((requestJson["thinking"] as? JsonObject)?.get("type") as? JsonPrimitive)
+            ?.contentOrNull
+        val thinkingEnabled = when (thinkingType) {
+            "disabled" -> false
+            "enabled" -> true
+            // Legacy deepseek-chat defaults to non-thinking; reasoner and current models default to thinking.
+            else -> model != "deepseek-chat"
+        }
+        // DeepSeek thinking supports tools, but rejects both required and named tool choices.
+        if (thinkingEnabled) requestJson["tool_choice"] = JsonPrimitive("auto")
     }
 
     internal fun decodeStreamChunk(rawJson: String): ChatCompletionChunk? {

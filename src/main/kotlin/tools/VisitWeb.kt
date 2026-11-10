@@ -219,7 +219,7 @@ class VisitWeb : BaseAgent(
         val prompt = buildSummaryUserPrompt(url, instruction, input)
         val rawSummary = StringBuilder()
         var lastUsage: Usage? = null
-        var cacheUsage: ModelService.CacheUsage? = null
+        var cacheUsage: ModelService.UsageDetails? = null
         return try {
             endpoint.service.chatCompletions(
                 ChatCompletionRequest(
